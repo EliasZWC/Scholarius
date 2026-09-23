@@ -19,11 +19,11 @@
     /**
      * 启动动画的兜底超时。
      *
-     * ⚠️ 必须**大于** styles.css 里 .splash 的动画时长（2200ms），
+     * ⚠️ 必须**大于** styles.css 里 .splash 的动画时长（2600ms），
      *    否则会抢在 animationend 之前把启动页收掉 —— 表现就是「一闪而过」。
-     *    留 1.2s 余量，覆盖低端机首帧延迟。
+     *    留 1s 余量，覆盖低端机首帧延迟。
      */
-    var SPLASH_FALLBACK_MS = 3400;
+    var SPLASH_FALLBACK_MS = 3600;
 
     /**
      * 启动页最短可见时长。
@@ -33,10 +33,12 @@
      *    .splash 上根本没有 animation，animationDuration 会是 0s，
      *    于是 animationend 会**立即**触发，启动页瞬间被收掉。
      *
-     *    真实动画是 2200ms，这里取 2000ms 作为下限 ——
-     *    比真时长略短，不会把正常动画也拖长，但足以拦住「瞬退」。
+     *    ⚠️ 必须**小于**真实动画时长（2600ms）且留出余量，
+     *       否则会抢在正常 animationend 之前收掉启动页 ——
+     *       那反而会把完整的动画腰断。取 2400ms。
      */
-    var SPLASH_MIN_VISIBLE_MS = 2000;
+    var SPLASH_MIN_VISIBLE_MS = 2400;
+
 
     var tabs = Array.prototype.slice.call(document.querySelectorAll('.nav-item'));
     var titleEl = document.getElementById('page-title');

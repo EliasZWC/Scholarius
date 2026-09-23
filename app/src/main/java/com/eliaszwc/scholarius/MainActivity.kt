@@ -2,6 +2,7 @@ package com.eliaszwc.scholarius
 
 import android.annotation.SuppressLint
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -131,10 +132,14 @@ import kotlin.math.roundToInt
         splashScreen.setKeepOnScreenCondition { !webPainted }
         super.onCreate(savedInstanceState)
 
-        // 网页一直没就绪的话不能无限黑屏，兜一个上限
+        /*
+          终极兜底：不管网页发生什么（加载失败、渲染进程崩、资源损坏），
+          都必须在 SPLASH_TIMEOUT_MS 后放行系统启动页 ——
+          否则用户会看到一个永远不走的黑屏，完全无法使用应用。
+        */
         window.decorView.postDelayed({
             if (!webPainted) {
-                Log.w(TAG, "[native] 网页首帧超时 ${SPLASH_TIMEOUT_MS}ms，放行系统启动页")
+                Log.w(TAG, "[native] 网页首帧超时 ${SPLASH_TIMEOUT_MS}ms，强制放行系统启动页")
                 webPainted = true
             }
             if (splashActive) {
@@ -144,6 +149,28 @@ import kotlin.math.roundToInt
         }, SPLASH_TIMEOUT_MS)
 
         startApp()
+    }
+
+    /** 标记网页已经出画面，系统启动页可以交棒了（幂等） */
+    private fun markWebPainted(why: String) {
+        if (webPainted) return
+        webPainted = true
+        Log.i(TAG, "[native] 交棒给网页启动动画（$why）")
+    }
+
+    /**
+     * 执行一段「不该因为它自己出错而拖垮别人」的逻辑。
+     *
+     * 用在 onPageFinished 这类「一串互相独立的事」的地方：某一步失败
+     * （典型是 EncryptedSharedPreferences 在覆盖安装后密钥失效）
+     * 不能让后面的步骤被静默跳过。
+     */
+    private inline fun safely(what: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (t: Throwable) {
+            Log.w(TAG, "[native] $what 失败（已忽略，不影响其它步骤）", t)
+        }
     }
 
     private fun startApp() {
@@ -285,29 +312,54 @@ import kotlin.math.roundToInt
             }
 
             /**
-             * 网页画出第一帧。这是「系统启动页什么时候交棒给网页」的判据 ——
-             * 比 onPageFinished 早，且早得多：onPageFinished 要等所有子资源
-             * （包括两个 1.6MB 字体）都加载完，那时网页启动动画早演完了。
+             * 网页画出第一帧。
              *
-             * onPageCommitVisible 是内容真正可见的时刻，正好接住启动页。
+             * ⚠️ 不能只依赖这一个回调。`onPageCommitVisible` 并非在所有情况
+             *    下都会触发（WebView 版本、首次加载、渲染进程重建等），
+             *    一旦不触发，`webPainted` 永不置 true，
+             *    系统启动页就会**永远挡在最上层** —— 用户完全进不去应用。
+             *
+             *    所以这里只是「最早的交棒点」之一，还有：
+             *      · onPageStarted（兜底，页面开始加载就放行）
+             *      · onCreate 里的 4s 定时器（终极兜底）
              */
             override fun onPageCommitVisible(view: WebView, url: String?) {
                 super.onPageCommitVisible(view, url)
-                if (!webPainted) {
-                    webPainted = true
-                    Log.i(TAG, "[native] 网页首帧已可见，交棒给网页启动动画")
-                }
+                markWebPainted("onPageCommitVisible")
+            }
+
+            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                /*
+                  兜底一：页面**开始**加载即标记。
+                  比 onPageCommitVisible 早、且几乎一定触发 ——
+                  宁可早一点露出（此时网页 splace 已在 DOM 里，
+                  遮挡仍然连贯），也不能让系统启动页卡死。
+                */
+                markWebPainted("onPageStarted")
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
+                markWebPainted("onPageFinished")
                 pageReady = true
-                pushVersionToWeb()
-                pushAccountToWeb()
+                /*
+                  ⚠️ 这三步必须**互相隔离**。
+
+                  原来它们是顺序直调：pushVersionToWeb() → pushAccountToWeb()
+                  → maybeCheckUpdate()。只要前面任一步抛异常
+                  （比如覆盖安装后 EncryptedSharedPreferences 的密钥失效，
+                  auth.isSignedIn 会抛），后台的 maybeCheckUpdate() 就永远不会执行 ——
+                  表现就是「永远收不到更新通知」，而且没有任何错误提示。
+
+                  各自 try 住，谁坏了都不影响另外两个。
+                */
+                safely("推送版本号") { pushVersionToWeb() }
+                safely("推送账号") { pushAccountToWeb() }
                 if (::layoutRoot.isInitialized) {
                     ViewCompat.requestApplyInsets(layoutRoot)
                 }
                 // 首次进入时 onResume 可能比页面更早就跑完了，这里补一次
-                maybeCheckUpdate()
+                safely("检查更新") { maybeCheckUpdate() }
             }
 
             override fun onRenderProcessGone(

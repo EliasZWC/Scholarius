@@ -272,43 +272,63 @@ body {
     justify-content: center;
     gap: 26px;
     background: #1B1B1B;
-    animation: splash-cover 2200ms cubic-bezier(0.2, 0, 0, 1) forwards;
+    animation: splash-cover 2600ms cubic-bezier(0.2, 0, 0, 1) forwards;
 }
 
 .splash[hidden] {
     display: none;
 }
 
-/* 前 4/5 保持不透明，最后淡出 */
-@keyframes splash-cover {
+/*
+  ⚠️ 关键：退场不能靠 visibility。
 
-    0%,
-    82% {
+  原来写的是：
+      0%, 82% { opacity: 1; visibility: visible }
+      100%    { opacity: 0; visibility: hidden }
+
+  问题不在 visibility 本身，而在**前 82% 完全静止**：
+  logo 动画 520ms 就结束、名称 780ms 结束，
+  之后 1 秒多屏幕上一动不动 —— 用户会以为「启动页早就没了」，
+  感知上就是「一闪而过」。
+
+  现在改成全程都有变化：
+    0%      纯黑（与系统启动页同色，衔接无痕）
+    10%     logo 开始浮现（放大落定）
+    55%     名称就位
+    72%     停留，让品牌被看清
+    100%    整体淡出
+  时间轴由 .splash-logo / .splash-name 各自的 animation-delay 错开，
+  整体 2.6s，其中前 1.9s 都有可见变化。
+*/
+@keyframes splash-cover {
+    0% {
         opacity: 1;
-        visibility: visible;
+    }
+
+    72% {
+        opacity: 1;
     }
 
     100% {
         opacity: 0;
-        visibility: hidden;
     }
 }
 
 /*
-   108 视口里图标外接框只有 38，放大 2 倍才像一张启动页。
-   scale 只影响视觉大小，动画与几何坐标不受影响。
+  108 视口里图标外接框只有 38，放大 2 倍才像一张启动页。
+  scale 只影响视觉大小，动画与几何坐标不受影响。
 */
 .splash-logo {
     position: relative;
     width: 108px;
     height: 108px;
-    animation: splash-logo-in 520ms cubic-bezier(0.2, 0, 0, 1) both;
+    animation: splash-logo-in 900ms cubic-bezier(0.16, 0.84, 0.24, 1) both;
 }
 
 @keyframes splash-logo-in {
     from {
         opacity: 0;
-        transform: scale(1.76);
+        transform: scale(1.7);
     }
 
     to {
@@ -332,13 +352,14 @@ body {
     text-transform: uppercase;
     /* 黑底固定亮色，不跟随主题 */
     color: #ECECEA;
-    animation: splash-name-in 620ms 160ms cubic-bezier(0.2, 0, 0, 1) both;
+    /* 延后到 700ms：logo 先落定，名称再淡入上移，两段动作接得上 */
+    animation: splash-name-in 800ms 700ms cubic-bezier(0.16, 0.84, 0.24, 1) both;
 }
 
 @keyframes splash-name-in {
     from {
         opacity: 0;
-        transform: translateY(6px);
+        transform: translateY(10px);
     }
 
     to {
@@ -357,17 +378,19 @@ body {
         用户会以为 app 崩了或者跳页了。
       reduced-motion 的本意是「避免引起不适的位移/缩放/闪烁」，
       单纯的透明度变化不在其中，所以保留淡入淡出、去掉 transform。
+
+      ⚠️ 时长必须与上面保持一致（2600ms），否则 app.js 的兜底时长算不准。
     */
     .splash {
-        animation: splash-cover 2200ms cubic-bezier(0.2, 0, 0, 1) forwards;
+        animation: splash-cover 2600ms cubic-bezier(0.2, 0, 0, 1) forwards;
     }
 
     .splash-logo {
-        animation: splash-fade-only 520ms ease both;
+        animation: splash-fade-only 900ms ease both;
     }
 
     .splash-name {
-        animation: splash-fade-only 620ms 160ms ease both;
+        animation: splash-fade-only 800ms 700ms ease both;
     }
 
     @keyframes splash-fade-only {

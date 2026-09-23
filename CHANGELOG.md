@@ -4,6 +4,46 @@
 
 ---
 
+## [0.0.11] - 2026-09-23
+
+### 修复
+
+- **启动页「一闪而过」的真正手感问题**：前 82% 的时长是**静止的**。
+
+  逐帧实测旧动画：
+
+  | 时刻 | 状态 |
+  |---|---|
+  | 0–520ms | logo 放大落定 |
+  | 160–780ms | 名称淡入 |
+  | **780–1835ms** | **完全不动** |
+  | 1835–2183ms | 淡出 |
+
+  也就是说 2.2s 里有 **1 秒多屏幕上一动不动**，用户自然觉得
+  「启动页早就没了」→ 感知为「一闪而过」。
+
+  重做时间轴（总长 2600ms，全程都有变化）：
+  - 0–720ms　logo 从 1.7 倍放大落定到 2 倍
+  - 700–1420ms　名称淡入上移
+  - 1420–1870ms　停留，让品牌被看清
+  - 1990–2570ms　整体淡出
+
+- 启动页退场不再用 `visibility` 关键帧（与 `hidden` 属性职责重叠，
+  且会让「动画结束」与「元素消失」两个时机变得含糊）。
+
+- `onPageFinished` 里的三步（推版本号 / 推账号 / 检查更新）改为**互相隔离**。
+  原来顺序直调，只要前面任一步抛异常（典型是覆盖安装后
+  `EncryptedSharedPreferences` 密钥失效，`auth.isSignedIn` 会抛），
+  后面的**检查更新就不会执行**，且没有任何错误提示 ——
+  表现就是「永远收不到更新通知」。
+
+- `webPainted` 改为多重触发（`onPageStarted` / `onPageCommitVisible` /
+  `onPageFinished` / 4s 定时器）。上一版只靠 `onPageCommitVisible`，
+  而这个回调并非在所有情况下都会触发 —— 一旦不触发，
+  系统启动页会**永远挡在最上层**，用户完全进不去应用。
+
+---
+
 ## [0.0.10] - 2026-09-23
 
 ### 修复
@@ -341,3 +381,4 @@
 [0.0.8]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.8
 [0.0.9]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.9
 [0.0.10]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.10
+[0.0.11]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.11
