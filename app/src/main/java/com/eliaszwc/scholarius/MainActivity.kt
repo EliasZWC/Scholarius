@@ -746,32 +746,29 @@ import kotlin.math.roundToInt
     /**
      * 打开 GitHub 设备授权页：**优先用 GitHub 手机 App，装不上才退回浏览器**。
      *
-     * 做法分三层，逐层降级：
+     * 逐层降级：
+     *   ① 官方包名（`com.github.android`）已装 → 主动进它的包里去开
+     *      （见 [launchInPackage]：https → github:// → 主 Activity 三种方式）
+     *   ② 按能力找第三方 GitHub 客户端（它可能确实注册了 https filter）
+     *   ③ 退回浏览器
      *
-     *   ① 用 `queryIntentActivities` 列出所有能接住这个 https 链接的 App，
-     *      排除浏览器，挑出 GitHub App，**用 `ComponentName` 精确启动它**。
+     * ⚠️ 排查历程（每一步都有实测日志支撑，不是推测）：
      *
-     *   ② 找不到就退回浏览器。
+     *   坑 1｜**包可见性**。Android 11（API 30）起 `queryIntentActivities()` /
+     *        `getApplicationInfo()` 默认只能看到浏览器这类「默认可见」的包。
+     *        → 在 Manifest 的 `<queries>` 里加 `<package android:name="com.github.android"/>`
+     *          直接点名后，`已安装=true` 就能读到了。
      *
-     *   ③ 整个流程 try 住：任何一步异常都不能让登录卡死。
+     *   坑 2｜**GitHub App 没注册 `https` 的 VIEW intent-filter**。
+     *        实测 `ACTION_VIEW(https) + setPackage` 抛 `ActivityNotFoundException`，
+     *        且 `queryIntentActivities` 结果里只有 Chrome。
+     *        → 所以放弃「问系统谁能处理这个 https」，改成主动进包里去开。
      *
-     * ⚠️ 为什么之前一直走浏览器（三个坑叠在一起，都已修）：
-     *
-     *   坑 1｜包可见性。Android 11（API 30）起 `queryIntentActivities()`
-     *        默认只能看到系统浏览器这类「默认可见」的包，GitHub App 直接被过滤掉。
-     *        必须在 Manifest 里声明 `<queries>`（已加）。
-     *
-     *   坑 2｜**不能用 `setPackage`**。GitHub App 对 github.com 用的是
-     *        App Links（`android:autoVerify="true"`）：系统只有在**不指定包名**、
-     *        走完整 App Links 验证流程时才会把链接交给它。
-     *        一旦 `setPackage("com.github.android")` 强制锁定包名，
-     *        系统就改成「在这个包内找能处理该 intent 的 activity」，
-     *        而它的 activity 只声明了 autoVerify 的 App Links、没有普通
-     *        BROWSABLE filter → 找不到 → ActivityNotFoundException → 退回浏览器。
-     *
-     *   坑 3｜应该**直接用 `queryIntentActivities` 返回的 ComponentName 启动**。
-     *        那是系统自己算出来的「谁真的能接住这个链接」，
-     *        比我们猜包名可靠得多。
+     *   坑 3｜**`github://` 的 path 不能自己拼**。
+     *        实测 `github://github.com/login/device` 虽然「启动成功」，
+     *        但系统弹的是「选择打开方式」且列表里没有 GitHub —— path 不匹配。
+     *        → 改试裸 `github://`（最保守，能匹配它任何一条规则）。
+     *          具体它认哪种格式，靠 [probeSchemes] 反向探测得出，不靠猜。
      */
     private fun openDeviceVerification(verificationUri: String): Boolean {
         val uri = Uri.parse(verificationUri)
@@ -782,7 +779,7 @@ import kotlin.math.roundToInt
         for (pkg in GITHUB_APP_PACKAGES) {
             if (isInstalled(pkg)) {
                 debugLog("$pkg 已安装，尝试用它打开")
-                dumpIntentFilters(pkg)
+                probeSchemes(pkg)
                 if (launchInPackage(pkg, uri)) {
                     debugLog("已用 GitHub App 拉起 ✓")
                     return true
@@ -813,77 +810,13 @@ import kotlin.math.roundToInt
     }
 
     /**
-     * 诊断用：列出某个包声明的所有 intent-filter（activity + action + scheme + host + path）。
+     * 诊断用：探明 GitHub App 到底接受哪些链接格式。
      *
-     * 目的：`github://login/device` 到底对不对，不能猜 ——
-     * 直接把 GitHub App 自己声明的深链规则打出来，照着它的格式构造。
+     * ⚠️ **不去读它的 AndroidManifest 声明** —— `ActivityInfo.intentFilters`
+     *    在 Kotlin 里没有可用的 getter（编译不过），而且要 API 33+ 且有系统限制。
      *
-     * ⚠️ 临时（v0.0.19）。定位完删。
-     */
-    private fun dumpIntentFilters(pkg: String) {
-        try {
-            /*
-              ⚠️ 想读 activity.intentFilters，必须带 GET_INTENT_FILTERS。
-              不过它在 API 33+ 才有效、且部分是系统应用专属 ——
-              拿不到时就用「反向探测」兜底：逐个 scheme 试 queryIntentActivities。
-
-              GET_INTENT_FILTERS 常量本身是 API 30 才加的，而 minSdk 是 26，
-              直接引用会触发 lint 报错，所以用数值（0x800000 = 8388608）。
-            */
-            @Suppress("DEPRECATION")
-            val flags = android.content.pm.PackageManager.GET_ACTIVITIES or GET_INTENT_FILTERS_FLAG
-            val info = packageManager.getPackageInfo(pkg, flags)
-            val activities = info.activities
-
-            var shown = 0
-            if (activities != null) {
-                debugLog("$pkg 共 ${activities.size} 个 activity")
-                for (act in activities) {
-                    val filters = act.intentFilters
-                    if (filters == null) continue
-                    for (f in filters) {
-                        val schemes = mutableListOf<String>()
-                        for (i in 0 until f.countDataSchemes()) {
-                            val scheme = f.getDataScheme(i) ?: continue
-                            var one = scheme
-                            for (j in 0 until f.countDataAuthorities()) {
-                                val auth = f.getDataAuthority(j) ?: continue
-                                if (auth.scheme != scheme) continue
-                                one += "://" + (auth.host ?: "?")
-                                for (k in 0 until f.countDataPaths()) {
-                                    val p = f.getDataPath(k) ?: continue
-                                    one += p.path
-                                }
-                            }
-                            schemes.add(one)
-                        }
-                        if (schemes.isEmpty()) continue
-
-                        shown++
-                        if (shown > 25) break
-                        val actions = f.actions?.joinToString(",") ?: ""
-                        debugLog("  · ${act.name}  action=[$actions]")
-                        debugLog("      data=${schemes.joinToString("  ")}")
-                    }
-                    if (shown > 25) break
-                }
-            }
-
-            if (shown == 0) {
-                debugLog("$pkg 读不到 intent-filter（可能被系统限制），改用反向探测")
-                probeSchemes(pkg)
-            }
-        } catch (t: Throwable) {
-            debugLog("枚举 $pkg 的 intent-filter 失败：${t.javaClass.simpleName} ${t.message}")
-            probeSchemes(pkg)
-        }
-    }
-
-    /**
-     * 反向探测：拿一批候选 scheme 逐个试，看哪些真的能被该包处理。
-     *
-     * 这是「读不到 intentFilters」时的可靠替代 ——
-     * 直接问系统「这个链接交给这个包行不行」，比读声明更接近真实行为。
+     *    改用**反向探测**：拿一批候选链接逐个问系统
+     *    「这个链接交给这个包，行不行？」—— 这本来就更接近真实行为。
      *
      * ⚠️ 临时（v0.0.19）。定位完删。
      */
@@ -892,19 +825,27 @@ import kotlin.math.roundToInt
             "github://",
             "github://github.com",
             "github://login/device",
+            "github://github.com/login/device",
             "https://github.com/login/device",
             "https://github.com",
+            "https://github.com/login",
         )
+        debugLog("$pkg 的链接接受情况：")
         for (raw in candidates) {
             val probe = android.content.Intent(
                 android.content.Intent.ACTION_VIEW, Uri.parse(raw)
             ).apply { setPackage(pkg) }
-            val hit = try {
-                packageManager.queryIntentActivities(probe, 0)
+            val count = try {
+                packageManager.queryIntentActivities(probe, 0).size
             } catch (t: Throwable) {
-                emptyList()
+                -1
             }
-            debugLog("  探测 $raw → ${if (hit.isEmpty()) "无匹配" else hit.size.toString() + " 个"}")
+            val verdict = when {
+                count < 0 -> "查询异常"
+                count == 0 -> "无匹配"
+                else -> "可处理（$count 个）"
+            }
+            debugLog("  $raw → $verdict")
         }
     }
 
@@ -1185,14 +1126,6 @@ import kotlin.math.roundToInt
 
         /** 下载好的更新包放在 cacheDir/update/<version>/ */
         const val UPDATE_DIR = "update"
-
-        /**
-         * `PackageManager.GET_INTENT_FILTERS` 的数值。
-         *
-         * 常量本身是 API 30 才加的，而 minSdk = 26，直接引用会 lint 报错；
-         * 但它只是 flag 位，用数值等价。API 33+ 才真正返回 intentFilters。
-         */
-        const val GET_INTENT_FILTERS_FLAG = 0x800000
 
         /**
          * GitHub 官方 Android App 的包名。
