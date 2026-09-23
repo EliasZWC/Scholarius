@@ -822,51 +822,89 @@ import kotlin.math.roundToInt
      */
     private fun dumpIntentFilters(pkg: String) {
         try {
-            val info = packageManager.getPackageInfo(
-                pkg,
-                android.content.pm.PackageManager.GET_ACTIVITIES
-            )
+            /*
+              ⚠️ 想读 activity.intentFilters，必须带 GET_INTENT_FILTERS。
+              不过它在 API 33+ 才有效、且部分是系统应用专属 ——
+              拿不到时就用「反向探测」兜底：逐个 scheme 试 queryIntentActivities。
+
+              GET_INTENT_FILTERS 常量本身是 API 30 才加的，而 minSdk 是 26，
+              直接引用会触发 lint 报错，所以用数值（0x800000 = 8388608）。
+            */
+            @Suppress("DEPRECATION")
+            val flags = android.content.pm.PackageManager.GET_ACTIVITIES or GET_INTENT_FILTERS_FLAG
+            val info = packageManager.getPackageInfo(pkg, flags)
             val activities = info.activities
-            if (activities == null) {
-                debugLog("$pkg 没读到 activity 列表")
-                return
-            }
-            debugLog("$pkg 共 ${activities.size} 个 activity")
 
             var shown = 0
-            for (act in activities) {
-                val filters = act.intentFilters ?: continue
-                for (f in filters) {
-                    val schemes = mutableListOf<String>()
-                    for (i in 0 until f.countDataSchemes()) {
-                        val scheme = f.getDataScheme(i) ?: continue
-                        var one = scheme
-                        for (j in 0 until f.countDataAuthorities()) {
-                            val auth = f.getDataAuthority(j) ?: continue
-                            if (auth.scheme != scheme) continue
-                            one += "://" + (auth.host ?: "?")
-                            for (k in 0 until f.countDataPaths()) {
-                                val p = f.getDataPath(k) ?: continue
-                                one += p.path
+            if (activities != null) {
+                debugLog("$pkg 共 ${activities.size} 个 activity")
+                for (act in activities) {
+                    val filters = act.intentFilters
+                    if (filters == null) continue
+                    for (f in filters) {
+                        val schemes = mutableListOf<String>()
+                        for (i in 0 until f.countDataSchemes()) {
+                            val scheme = f.getDataScheme(i) ?: continue
+                            var one = scheme
+                            for (j in 0 until f.countDataAuthorities()) {
+                                val auth = f.getDataAuthority(j) ?: continue
+                                if (auth.scheme != scheme) continue
+                                one += "://" + (auth.host ?: "?")
+                                for (k in 0 until f.countDataPaths()) {
+                                    val p = f.getDataPath(k) ?: continue
+                                    one += p.path
+                                }
                             }
+                            schemes.add(one)
                         }
-                        schemes.add(one)
-                    }
-                    if (schemes.isEmpty()) continue
+                        if (schemes.isEmpty()) continue
 
-                    shown++
-                    if (shown > 25) return
-                    val actions = f.actions?.joinToString(",") ?: ""
-                    debugLog("  · ${act.name}")
-                    debugLog("      action=[$actions]")
-                    debugLog("      data=${schemes.joinToString("  ")}")
+                        shown++
+                        if (shown > 25) break
+                        val actions = f.actions?.joinToString(",") ?: ""
+                        debugLog("  · ${act.name}  action=[$actions]")
+                        debugLog("      data=${schemes.joinToString("  ")}")
+                    }
+                    if (shown > 25) break
                 }
             }
+
             if (shown == 0) {
-                debugLog("$pkg 没有任何带 scheme 的 intent-filter")
+                debugLog("$pkg 读不到 intent-filter（可能被系统限制），改用反向探测")
+                probeSchemes(pkg)
             }
         } catch (t: Throwable) {
             debugLog("枚举 $pkg 的 intent-filter 失败：${t.javaClass.simpleName} ${t.message}")
+            probeSchemes(pkg)
+        }
+    }
+
+    /**
+     * 反向探测：拿一批候选 scheme 逐个试，看哪些真的能被该包处理。
+     *
+     * 这是「读不到 intentFilters」时的可靠替代 ——
+     * 直接问系统「这个链接交给这个包行不行」，比读声明更接近真实行为。
+     *
+     * ⚠️ 临时（v0.0.19）。定位完删。
+     */
+    private fun probeSchemes(pkg: String) {
+        val candidates = listOf(
+            "github://",
+            "github://github.com",
+            "github://login/device",
+            "https://github.com/login/device",
+            "https://github.com",
+        )
+        for (raw in candidates) {
+            val probe = android.content.Intent(
+                android.content.Intent.ACTION_VIEW, Uri.parse(raw)
+            ).apply { setPackage(pkg) }
+            val hit = try {
+                packageManager.queryIntentActivities(probe, 0)
+            } catch (t: Throwable) {
+                emptyList()
+            }
+            debugLog("  探测 $raw → ${if (hit.isEmpty()) "无匹配" else hit.size.toString() + " 个"}")
         }
     }
 
@@ -1147,6 +1185,14 @@ import kotlin.math.roundToInt
 
         /** 下载好的更新包放在 cacheDir/update/<version>/ */
         const val UPDATE_DIR = "update"
+
+        /**
+         * `PackageManager.GET_INTENT_FILTERS` 的数值。
+         *
+         * 常量本身是 API 30 才加的，而 minSdk = 26，直接引用会 lint 报错；
+         * 但它只是 flag 位，用数值等价。API 33+ 才真正返回 intentFilters。
+         */
+        const val GET_INTENT_FILTERS_FLAG = 0x800000
 
         /**
          * GitHub 官方 Android App 的包名。
