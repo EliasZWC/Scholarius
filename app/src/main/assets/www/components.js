@@ -222,6 +222,8 @@
      */
     function createRowPicker(row, valueEl, config) {
         var menu = null;
+        /** 菜单的全屏蒙层。必须与 menu 同生共死，见 closeMenu 的说明。 */
+        var scrim = null;
 
         function refresh() {
             var value = config.getValue();
@@ -240,7 +242,29 @@
             row.disabled = config.isDisabled ? !!config.isDisabled() : false;
         }
 
+        /**
+         * 收起菜单。
+         *
+         * ⚠️⚠️ 必须**同时移除蒙层** —— 这里曾造成「选完一项后整个应用冻结」。
+         *
+         * 原来的写法只移除 menu（而且是在 180ms 后用 setTimeout 延迟移除），
+         * 那个全屏蒙层 `.row-menu-scrim` 从来没人删。蒙层覆盖整个视口、
+         * 又在 body 最后（层级最高），于是选完任何一项之后，
+         * 之后所有点击都落在蒙层上 —— 表现为「整个应用冻结、按钮全失效」。
+         *
+         * 实测证据（冻结时）：
+         *   scrimsAfterSelect = 1
+         *   scrimRect = 0,0 → 412×915（全屏）
+         *   elementFromPoint(设置项按钮) = "row-menu-scrim"
+         */
         function closeMenu() {
+            if (scrim) {
+                if (scrim.parentNode) {
+                    scrim.parentNode.removeChild(scrim);
+                }
+                scrim = null;
+            }
+
             if (!menu) {
                 return;
             }
@@ -303,7 +327,7 @@
             });
 
             // 蒙层：点别处就收起
-            var scrim = document.createElement('div');
+            scrim = document.createElement('div');
             scrim.className = 'row-menu-scrim';
             scrim.addEventListener('click', closeMenu);
 

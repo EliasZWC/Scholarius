@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -13,7 +14,6 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.zip.ZipFile
 
 /**
  * 应用内更新。
@@ -361,9 +361,9 @@ object Updater {
         }
 
         // ③ 包结构 + 版本号
-        val version = readApkVersionName(file)
+        val version = readApkVersionName(context, file)
         if (version == null) {
-            Log.w(TAG, "校验失败：读不到包内 versionName（zip 里没有 AndroidManifest.xml？）")
+            Log.w(TAG, "校验失败：读不到包内 versionName（文件不是合法 APK？）")
             throw UpdateException(ERROR_INVALID)
         }
         if (!sameVersion(version, release.version)) {
@@ -409,41 +409,41 @@ object Updater {
     }
 
     /**
-     * 直接从 APK（zip）里读 AndroidManifest 拿版本号。
-     * 不依赖 PackageManager —— 包还没安装，查不到。
+     * 读 APK 里的 versionName。
+     *
+     * ⚠️ 用系统 API `PackageManager.getPackageArchiveInfo()`，**不要自己解析 AXML**。
+     *
+     * 之前这里是自己扫二进制 AndroidManifest 找 `\d+\.\d+\.\d+` 字面量，
+     * 那是**不可靠的**，实测在真实 APK 上直接抓不到版本号：
+     *
+     *   · AXML 的字符串池是 **UTF-16LE** 编码，不是 ASCII。
+     *     按单字节扫时，宽字符的高位字节变成 \u0000，把 "0.0.26"
+     *     这类字符串从中间切断，正则自然匹配不到。
+     *   · 即使编码对了，字符串池里还可能混有别的 x.y.z 字面量
+     *     （第三方库版本号），可能取错。
+     *
+     * 实测证据（对 v0.0.26 的正式 APK 复刻该算法）：
+     *   AndroidManifest.xml = 6656 bytes
+     *   versionName candidates = []          ← 一个都没有
+     * 于是 readApkVersionName 返回 null → ERROR_INVALID
+     * → 弹窗报「不是合法 APK」。而 APK 本身完全正常
+     *   （6809414 字节、PK 魔数、zip 结构完好、含 AndroidManifest.xml）。
+     *
+     * `getPackageArchiveInfo` 就是系统给「读取未安装 APK 信息」用的 API，
+     * 它内部按 AXML 规范解析，结果可靠。拿不到（文件损坏/非 APK）时返回 null，
+     * 正好作为「不是合法 APK」的判据。
      */
-    private fun readApkVersionName(apk: File): String? = try {
-        ZipFile(apk).use { zip ->
-            val entry = zip.getEntry("AndroidManifest.xml") ?: return null
-            val bytes = zip.getInputStream(entry).use { it.readBytes() }
-            readVersionFromBinaryManifest(bytes)
-        }
+    private fun readApkVersionName(context: Context, apk: File): String? = try {
+        @Suppress("DEPRECATION")
+        val info = context.packageManager.getPackageArchiveInfo(
+            apk.absolutePath,
+            PackageManager.GET_ACTIVITIES,
+        )
+        val name = info?.versionName?.trim()
+        if (name.isNullOrEmpty()) null else name
     } catch (t: Throwable) {
         Log.w(TAG, "读取 APK 版本失败", t)
         null
-    }
-
-    /**
-     * 从编译过的（二进制）AndroidManifest 里捞 versionName。
-     *
-     * 这里不做完整的 AXML 解析，而是找字符串池里的版本号字面量 —— 够用且不引依赖。
-     * 版本号在字符串池里一定是独立的一项，形如 "0.0.2"。
-     */
-    private fun readVersionFromBinaryManifest(bytes: ByteArray): String? {
-        val text = buildString {
-            var index = 0
-            while (index < bytes.size) {
-                val ch = bytes[index].toInt() and 0xFF
-                // 只接受可打印 ASCII，其余当分隔符
-                if (ch in 0x20..0x7E) append(ch.toChar()) else append('\u0000')
-                index++
-            }
-        }
-
-        return Regex("\\b\\d+\\.\\d+\\.\\d+\\b")
-            .findAll(text)
-            .map { it.value }
-            .firstOrNull()
     }
 
     private fun safeFileName(version: String): String =
