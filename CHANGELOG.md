@@ -4,6 +4,32 @@
 
 ---
 
+## [0.0.9] - 2026-09-23
+
+### 修复
+
+- **永远检测不到更新（死锁）**：`updateFlowActive` 一旦卡在 `true` 就再没人清。
+
+  复现路径：点更新 → 下载成功 → `Updater.install()` 返回 `ERROR_PERMISSION`
+  （没给「安装未知应用」权限）→ 把用户送去系统设置页，同时
+  `updateFlowActive` **保持 `true`**（弹窗还开着）。
+  但用户回来后如果没点弹窗、或直接退出重进 app，这个 `true` 就没人清 ——
+  之后每次 `maybeCheckUpdate()` 都在第一行被它挡住：
+
+  ```kotlin
+  if (updateChecked || updateFlowActive || !pageReady) return
+  ```
+
+  修法两道：
+  1. `onResume` 里若发现离开超过 `UPDATE_FLOW_RESUME_GRACE_MS`（2s），
+     判定为「流程已中断」并清掉残留状态。
+  2. 手动点「版本」行时显式清掉残留状态，保证用户永远有一个
+     **一定能突破死锁**的入口。
+
+  > 这就是为什么装了 v0.0.7 也收不到 v0.0.8 的更新提示。
+
+---
+
 ## [0.0.8] - 2026-09-23
 
 ### 修复
@@ -288,3 +314,4 @@
 [0.0.6]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.6
 [0.0.7]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.7
 [0.0.8]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.8
+[0.0.9]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.9

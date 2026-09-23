@@ -5,6 +5,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
@@ -82,6 +83,12 @@ import kotlin.math.roundToInt
 
     /** 正在下载，防止连点「更新」重复下载 */
     private var downloading = false
+
+    /**
+     * 退到后台的时刻（`SystemClock.elapsedRealtime()`）。
+     * 用于 `onResume` 判断离开多久，见那里对「updateFlowActive 死锁」的说明。
+     */
+    private var leftForegroundAt = 0L
 
     /**
      * 网页是否已经画出第一帧。
@@ -442,7 +449,37 @@ import kotlin.math.roundToInt
     /** 用户主动点「检查更新」：忽略「本次已查过」的限制 */
     private fun checkUpdateManually() {
         updateChecked = true
+        /*
+          ⚠️ 手动检查必须能突破 updateFlowActive 的死锁。
+
+          为什么会有死锁：Updater.install() 返回 ERROR_PERMISSION（没给
+          「安装未知应用」权限）时，我们把用户送去系统设置页，同时
+          updateFlowActive 保持 true（弹窗还开着，等用户回来重试）。
+          但如果用户从设置页回来后**没再点弹窗**、或者直接杀了 app 重进，
+          这个 true 就再也没人清 —— 之后所有检查都被
+          `if (updateFlowActive) return@check` 吞掉，表现为「永远检测不到更新」。
+
+          手动点击是用户的明确意图，此时重置流程状态重新检查。
+        */
+        resetUpdateFlowForManualCheck()
         runUpdateCheck(notifyWhenUpToDate = true)
+    }
+
+    /**
+     * 手动检查前清掉可能残留的流程状态。
+     *
+     * 只清「流程」标记，**不清 downloadedApk** —— 若上次真下载好了包，
+     * 留着它用户还能通过弹窗重试安装，重新下载是浪费流量。
+     */
+    private fun resetUpdateFlowForManualCheck() {
+        if (updateFlowActive) {
+            Log.i(TAG, "[update] 手动检查：清除残留的 updateFlowActive")
+            updateFlowActive = false
+        }
+        if (downloading) {
+            Log.i(TAG, "[update] 手动检查：清除残留的 downloading")
+            downloading = false
+        }
     }
 
     /** 进入前台时自动查一次（每次进入只查一次，省 API 限额） */
@@ -832,23 +869,33 @@ import kotlin.math.roundToInt
         */
         if (!updateFlowActive) {
             updateChecked = false
+        } else {
+            /*
+              ⚠️ 这里防的是「updateFlowActive 死锁」——它曾导致永远检测不到更新。
+
+              场景：Updater.install() 返回 ERROR_PERMISSION，我们把用户送去
+              「安装未知应用」设置页，updateFlowActive 保持 true（弹窗还开着）。
+              但如果用户回来后没点弹窗、或直接退出重进 app，这个 true 就没人清 ——
+              之后每次 maybeCheckUpdate() 都在第一行被它挡住。
+
+              判据：从后台回来时若已离开足够久，说明用户那边的事已经办完，
+              把流程状态交还给检查逻辑。
+              残留的 downloadedApk 不动 —— 若包真下好了，弹窗重试安装仍能用。
+            */
+            val away = SystemClock.elapsedRealtime() - leftForegroundAt
+            if (away > UPDATE_FLOW_RESUME_GRACE_MS) {
+                Log.i(TAG, "[update] 离开 ${away}ms 后回到前台，清除残留流程状态")
+                updateFlowActive = false
+                downloading = false
+                updateChecked = false
+            }
         }
         maybeCheckUpdate()
     }
 
     override fun onStop() {
         super.onStop()
-        /*
-          退到后台再回来算「重新进入 app」；更新流程进行中不重置，
-          否则从系统安装器切回来会又弹一次窗。
-
-          ⚠️ onStop 也会在「拉起安装器」时触发 —— 这正是要防护的场景。
-          所以 downloading / downloadedApk 非空期间也不能重置标记；
-          单看 updateFlowActive 不够，因为下载失败时它会被置回 false。
-        */
-        if (!updateFlowActive && !downloading && downloadedApk == null) {
-            updateChecked = false
-        }
+        leftForegroundAt = SystemClock.elapsedRealtime()
     }
 
     override fun onDestroy() {
@@ -870,6 +917,24 @@ import kotlin.math.roundToInt
 
         /** 网页一直没通知启动动画结束时的兜底时长（网页那边约 2.2s） */
         const val SPLASH_TIMEOUT_MS = 4000L
+
+        /**
+         * 从后台回来时，离开超过这个时长就认为「更新流程已中断」，清掉残留状态。
+         *
+         * 取值考虑：拉起系统安装器 / 跳「安装未知应用」设置页，用户操作通常
+         * 几十秒到几分钟。2 秒的宽容度足以区分「只是切出去看一眼又马上回来」
+         * （不该清，清了会重复弹窗）与「用户去别处办事了」（该清）。
+         */
+        const val UPDATE_FLOW_RESUME_GRACE_MS = 2_000L
+
+        /**
+         * 从后台回来时，离开超过这个时长就认为「更新流程已中断」，清掉残留状态。
+         *
+         * 取值考虑：拉起系统安装器 / 跳「安装未知应用」设置页，用户操作通常
+         * 几十秒到几分钟。2 秒的宽容度足以区分「只是切出去看一眼又马上回来」
+         * （不该清，清了会重复弹窗）与「用户去别处办事了」（该清）。
+         */
+        const val UPDATE_FLOW_RESUME_GRACE_MS = 2_000L
 
         const val PREFS_NAME = "scholarius"
         const val KEY_THEME_MODE = "theme_mode"
