@@ -537,23 +537,21 @@ import kotlin.math.roundToInt
     /** 进入前台时自动查一次（每次进入只查一次，省 API 限额） */
     private fun maybeCheckUpdate() {
         if (updateChecked || updateFlowActive || !pageReady) {
-            Log.i(TAG, "[update] 跳过自动检查：" +
-                "updateChecked=$updateChecked " +
-                "updateFlowActive=$updateFlowActive " +
-                "pageReady=$pageReady")
+            debugLog("[update] 跳过检查：updateChecked=$updateChecked " +
+                "updateFlowActive=$updateFlowActive pageReady=$pageReady")
             return
         }
         updateChecked = true
-        Log.i(TAG, "[update] 开始自动检查（当前 ${Updater.installedVersionName(this)}）")
+        debugLog("[update] 开始检查（当前 ${Updater.installedVersionName(this)}）")
         runUpdateCheck(notifyWhenUpToDate = false)
     }
 
     private fun runUpdateCheck(notifyWhenUpToDate: Boolean) {
         val installedNow = Updater.installedVersionName(this)
 
-        Updater.check(this) { release ->
+        Updater.check(this, onLog = { debugLog("[update] $it") }) { release ->
             if (release == null) {
-                Log.i(TAG, "[update] 检查结果：无新版本（或查询失败）")
+                debugLog("[update] 无新版本（或查询失败）")
                 if (notifyWhenUpToDate) {
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.onUpdateNone();"
@@ -562,10 +560,10 @@ import kotlin.math.roundToInt
                 return@check
             }
             if (updateFlowActive) {
-                Log.i(TAG, "[update] 发现 ${release.version} 但流程已在跑，忽略")
+                debugLog("[update] 发现 ${release.version} 但流程已在跑，忽略")
                 return@check
             }
-            Log.i(TAG, "[update] 发现新版本 ${release.version}，弹窗")
+            debugLog("[update] 发现新版本 ${release.version}，弹窗")
 
             updateFlowActive = true
             pendingRelease = release

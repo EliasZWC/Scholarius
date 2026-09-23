@@ -33,6 +33,25 @@
 
 ---
 
+## [0.0.16] - 2026-09-23
+
+### 诊断（临时）
+
+把**更新检测**的日志也接到屏幕浮层上（之前只有 `Log.i`，手机看不到）：
+
+- `Updater.check()` 新增 `onLog` 参数，逐步输出：
+  - 请求的 Release API 地址与当前版本
+  - HTTP 状态码
+  - `tag_name`
+  - `assets` 数量与每个 asset 名
+  - 版本比较结果（有新版本 / 不大于当前 / 解析失败）
+- `maybeCheckUpdate()` 跳过时会打印三个条件的具体值：
+  `updateChecked` / `updateFlowActive` / `pageReady`。
+
+装上后打开应用，对屏幕底部截图即可看出为何收不到更新。
+
+---
+
 ## [0.0.15] - 2026-09-23
 
 ### 诊断（临时）
@@ -522,3 +541,4 @@
 [0.0.13]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.13
 [0.0.14]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.14
 [0.0.15]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.15
+[0.0.16]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.16

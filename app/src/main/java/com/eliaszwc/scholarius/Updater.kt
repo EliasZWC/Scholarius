@@ -62,30 +62,47 @@ object Updater {
     // 查版本
     // -----------------------------------------------------------------------
 
-    /** 有新版本时回调非 null；网络/解析出错或已是最新都回调 null */
-    fun check(context: Context, onResult: (Release?) -> Unit) {
+    /**
+     * 有新版本时回调非 null；网络/解析出错或已是最新都回调 null。
+     *
+     * @param onLog 诊断用日志回调（临时，v0.0.16）。传 null 则只进 logcat。
+     */
+    fun check(
+        context: Context,
+        onLog: ((String) -> Unit)? = null,
+        onResult: (Release?) -> Unit,
+    ) {
         val localVersion = installedVersionName(context)
-        Log.i(TAG, "[update] 查询 $releaseApiUrl（当前 $localVersion）")
+        log(onLog, "查询 $releaseApiUrl（当前 $localVersion）")
 
         Thread {
             val release = try {
-                fetchLatest()
+                fetchLatest(onLog)
             } catch (t: Throwable) {
                 Log.w(TAG, "[update] 检查更新抛异常", t)
+                log(onLog, "检查异常：${t.javaClass.simpleName} ${t.message}")
                 null
             }
 
             val newer = release?.takeIf { localVersion != null && isNewer(it.version, localVersion) }
             if (newer != null) {
-                Log.i(TAG, "[update] 发现新版本 ${newer.version}（当前 $localVersion）")
+                log(onLog, "有新版本 ${newer.version}（当前 $localVersion）")
             } else if (release != null) {
-                Log.i(TAG, "[update] 最新版本 ${release.version} 不大于当前 $localVersion")
+                log(onLog, "最新 ${release.version} 不大于当前 $localVersion")
+            } else {
+                log(onLog, "Release 解析失败或为空")
             }
             MainThread.post { onResult(newer) }
         }.start()
     }
 
-    private fun fetchLatest(): Release? {
+    /** 同时写 logcat 与（可选的）界面日志 */
+    private fun log(onLog: ((String) -> Unit)?, message: String) {
+        Log.i(TAG, "[update] $message")
+        onLog?.invoke(message)
+    }
+
+    private fun fetchLatest(onLog: ((String) -> Unit)?): Release? {
         val connection = (URL(releaseApiUrl).openConnection() as HttpURLConnection).apply {
             connectTimeout = 10_000
             readTimeout = 15_000
@@ -95,22 +112,25 @@ object Updater {
 
         try {
             val code = connection.responseCode
-            Log.i(TAG, "[update] Release API 返回 HTTP $code")
+            log(onLog, "API 返回 HTTP $code")
             if (code != HttpURLConnection.HTTP_OK) {
-                Log.w(TAG, "[update] 查询 Release 失败：HTTP $code")
+                Log.w(TAG, "查询 Release 失败：HTTP $code")
                 return null
             }
 
             val body = connection.inputStream.bufferedReader().use { it.readText() }
             val json = JSONObject(body)
             val tag = json.optString("tag_name").trim()
+            log(onLog, "tag_name='$tag'")
             if (tag.isEmpty()) return null
 
             val assets = json.optJSONArray("assets") ?: return null
+            log(onLog, "assets 共 ${assets.length()} 个")
             for (index in 0 until assets.length()) {
                 val asset = assets.optJSONObject(index) ?: continue
                 val name = asset.optString("name")
                 val url = asset.optString("browser_download_url")
+                log(onLog, "  asset: $name")
                 if (!name.endsWith(".apk", ignoreCase = true) || url.isEmpty()) continue
                 return Release(
                     version = tag.removePrefix("v"),
