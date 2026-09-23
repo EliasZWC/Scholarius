@@ -1,17 +1,17 @@
-﻿plugins {
+plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
 // ---------------------------------------------------------------------------
-// 鐗堟湰鍙凤細鍞竴鏉ユ簮銆傚彧鏈夋槑纭姹傚彂鐗堟椂鎵嶄慨鏀硅繖涓や釜鍊笺€?
-// versionCode 姣忔鍙戠増 +1锛泇ersionName 蹇呴』涓?Git 鏍囩 vX.Y.Z 涓殑 X.Y.Z 涓€鑷淬€?
+// 版本号：唯一来源。只有明确要求发版时才修改这两个值。
+// versionCode 每次发版 +1；versionName 必须与 Git 标签 vX.Y.Z 中的 X.Y.Z 一致。
 // ---------------------------------------------------------------------------
 val appVersionCode = 23
 val appVersionName = "0.0.23"
 
-// 鍙€夛細浠庣幆澧冨彉閲忚鍙栧彂甯冪鍚嶏紙鐢?GitHub Actions 娉ㄥ叆锛夈€?
-// 鏈厤缃椂鍥為€€鍒?debug 绛惧悕锛屼繚璇佸伐浣滄祦濮嬬粓鑳戒骇鍑哄彲瀹夎鐨?APK銆?
+// 可选：从环境变量读取发布签名（由 GitHub Actions 注入）。
+// 未配置时回退到 debug 签名，保证工作流始终能产出可安装的 APK。
 val envKeystoreFile: String? = System.getenv("KEYSTORE_FILE")
 val envKeystorePassword: String? = System.getenv("KEYSTORE_PASSWORD")
 val envKeyAlias: String? = System.getenv("KEY_ALIAS")
@@ -31,22 +31,22 @@ android {
         versionName = appVersionName
 
         /*
-           GitHub OAuth App 鐨?client_id锛圖evice Flow 鐢級銆?
+           GitHub OAuth App 的 client_id（Device Flow 用）。
 
-           瀹?*涓嶆槸瀵嗛挜**锛屾槑鏂囧啓鍦?APK 閲屾槸 Device Flow 鐨勮璁″厑璁哥殑
-           鈥斺€?杩欐鏄€?Device Flow 鑰岄潪甯歌 OAuth 鐨勫師鍥狅細绾鎴风 app
-           鏃犳硶瀹夊叏淇濆瓨 client_secret锛屾墍浠ュ共鑴嗕笉鐢?secret銆?
+           它**不是密钥**，明文写在 APK 里是 Device Flow 的设计允许的
+           —— 这正是选 Device Flow 而非常规 OAuth 的原因：纯客户端 app
+           无法安全保存 client_secret，所以干脆不用 secret。
 
-           鍊兼斁鍦?gradle.properties锛圙ITHUB_CLIENT_ID锛夛紝鏀圭殑鏃跺€欎笉鐢ㄥ姩杩欎釜鏂囦欢銆?
-           娉ㄥ唽璺緞锛欸itHub 鈫?Settings 鈫?Developer settings 鈫?OAuth Apps
-           娉ㄦ剰涓嶈鐢ㄦ梺杈圭殑 GitHub Apps 鈥斺€?閭ｄ釜涓嶆敮鎸?Device Flow銆?
+           值放在 gradle.properties（GITHUB_CLIENT_ID），改的时候不用动这个文件。
+           注册路径：GitHub → Settings → Developer settings → OAuth Apps
+           注意不要用旁边的 GitHub Apps —— 那个不支持 Device Flow。
          */
         buildConfigField(
             "String",
             "GITHUB_CLIENT_ID",
             "\"" + (project.findProperty("GITHUB_CLIENT_ID") as String? ?: "") + "\"",
         )
-        // 浠撳簱鍦板潃锛氬簲鐢ㄥ唴鏇存柊瑕佹煡瀹冪殑 Release
+        // 仓库地址：应用内更新要查它的 Release
         buildConfigField(
             "String",
             "GITHUB_REPO",
@@ -61,7 +61,7 @@ android {
                 storePassword = envKeystorePassword
                 keyAlias = envKeyAlias
                 keyPassword = envKeyPassword
-                // 鐢?openssl 鐢熸垚鐨?PKCS12 瀵嗛挜搴擄紝鏄惧紡澹版槑閬垮厤渚?JDK 榛樿绫诲瀷
+                // 由 openssl 生成的 PKCS12 密钥库，显式声明避免依 JDK 默认类型
                 storeType = "PKCS12"
                 enableV1Signing = true
                 enableV2Signing = true
@@ -77,9 +77,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // 娌￠厤缃彂甯冨瘑閽ユ椂鐣欑┖锛岀敱涓嬮潰鐨勪换鍔″畧鍗洿鎺ユ姤閿欍€?
-            // 缁濅笉瑕佸洖閫€鍒?debug 绛惧悕锛欳I 姣忔鐢熸垚鐨?debug 瀵嗛挜閮戒笉鍚岋紝
-            // 浼氬鑷存柊鏃х増鏈鍚嶄笉涓€鑷淬€佹棤娉曡鐩栧畨瑁呫€?
+            // 没配置发布密钥时留空，由下面的任务守卫直接报错。
+            // 绝不要回退到 debug 签名：CI 每次生成的 debug 密钥都不同，
+            // 会导致新旧版本签名不一致、无法覆盖安装。
             signingConfig = if (hasReleaseKeystore) {
                 signingConfigs.getByName("release")
             } else {
@@ -93,7 +93,7 @@ android {
     }
 
     buildFeatures {
-        // 鐧诲綍瑕佽 BuildConfig.GITHUB_CLIENT_ID锛屾洿鏂拌璇?BuildConfig.GITHUB_REPO
+        // 登录要读 BuildConfig.GITHUB_CLIENT_ID，更新要读 BuildConfig.GITHUB_REPO
         buildConfig = true
     }
 
@@ -121,24 +121,24 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.webkit:webkit:1.12.1")
-    // 鍐峰惎鍔ㄧ涓€甯э細鎶婄郴缁熼粯璁ら偅寮犮€屾斁澶у簲鐢ㄥ浘鏍囥€嶇殑鍚姩椤垫崲鎴愮函鍝佺墝榛戯紙API 26+ 琛屼负涓€鑷达級
+    // 冷启动第一帧：把系统默认那张「放大应用图标」的启动页换成纯品牌黑（API 26+ 行为一致）
     implementation("androidx.core:core-splashscreen:1.0.1")
     /*
-       鐧诲綍 token 鐨勫姞瀵嗗瓨鍌紙AES256-GCM锛屼富瀵嗛挜瀛樺湪 Android Keystore锛夈€?
-       access token 绛変环浜庤处鍙峰瘑鐮侊紝缁濅笉鑳芥槑鏂囪惤鐩樸€?
-       娉ㄦ剰锛?.1.0-alpha06 鏄渶鍚庝竴涓笉闇€瑕?minSdk 23+ 涔嬪棰濆閰嶇疆鐨勭ǔ瀹氬彲鐢ㄧ増锛?
-       姝ｅ紡绋冲畾鐗?1.1.0 宸插彂甯冿紝鏀圭敤绋冲畾鐗堛€?
+       登录 token 的加密存储（AES256-GCM，主密钥存在 Android Keystore）。
+       access token 等价于账号密码，绝不能明文落盘。
+       注意：1.1.0-alpha06 是最后一个不需要 minSdk 23+ 之外额外配置的稳定可用版；
+       正式稳定版 1.1.0 已发布，改用稳定版。
      */
     implementation("androidx.security:security-crypto:1.1.0")
 }
 
-// 鍙戝竷鍖呭繀椤荤敤鍥哄畾瀵嗛挜绛惧悕锛屽惁鍒欑洿鎺ュけ璐ャ€?
+// 发布包必须用固定密钥签名，否则直接失败。
 tasks.matching { it.name.contains("Release") }.configureEach {
     doFirst {
         if (!hasReleaseKeystore) {
             throw GradleException(
-                "缂哄皯鍙戝竷绛惧悕锛氳鍏堣缃?KEYSTORE_FILE / KEYSTORE_PASSWORD / KEY_ALIAS / " +
-                    "KEY_PASSWORD 鐜鍙橀噺銆傜敤闅忔満 debug 瀵嗛挜绛惧悕浼氬鑷存棤娉曡鐩栧畨瑁呫€?
+                "缺少发布签名：请先设置 KEYSTORE_FILE / KEYSTORE_PASSWORD / KEY_ALIAS / " +
+                    "KEY_PASSWORD 环境变量。用随机 debug 密钥签名会导致无法覆盖安装。"
             )
         }
     }
