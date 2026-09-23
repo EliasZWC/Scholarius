@@ -27,7 +27,10 @@
     var currentTab = null;
     /** 原生推过来的登录状态；null 表示还没收到 */
     var signedIn = null;
+    /** 启动动画是否已播完 */
     var splashDone = false;
+    /** 是否需要退场（动画播完 && 登录状态已知，两个条件都满足才退） */
+    var pendingDismiss = false;
 
     /* ----------------------------------------------------------------------
        原生 → 网页 的入口。
@@ -71,7 +74,12 @@
             window.ScholariusLogin.setAccount(isSignedIn, login, name, avatarUrl);
         }
 
-        applyGate();
+        /*
+          注意调用的是 tryDismissSplash 而不是 applyGate：
+          状态可能在动画播完前就到了，那时不能直接放行
+          （会让启动页消失得过早）。两个条件都满足时它自己会退场。
+        */
+        tryDismissSplash();
     }
 
     function onLoginCode(userCode, verificationUri, expiresIn) {
@@ -262,21 +270,52 @@
      *   1) 播完通知原生，把窗口底色与系统栏图标切回正常主题；
      *   2) 把元素从文档树里摘掉，别留着挡住无障碍树；
      *   3) 触发登录门控 —— splash 演完才决定进哪个界面。
+     *
+     * ⚠️ 退场条件是**两个**：动画播完 **且** 登录状态已知。
+     *
+     * 为什么不能只看 animationend：原生的 setAccount() 到达时机不确定。
+     * 若动画先结束、状态后到达，而这里先把 splash 藏了，就会出现
+     * 「splash 没了、登录页还没显示、应用也藏着」的一段全黑。
+     * 反过来若状态先到、动画后结束，只看状态也会让 splash 提前消失
+     * —— 用户看到的就是「启动页一闪而过」。
+     *
+     * 所以两个条件都满足才退场；先到的那个只是记一个标记。
      */
     function setupSplash() {
         var splash = document.getElementById('splash');
         if (!splash) {
             splashDone = true;
-            applyGate();
+            tryDismissSplash();
             return;
         }
 
-        var closeSplash = function () {
-            if (splash.hidden) {
+        var markDone = function () {
+            if (splashDone) {
                 return;
             }
-            splash.hidden = true;
             splashDone = true;
+            tryDismissSplash();
+        };
+
+        splash.addEventListener('animationend', function (event) {
+            if (event.target === splash) {
+                markDone();
+            }
+        });
+
+        // 兜底：万一动画事件没来（比如系统把动画整个关掉了）
+        window.setTimeout(markDone, 3000);
+    }
+
+    /** 动画播完 且 登录状态已知 → 才收起启动页并放行 */
+    function tryDismissSplash() {
+        if (!splashDone || signedIn === null) {
+            return;
+        }
+
+        var splash = document.getElementById('splash');
+        if (splash && !splash.hidden) {
+            splash.hidden = true;
 
             try {
                 if (window.ScholariusNative &&
@@ -286,18 +325,9 @@
             } catch (e) {
                 /* 浏览器预览环境，忽略 */
             }
+        }
 
-            applyGate();
-        };
-
-        splash.addEventListener('animationend', function (event) {
-            if (event.target === splash) {
-                closeSplash();
-            }
-        });
-
-        // 兜底：万一动画事件没来（比如用户系统里把动画整个关掉了）
-        window.setTimeout(closeSplash, 3000);
+        applyGate();
     }
 
     // 暴露给后续功能扩展使用

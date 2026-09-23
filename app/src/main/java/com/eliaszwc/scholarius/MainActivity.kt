@@ -316,14 +316,14 @@ import kotlin.math.roundToInt
                 return@requestDeviceCode
             }
 
-            // 把 user_code 显示给用户，并自动打开浏览器让他去输
+            // 把 user_code 显示给用户，并自动跳去授权页（优先 GitHub App，其次浏览器）
             evaluateInWeb(
                 "window.ScholariusShell && window.ScholariusShell.onLoginCode(" +
                     "${quote(device.userCode)}, " +
                     "${quote(device.verificationUri)}, " +
                     "${device.expiresInSeconds});"
             )
-            openExternally(device.verificationUri)
+            openDeviceVerification(device.verificationUri)
 
             GitHubAuth.pollForToken(
                 deviceCode = device,
@@ -522,6 +522,48 @@ import kotlin.math.roundToInt
         false
     }
 
+    /**
+     * 打开 GitHub 设备授权页：**优先用 GitHub 手机 App，装不上才退回浏览器**。
+     *
+     * 为什么要特判：`https://github.com/login/device` 这个链接，系统解析时
+     * 浏览器一定接得住，但 GitHub App 装了的话体验好得多（已登录、直接出授权页）。
+     *
+     * 判定方式用 `resolveActivity` 而不是「先试着 startActivity 再 catch」：
+     *   · `resolveActivity` 不产生副作用，失败也没有窗口闪现
+     *   · 但要注意：**它返回的可能是浏览器**（浏览器也注册了 github.com 的
+     *     http/https filter），所以必须校验解析到的包名确实是 GitHub App，
+     *     否则「优先 App」等于没做。
+     *
+     * ⚠️ 为什么逐个 `setPackage` 试，而不是只查一次：
+     *   同一个 App 可能同时注册了 `https://github.com/...` 与自定义 scheme，
+     *   不同版本/不同渠道的包名也可能不同（`com.github.android` 是官方版）。
+     *   逐个显式指定包名探测最可靠，且探测失败无副作用。
+     */
+    private fun openDeviceVerification(verificationUri: String): Boolean {
+        val uri = Uri.parse(verificationUri)
+
+        // GitHub 官方 Android App。装了就优先用它
+        for (pkg in GITHUB_APP_PACKAGES) {
+            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri).apply {
+                setPackage(pkg)
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (intent.resolveActivity(packageManager) != null) {
+                try {
+                    startActivity(intent)
+                    Log.i(TAG, "用 GitHub App 打开授权页：$pkg")
+                    return true
+                } catch (t: Throwable) {
+                    // 探测到了却起不来（被禁用/权限问题），继续试下一个
+                    Log.w(TAG, "GitHub App ($pkg) 拉起失败，继续尝试", t)
+                }
+            }
+        }
+
+        Log.i(TAG, "未安装 GitHub App，退回浏览器")
+        return openExternally(verificationUri)
+    }
+
     private fun toDp(px: Int): Int = (px / resources.displayMetrics.density).roundToInt()
 
     // -----------------------------------------------------------------------
@@ -648,6 +690,16 @@ import kotlin.math.roundToInt
 
         /** 下载好的更新包放在 cacheDir/update/<version>/ */
         const val UPDATE_DIR = "update"
+
+        /**
+         * GitHub 官方 Android App 的包名。
+         * 授权页优先用它打开（已登录、体验好），装不上才退回浏览器。
+         * 列表形式是为了容错：官方版 / 可能的变体渠道包都能命中。
+         */
+        val GITHUB_APP_PACKAGES = listOf(
+            "com.github.android",
+        )
+
 
         /** 上次尝试安装的版本号，用来判断「装完没生效」 */
         const val KEY_PENDING_UPDATE = "pending_update_version"

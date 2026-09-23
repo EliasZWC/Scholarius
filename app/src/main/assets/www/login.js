@@ -24,6 +24,8 @@
     var waitEl = null;
     var errorEl = null;
     var actionBtn = null;
+    /** 按钮里的**文字**节点。按钮现在含图标，不能再整体改 textContent */
+    var actionLabel = null;
     var cancelBtn = null;
 
     var signedIn = false;
@@ -42,6 +44,7 @@
         waitEl = document.getElementById('login-code-wait');
         errorEl = document.getElementById('login-error');
         actionBtn = document.getElementById('login-action');
+        actionLabel = document.getElementById('login-action-label');
         cancelBtn = document.getElementById('login-cancel');
 
         if (!root) {
@@ -209,9 +212,14 @@
 
     function resetButton() {
         actionBtn.disabled = false;
-        // 文案可能被 i18n 改过，重新套一遍
-        actionBtn.setAttribute('data-i18n', 'login.action');
-        actionBtn.textContent = t('login.action');
+        /*
+          只重置**文字节点**，不能写 actionBtn.textContent ——
+          那会把里面的 GitHub 图标一起抹掉。
+        */
+        if (actionLabel) {
+            actionLabel.setAttribute('data-i18n', 'login.action');
+            actionLabel.textContent = t('login.action');
+        }
     }
 
     function show() {

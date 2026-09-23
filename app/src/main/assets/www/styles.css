@@ -349,13 +349,35 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
 
+    /*
+      ⚠️ 启动页**不缩短**，只去掉位移与缩放。
+
+      为什么不像常规做法那样把动画整个砍掉：
+        启动页承担「品牌露面」的职责，一闪而过比有动效更糟 ——
+        用户会以为 app 崩了或者跳页了。
+      reduced-motion 的本意是「避免引起不适的位移/缩放/闪烁」，
+      单纯的透明度变化不在其中，所以保留淡入淡出、去掉 transform。
+    */
     .splash {
-        animation: splash-cover 600ms linear forwards;
+        animation: splash-cover 2200ms cubic-bezier(0.2, 0, 0, 1) forwards;
     }
 
-    .splash-logo,
+    .splash-logo {
+        animation: splash-fade-only 520ms ease both;
+    }
+
     .splash-name {
-        animation: none;
+        animation: splash-fade-only 620ms 160ms ease both;
+    }
+
+    @keyframes splash-fade-only {
+        from {
+            opacity: 0;
+        }
+
+        to {
+            opacity: 1;
+        }
     }
 }
 
@@ -877,6 +899,11 @@ body {
 }
 
 .btn-login {
+    /* 图标 + 文字横向排列并整体居中 */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
     width: 100%;
     padding: 14px 18px;
     border-radius: 14px;
@@ -884,6 +911,23 @@ body {
     color: #1B1B1B;
     font-size: 15px;
     font-weight: 700;
+}
+
+/* GitHub 官方 Octocat 标识（16×16 viewBox，与 Material 的 24×24 不同） */
+.btn-login-icon {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+}
+
+.btn-login-icon svg {
+    display: block;
+    width: 20px;
+    height: 20px;
+    /* 按钮文字是深色、底色是浅色，图标用 currentColor 跟随 */
+    fill: currentColor;
 }
 
 .btn-login:disabled {

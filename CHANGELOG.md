@@ -4,6 +4,32 @@
 
 ---
 
+## [0.0.3] - 2026-09-23
+
+### 修复
+
+- **启动页一闪而过**：splash 的退场条件原来只看「动画播完」，
+  导致登录状态到达的时机一有偏差，界面就闪一下或者黑一段。
+  现在改为**「动画播完」且「登录状态已知」两个条件都满足**才退场 ——
+  无论原生推状态比动画早还是晚，启动页都完整演完 2.2 秒。
+- **无障碍设置会砍掉启动页**：`prefers-reduced-motion: reduce` 下
+  原来把动画缩到 600ms（一闪而过）。现在保留完整时长，只去掉位移与缩放，
+  改成纯透明度变化 —— 这类设置的本意是避免位移/缩放引起不适，不含淡入淡出。
+
+### 新增
+
+- 登录按钮加 **GitHub 官方 Octocat 标识**
+  （`github-mark.svg` 的路径，MIT 许可；Material Icons 不含第三方品牌 logo）
+
+### 变更
+
+- 打开 GitHub 授权页时**优先用 GitHub 手机 App**，装不上才退回浏览器
+
+> ⚠️ 已知限制：GitHub App 的包名（`com.github.android`）没在真机上核实过，
+> 若唤起失败会自动退回浏览器，不影响登录可用性。
+
+---
+
 ## [0.0.2] - 2026-09-23
 
 这一版可以发布了。三件事：个人页、强制登录、应用内更新。
@@ -99,3 +125,4 @@
 
 [0.0.2]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.2
 [0.0.1]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.1
+[0.0.3]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.3

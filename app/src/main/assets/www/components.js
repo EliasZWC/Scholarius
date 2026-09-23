@@ -285,6 +285,26 @@
         warning: 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z'
     };
 
+    /*
+      GitHub 官方 Octocat 标识（github-mark.svg 的路径，MIT 许可）。
+
+      这是 ICON_PATHS 之外单独放的 —— 上面的都是 Google Material Icons，
+      而 Material 体系里**没有第三方品牌 logo**。
+      「用 GitHub 登录」按钮上放 GitHub 自己的标识是官方推荐的品牌用法，
+      不能拿 Material 的通用图标（code / hub 之类）替代，用户认不出来。
+
+      viewBox 与 Material 一样是 0 0 24 24，只是路径是 GitHub 官方的。
+    */
+    var GITHUB_MARK_VIEWBOX = '0 0 16 16';
+    var GITHUB_MARK_PATH =
+        'M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 ' +
+        '0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 ' +
+        '1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 ' +
+        '0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 ' +
+        '2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 ' +
+        '3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 ' +
+        '8c0-4.42-3.58-8-8-8z';
+
     /** 返回一段 svg 标记，图标全部来自 Google Material Icons */
     function icon(name) {
         var path = ICON_PATHS[name];
@@ -293,6 +313,12 @@
         }
         return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
             '<path d="' + path + '"/></svg>';
+    }
+
+    /** GitHub 官方标识（不属于 Material 体系，单独一支） */
+    function githubMark() {
+        return '<svg viewBox="' + GITHUB_MARK_VIEWBOX + '" aria-hidden="true" focusable="false">' +
+            '<path d="' + GITHUB_MARK_PATH + '"/></svg>';
     }
 
     global.ScholariusUI = {
@@ -306,6 +332,7 @@
         attachLongPress: attachLongPress,
         justLongPressed: justLongPressed,
         icon: icon,
+        githubMark: githubMark,
         ICON_PATHS: ICON_PATHS
     };
 })(window);
