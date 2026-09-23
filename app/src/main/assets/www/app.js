@@ -402,7 +402,7 @@
         panel.id = '__diag';
         panel.innerHTML =
             '<div class="diag-bar">' +
-            '  <span class="diag-title">Log</span>' +
+            '  <span class="diag-title">Logger</span>' +
             '  <span class="diag-count" id="__diagCount">0</span>' +
             '  <span class="diag-spacer"></span>' +
             '  <button type="button" class="diag-btn" id="__diagCopy">Copy</button>' +
@@ -486,7 +486,7 @@
         if (!title) return;
         title.textContent = message;
         window.setTimeout(function () {
-            title.textContent = 'Log';
+            title.textContent = 'Logger';
         }, 1400);
     }
 

@@ -59,10 +59,10 @@
             'setting.theme.system': 'Follow system',
             'setting.version': 'Version',
             'setting.contact': 'Contact',
-            'setting.debugLog': 'Log',
+            'setting.debugLog': 'Logger',
             'setting.debugLog.on': 'On',
             'setting.debugLog.off': 'Off',
-            'setting.debugLog.restartHint': 'Log on',
+            'setting.debugLog.restartHint': 'Logger on',
 
             // --- 更新 ---
             'update.title': 'Update available',
@@ -129,10 +129,10 @@
             'setting.theme.system': '跟随系统',
             'setting.version': '版本',
             'setting.contact': '联系',
-            'setting.debugLog': '日志',
+            'setting.debugLog': 'Logger',
             'setting.debugLog.on': '开',
             'setting.debugLog.off': '关',
-            'setting.debugLog.restartHint': '日志已开启',
+            'setting.debugLog.restartHint': 'Logger 已开启',
 
             'update.title': '发现新版本',
             'update.message': '新版本 {version} 已发布（{size}），当前版本 {current}。',
