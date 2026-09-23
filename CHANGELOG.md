@@ -4,6 +4,34 @@
 
 ---
 
+## [0.0.12] - 2026-09-23
+
+### 修复
+
+- **启动页退场改为显式计时，彻底不再依赖 `animationend`。**
+
+  之前几版都用 `animationend` 决定退场时机，而这个事件在 WebView 里
+  有三个不可靠之处：
+  1. 样式表未生效时 `animation-duration` 为 `0s`，事件**立即**触发；
+  2. 子元素（`.splash-logo` / `.splash-name`）的动画事件会冒泡上来，
+     必须靠 `event.target` 过滤，这个过滤在部分机型上不可靠；
+  3. CSS 动画的起点是**元素渲染时刻**，而脚本执行时刻晚于它，
+     两者不同步让「已播时长」算不准。
+
+  现在改为：`t=0` 开始计时 → `SPLASH_DURATION_MS`（默认 2600ms，
+  并与 `getComputedStyle` 读到的实际动画时长对齐）后退场；
+  再加一截兜底余量，**但绝不允许早于动画时长收起**。
+
+  实测：splash 稳定显示 2.48s 后才收起。
+
+- **首帧兜底样式内联进 `<head>`**：`styles.css` 到位之前，
+  `<div class="splash">` 只是无样式普通 div（没有 `position:fixed`、
+  不覆盖屏幕、不可见），用户会看到「空白 → 登录页」而不是启动页。
+  现在把决定性的定位/尺寸/背景内联，首帧一定是满屏黑底居中内容，
+  与系统启动页的纯黑底无缝衔接。
+
+---
+
 ## [0.0.11] - 2026-09-23
 
 ### 修复
@@ -382,3 +410,4 @@
 [0.0.9]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.9
 [0.0.10]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.10
 [0.0.11]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.11
+[0.0.12]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.12

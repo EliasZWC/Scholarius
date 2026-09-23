@@ -17,27 +17,21 @@
     var TAB_ORDER = ['library', 'ranking', 'profile'];
 
     /**
-     * 启动动画的兜底超时。
+     * 启动动画时长，**必须与 styles.css 里 .splash 的 animation-duration 一致**。
      *
-     * ⚠️ 必须**大于** styles.css 里 .splash 的动画时长（2600ms），
-     *    否则会抢在 animationend 之前把启动页收掉 —— 表现就是「一闪而过」。
-     *    留 1s 余量，覆盖低端机首帧延迟。
+     * 这是退场时机的基准：动画播完的那一刻正好收起 splash。
+     * 若样式表已生效，会用 getComputedStyle 读到的实际值覆盖它；
+     * 这个常量只在样式表还没到位时兜底 —— 此时**宁可偏长也不偏短**。
+     *
+     * ⚠️ 改 styles.css 的动画时长时，这里要同步改。
      */
-    var SPLASH_FALLBACK_MS = 3600;
+    var SPLASH_DURATION_MS = 2600;
 
     /**
-     * 启动页最短可见时长。
-     *
-     * ⚠️ 这是「一闪而过」的兜底保险。
-     *    样式表在 WebView 里是异步加载的：若脚本执行时 styles.css 还没生效，
-     *    .splash 上根本没有 animation，animationDuration 会是 0s，
-     *    于是 animationend 会**立即**触发，启动页瞬间被收掉。
-     *
-     *    ⚠️ 必须**小于**真实动画时长（2600ms）且留出余量，
-     *       否则会抢在正常 animationend 之前收掉启动页 ——
-     *       那反而会把完整的动画腰断。取 2400ms。
+     * 兜底余量：主时机没生效时（例如系统把动画延长了）再多等这么久。
+     * 只是保险丝，正常路径用不到。
      */
-    var SPLASH_MIN_VISIBLE_MS = 2400;
+    var SPLASH_FALLBACK_EXTRA_MS = 1200;
 
 
     var tabs = Array.prototype.slice.call(document.querySelectorAll('.nav-item'));
@@ -53,10 +47,6 @@
     var signedIn = null;
     /** 启动动画是否已播完 */
     var splashDone = false;
-    /** 启动页开始显示的时刻（用于最短可见时长判定），见 setupSplash() */
-    var splashStartedAt = 0;
-    /** 是否已为「过早的 animationend」排过一次延后收尾，避免重复排 */
-    var splashRetryScheduled = false;
     /** 是否需要退场（动画播完 && 登录状态已知，两个条件都满足才退） */
     var pendingDismiss = false;
 
@@ -345,17 +335,25 @@
     /**
      * 启动动画的收尾。
      *
-     * 动画本身完全由 CSS 驱动（见 styles.css 的 .splash），这里只负责：
-     *   1) 等到「动画播完」且「登录状态已知」两个条件都满足；
-     *   2) 把 splash 从文档里摘掉；
-     *   3) 通知原生切回正常主题。
+     * 职责：等启动动画播完，收起 splash。
      *
-     * ⚠️ 判断「播完」只用 animationend 事件，**不要**用 getAnimations() 去查 ——
-     *    DOMContentLoaded 可能在 CSS 应用之前触发，那时 getAnimations() 返回空数组，
-     *    会被误判成「动画已结束」而立刻跳过启动页（实测踩过这个坑）。
+     * ⚠️ 这里**刻意不用 animationend 事件**，改为「显式计时 + 动画时长对齐」。
      *
-     * ⚠️ 兜底超时必须**大于** CSS 里的动画时长（2.2s），否则会抢在 animationend
-     *    之前把 splash 收掉。这里取 3.4s 留出余量。
+     *    原因是踩过太多次坑，且每次现象都不一致：
+     *      · animationend 可能在样式表未生效时被 animationDuration:0s 立刻触发；
+     *      · 子元素（.splash-logo / .splash-name）的动画事件会冒泡上来，
+     *        必须靠 event.target 过滤，而这个过滤在某些机型上不可靠；
+     *      · CSS 动画的「起点」是元素渲染时刻，而脚本执行时刻晚于它，
+     *        两者不同步会让「已播时长」算不准。
+     *
+     *    显式计时的确定性最高：
+     *      t=0 开始等待 → SPLASH_DURATION_MS 后收起。
+     *    这个时长与 styles.css 里 .splash 的 animation-duration 保持一致，
+     *    动画自然结束的那一刻，我们也正好收起它。
+     *
+     *    为了容忍真实动画因低端机首帧延迟而整体后移，
+     *    额外加 FALLBACK 余量：先按 DURATION 收，收不掉就等 FALLBACK。
+     *    但**绝不允许早于 DURATION 收起** —— 那就是「一闪而过」。
      */
     function setupSplash() {
         var splash = document.getElementById('splash');
@@ -366,68 +364,55 @@
             return;
         }
 
-        var cssDur = getComputedStyle(splash).animationDuration;
+        var cs = getComputedStyle(splash);
+        var boot = window.__boot || {};
         var anims = splash.getAnimations ? splash.getAnimations() : null;
+
         trace('splash:setup',
             'readyState=' + document.readyState +
-            ' cssDur=' + cssDur +
-            ' animCount=' + (anims ? anims.length : 'n/a') +
-            ' reduced=' + (window.matchMedia
-                ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
-                : 'n/a'));
+            ' cssDur=' + cs.animationDuration +
+            ' animName=' + cs.animationName +
+            ' animCount=' + (anims ? anims.length : 'n/a'));
+        trace('splash:boot',
+            'navStart=' + boot.navStart +
+            ' domReady=' + boot.domReady +
+            ' sheetApplied=' + boot.stylesheetApplied +
+            ' atDomReady=' + JSON.stringify(boot.splashAtDomReady));
 
         /*
-          ⚠️ 关键防御：不能只认 animationend。
-
-          如果 styles.css 还没被应用（WebView 里样式表是异步加载的），
-          .splash 上根本没有 animation，animationDuration 会是 0s，
-          于是「动画」瞬间就算走完、animationend 立即触发 ——
-          表现就是**启动页一闪而过**。
-
-          这是本次「一闪而过」最可能的机制：脚本执行早于样式表生效。
-
-          所以这里记下开始时刻，收尾时用「真实经过时间」兜住下限：
-          splash 至少要显示 SPLASH_MIN_VISIBLE_MS 才能退场。
+          读一次 CSS 里声明的动画时长，用它当退场时刻。
+          读不到（样式表还没生效）就退回内置常量 —— 总之**不会提前收**。
         */
-        splashStartedAt = Date.now();
+        var durationMs = SPLASH_DURATION_MS;
+        var parsed = parseFloat(cs.animationDuration);
+        if (!isNaN(parsed) && parsed > 0) {
+            durationMs = parsed * 1000;
+        } else {
+            trace('splash:noCssDuration', '用内置时长 ' + durationMs + 'ms');
+        }
 
-        var markDone = function (why) {
+        var start = Date.now();
+        trace('splash:timer', '将在 ' + durationMs + 'ms 后退场');
+
+        var dismiss = function (why) {
             if (splashDone) {
                 return;
             }
-
-            var elapsed = Date.now() - splashStartedAt;
-            if (elapsed < SPLASH_MIN_VISIBLE_MS) {
-                /*
-                  还没到最小可见时长 —— 判定为「样式表尚未生效导致的假 animationend」，
-                  延后到补足时长再收，别让品牌动画一闪而过。
-                */
-                trace('splash:early', why + ' elapsed=' + elapsed + 'ms，延后');
-                if (!splashRetryScheduled) {
-                    splashRetryScheduled = true;
-                    window.setTimeout(function () {
-                        splashRetryScheduled = false;
-                        markDone('delayed:' + why);
-                    }, SPLASH_MIN_VISIBLE_MS - elapsed);
-                }
-                return;
-            }
-
             splashDone = true;
-            trace('splash:done', why + ' @' + elapsed + 'ms');
+            trace('splash:done',
+                why + ' @' + (Date.now() - start) + 'ms');
             tryDismissSplash();
         };
 
-        splash.addEventListener('animationend', function (event) {
-            // 只认 splash 自己的动画；logo / 名称的 animationend 会一起冒泡上来
-            if (event.target === splash) {
-                markDone('animationend:' + event.animationName);
-            }
-        });
-
+        // 主时机：与 CSS 动画时长对齐
         window.setTimeout(function () {
-            markDone('fallback');
-        }, SPLASH_FALLBACK_MS);
+            dismiss('timer');
+        }, durationMs);
+
+        // 兜底：主时机没生效（例如动画被系统延长）也不能永久卡住
+        window.setTimeout(function () {
+            dismiss('fallback');
+        }, durationMs + SPLASH_FALLBACK_EXTRA_MS);
     }
 
     /** 启动动画播完 → 收起启动页。**只关心动画**，与登录状态无关。 */

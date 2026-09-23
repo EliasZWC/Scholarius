@@ -8,6 +8,68 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#EFEFED" />
     <title>Scholarius</title>
+
+    <!--
+      ⚠️ 启动页的「关键渲染样式」必须内联在这里，不能只放在 styles.css。
+
+      原因：styles.css 有 16KB 且内含 @font-face（两个 1.6MB 字体资源的元信息），
+      在 WebView 里要完整下载并解析完才会应用。
+      在它到位之前，<div class="splash"> 只是一个**没有样式的普通 div** ——
+      没有 position:fixed、没有 inset:0、没有黑底，
+      所以它**不覆盖屏幕、根本看不见**。
+
+      表现就是：系统启动页退场 → 一片空白 → 直接就是登录页，
+      用户感知为「启动页瞬间消失了」。这就是「一闪而过」的最后一层原因。
+
+      把这几个决定性属性内联，首帧就一定是「满屏黑底 + 居中内容」，
+      与系统启动页的纯黑底无缝衔接；styles.css 到位后动画照常接管。
+    -->
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1B1B1B;
+        }
+
+        .splash {
+            position: fixed;
+            inset: 0;
+            z-index: 40;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 26px;
+            background: #1B1B1B;
+        }
+
+        .splash[hidden] {
+            display: none;
+        }
+
+        .splash-logo {
+            position: relative;
+            width: 108px;
+            height: 108px;
+        }
+
+        .splash-sigma {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        .splash-name {
+            font-size: 30px;
+            font-weight: 700;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: #ECECEA;
+        }
+    </style>
+
     <link rel="stylesheet" href="styles.css" />
 
     <!-- 在解析样式前先套用已保存的主题，避免首屏闪一下系统主题 -->
@@ -19,6 +81,34 @@
                     document.documentElement.setAttribute('data-theme', mode);
                 }
             } catch (e) { /* 忽略 */ }
+        })();
+    </script>
+
+    <!--
+      ⚠️ 临时诊断（v0.0.12）：记录启动关键时间点，排查「启动页瞬间消失」。
+      这些值会在 app.js 里通过 ScholariusNative.trace() 送到 logcat。
+      定位完连同 app.js 的 trace() 一起删。
+
+      为什么要在这里量：这里是 <head>，是**最早能跑代码的地方**，
+      量到的 DOMContentLoaded 时刻才能反映真实的样式表/脚本到达时间。
+    -->
+    <script>
+        (function () {
+            window.__boot = { navStart: Math.round(performance.now()) };
+            document.addEventListener('DOMContentLoaded', function () {
+                window.__boot.domReady = Math.round(performance.now());
+                var sp = document.getElementById('splash');
+                if (sp) {
+                    var cs = getComputedStyle(sp);
+                    window.__boot.splashAtDomReady = {
+                        position: cs.position,
+                        animationName: cs.animationName,
+                        animationDuration: cs.animationDuration,
+                        opacity: cs.opacity
+                    };
+                }
+                window.__boot.stylesheetApplied = !!(document.querySelector('link[href="styles.css"]') || {}).sheet;
+            });
         })();
     </script>
 </head>

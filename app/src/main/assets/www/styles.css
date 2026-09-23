@@ -272,6 +272,14 @@ body {
     justify-content: center;
     gap: 26px;
     background: #1B1B1B;
+    /*
+      ⚠️ 动画统一在这里声明。index.html 的 <head> 里有一份**同名内联兜底**，
+         只含静态布局属性（不含 animation）—— 目的是让首帧就是满屏黑底，
+         防止 styles.css 还没解析完时「启动页不可见 → 直接到登录页」。
+
+         内联样式在本文件之前，同优先级下**本文件胜出**，
+         所以这里的 animation 一定生效，两者不冲突。
+    */
     animation: splash-cover 2600ms cubic-bezier(0.2, 0, 0, 1) forwards;
 }
 
