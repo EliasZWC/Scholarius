@@ -132,34 +132,46 @@
 
     // --- 更新（转发给 update.js）--------------------------------------------
 
+    /*
+      ⚠️ 这些转发**必须 return** 下层结果。
+
+      原生的 evaluateInWebChecked() 会把表达式的值回传到 logcat，
+      用来区分「注入没执行」和「执行了但弹窗没出来」——
+      中间少一个 return 就会全部变成 undefined，回报彻底失效。
+    */
     function onUpdateAvailable(version, current, size, stalled) {
         if (window.ScholariusUpdate) {
-            window.ScholariusUpdate.onAvailable(version, current, size, stalled);
+            return window.ScholariusUpdate.onAvailable(version, current, size, stalled);
         }
+        return 'no-update-module';
     }
 
     function onUpdateNone() {
         if (window.ScholariusUpdate) {
-            window.ScholariusUpdate.onNone();
+            return window.ScholariusUpdate.onNone();
         }
+        return 'no-update-module';
     }
 
     function onUpdateProgress(percent) {
         if (window.ScholariusUpdate) {
-            window.ScholariusUpdate.onProgress(percent);
+            return window.ScholariusUpdate.onProgress(percent);
         }
+        return 'no-update-module';
     }
 
     function onUpdateReady() {
         if (window.ScholariusUpdate) {
-            window.ScholariusUpdate.onReady();
+            return window.ScholariusUpdate.onReady();
         }
+        return 'no-update-module';
     }
 
     function onUpdateFailed(reason, downloaded) {
         if (window.ScholariusUpdate) {
-            window.ScholariusUpdate.onFailed(reason, downloaded);
+            return window.ScholariusUpdate.onFailed(reason, downloaded);
         }
+        return 'no-update-module';
     }
 
     window.ScholariusShell = {

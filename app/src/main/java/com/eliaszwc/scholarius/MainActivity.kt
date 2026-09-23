@@ -583,12 +583,13 @@ import kotlin.math.roundToInt
                 attemptedFrom == installedNow
             prefs.edit().remove(KEY_PENDING_UPDATE).remove(KEY_PENDING_UPDATE_FROM).apply()
 
-            evaluateInWeb(
+            evaluateInWebChecked(
+                "update.available",
                 "window.ScholariusShell && window.ScholariusShell.onUpdateAvailable(" +
                     "${quote(release.version)}, " +
                     "${quote(installedNow ?: "")}, " +
                     "${quote(Updater.formatSize(release.size))}, " +
-                    "$stalled);"
+                    "$stalled)"
             )
         }
     }
@@ -701,11 +702,47 @@ import kotlin.math.roundToInt
 
     /** 在网页执行一小段脚本；页面没就绪时直接忽略 */
     private fun evaluateInWeb(script: String) {
-        if (!::webView.isInitialized || !pageReady) return
+        if (!::webView.isInitialized) {
+            Log.w(TAG, "注入被丢弃：webView 未初始化")
+            return
+        }
+        if (!pageReady) {
+            Log.w(TAG, "注入被丢弃：pageReady=false")
+            return
+        }
         try {
             webView.evaluateJavascript(script, null)
         } catch (t: Throwable) {
             Log.w(TAG, "注入脚本失败", t)
+        }
+    }
+
+    /**
+     * 注入一段脚本，并把**执行结果回传到 logcat**。
+     *
+     * ⚠️ 为什么需要：`evaluateInWeb` 是「发射后不管」——
+     *    脚本报错、元素没找到、桥没挂上，原生侧一概不知道，
+     *    日志上却已经写了「弹窗」。
+     *    这里用 `evaluateJavascript` 的回调把结果取回来，
+     *    让「到底执行没执行、抛没抛错」有据可查。
+     */
+    private fun evaluateInWebChecked(tag: String, script: String) {
+        if (!::webView.isInitialized) {
+            Log.w(TAG, "[$tag] 注入被丢弃：webView 未初始化")
+            return
+        }
+        if (!pageReady) {
+            Log.w(TAG, "[$tag] 注入被丢弃：pageReady=false")
+            return
+        }
+        val guarded = "(function(){try{return String($script)}catch(e){" +
+            "return 'ERR: '+(e&&e.message?e.message:e)}})();"
+        try {
+            webView.evaluateJavascript(guarded) { result ->
+                Log.i(TAG, "[$tag] 注入结果：$result")
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "[$tag] 注入失败", t)
         }
     }
 

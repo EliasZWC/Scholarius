@@ -43,6 +43,19 @@
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
     }
 
+    /**
+     * 诊断日志。
+     *
+     * ⚠️ 为什么必须加：从原生推过来的日志只能看到「已请求弹窗」，
+     *    弹不出来时无法区分是「元素没取到」「openSheet 没生效」
+     *    还是「样式把它盖住了」。这三条路径都在网页层，只能在这里记。
+     */
+    function trace(stage, detail) {
+        if (global.trace) {
+            global.trace(stage, detail);
+        }
+    }
+
     function init() {
         sheet = document.getElementById('sheet-update');
         textEl = document.getElementById('update-text');
@@ -52,6 +65,12 @@
         percentEl = document.getElementById('update-percent');
         laterBtn = document.getElementById('update-later');
         confirmBtn = document.getElementById('update-confirm');
+
+        trace('update:init', 'sheet=' + !!sheet +
+            ' text=' + !!textEl + ' stalled=' + !!stalledEl +
+            ' progress=' + !!progressEl + ' fill=' + !!fillEl +
+            ' percent=' + !!percentEl + ' later=' + !!laterBtn +
+            ' confirm=' + !!confirmBtn);
 
         if (!sheet) {
             return;
@@ -64,8 +83,14 @@
     // --- 原生回调 -----------------------------------------------------------
 
     function onAvailable(version, current, size, stalled) {
+        trace('update:onAvailable', 'v' + version + ' current=' + current +
+            ' size=' + size + ' stalled=' + !!stalled +
+            ' sheet=' + !!sheet + ' ui=' + !!(global.ScholariusUI &&
+                global.ScholariusUI.openSheet));
+
         if (!sheet) {
-            return;
+            trace('update:onAvailable', '放弃：sheet-update 元素不存在');
+            return 'no-element';
         }
 
         info = {
@@ -78,7 +103,19 @@
         setState(STATE_AVAILABLE);
         renderText();
 
+        trace('update:onAvailable', '文案已填，准备 openSheet');
         global.ScholariusUI.openSheet(sheet, onSheetDismissed);
+
+        var style = getComputedStyle(sheet);
+        var rect = sheet.getBoundingClientRect();
+        var summary = 'ok class=' + sheet.className +
+            ' display=' + style.display +
+            ' zIndex=' + style.zIndex +
+            ' top=' + Math.round(rect.top) +
+            ' h=' + Math.round(rect.height) +
+            ' vh=' + global.innerHeight;
+        trace('update:onAvailable', summary);
+        return summary;
     }
 
     /**
@@ -88,6 +125,9 @@
      *    会一直停在 true，之后就再也不会检查更新了。
      */
     function onSheetDismissed() {
+        trace('update:dismissed', 'state=' + state +
+            ' closingAfterInstall=' + closingAfterInstall);
+
         // 下载中不允许被关；真被外力关掉也把包留着，下次能重试安装
         if (state === STATE_DOWNLOADING) {
             return;

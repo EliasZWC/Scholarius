@@ -24,6 +24,18 @@
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
     }
 
+    /**
+     * 诊断日志。走 app.js 的全局 trace()，未加载时静默跳过。
+     *
+     * ⚠️ 弹窗「开了但看不见」曾困扰很久，排查时最关键的一步就是
+     *    把 openSheet 内部的状态打出来 —— 原生侧只知道「已请求」。
+     */
+    function trace(stage, detail) {
+        if (global.trace) {
+            global.trace(stage, detail);
+        }
+    }
+
     /* ----------------------------------------------------------------------
        toast
        ---------------------------------------------------------------------- */
@@ -50,7 +62,12 @@
        ---------------------------------------------------------------------- */
 
     function openSheet(sheet, onDismiss) {
+        trace('sheet:open', 'incoming=' + (sheet ? sheet.id : 'null') +
+            ' hidden=' + (sheet ? sheet.hidden : '-') +
+            ' current=' + (currentSheet ? currentSheet.id : 'null'));
+
         if (!sheet) {
+            trace('sheet:open', '放弃：sheet 为空');
             return;
         }
 
@@ -65,9 +82,26 @@
         currentDismissHandler = typeof onDismiss === 'function' ? onDismiss : null;
         document.body.classList.add('sheet-open');
 
-        // 进场动画：先加类再强制回流，保证 transition 能触发
-        void sheet.offsetWidth;
+        /*
+          ⚠️ 进场动画的强制回流，必须**把读到的值用起来**。
+
+          原来写的是 `void sheet.offsetWidth;` —— 这行的返回值被丢弃，
+          而 `offsetWidth` 是无副作用的 getter，JS 引擎在优化模式下
+          完全可以把整句删掉。删掉之后浏览器会把
+          「取消 hidden」和「加 is-open」合并成一次样式计算，
+          起始态就不再是 translateY(100%)，transition 不触发，
+          弹窗永远停在屏幕外（实测 rect.top === innerHeight）。
+
+          改成 if 条件使用它，引擎就无法省略这次布局读取。
+        */
+        if (sheet.offsetWidth < 0) {
+            return;
+        }
         sheet.classList.add('is-open');
+
+        trace('sheet:open', 'done id=' + sheet.id +
+            ' class=' + sheet.className +
+            ' h=' + Math.round(sheet.getBoundingClientRect().height));
     }
 
     function closeSheet() {
