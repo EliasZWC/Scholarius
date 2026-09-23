@@ -267,11 +267,13 @@
 
     <div id="app">
         <header class="page-header">
-            <h1 class="page-title" id="page-title" data-i18n="nav.library">Library</h1>
+            <h1 class="page-title" id="page-title" data-i18n="nav.vault">Vault</h1>
         </header>
 
         <main id="content">
-            <section class="page" id="page-library" role="tabpanel" aria-labelledby="tab-library">
+            <section class="page" id="page-vault" role="tabpanel" aria-labelledby="tab-vault">
+                <!-- 文库：用户自己导入的文献（存在应用私有目录，不上传） -->
+            </section>
                 <!-- 文库：导入与管理文献、阅读、标注、笔记 -->
             </section>
 
@@ -389,8 +391,8 @@
                  图形整体落在视口外 —— 元素尺寸、getBBox 都正常，
                  但**一个像素都不渲染**（实测 inkPixels = 0）。
             -->
-            <button class="nav-item" type="button" role="tab" id="tab-library"
-                aria-controls="page-library" aria-selected="true" data-page="library">
+            <button class="nav-item" type="button" role="tab" id="tab-vault"
+                aria-controls="page-vault" aria-selected="true" data-page="vault">
                 <span class="nav-icon" aria-hidden="true">
                     <!-- Material Symbols: book, outlined -->
                     <svg class="nav-icon-outline" viewBox="0 -960 960 960" focusable="false">
@@ -401,7 +403,7 @@
                         <path d="M240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h480q33 0 56.5 23.5T800-800v640q0 33-23.5 56.5T720-80H240Zm200-440 100-60 100 60v-280H440v280Z" />
                     </svg>
                 </span>
-                <span class="nav-label" data-i18n="nav.library">Library</span>
+                <span class="nav-label" data-i18n="nav.vault">Vault</span>
             </button>
 
             <button class="nav-item" type="button" role="tab" id="tab-explore"

@@ -13,8 +13,8 @@
     'use strict';
 
     var STORAGE_KEY = 'scholarius.activeTab';
-    var DEFAULT_TAB = 'library';
-    var TAB_ORDER = ['library', 'explore', 'profile'];
+    var DEFAULT_TAB = 'vault';
+    var TAB_ORDER = ['vault', 'explore', 'profile'];
 
     /**
      * 启动动画时长，**必须与 styles.css 里 .splash 的 animation-duration 一致**。

@@ -14,7 +14,7 @@
         en: {
             'app.name': 'Scholarius',
             'nav.label': 'Main navigation',
-            'nav.library': 'Library',
+            'nav.vault': 'Vault',
             'nav.explore': 'Explore',
             'nav.profile': 'Profile',
 
@@ -93,7 +93,7 @@
         zh: {
             'app.name': 'Scholarius',
             'nav.label': '主导航',
-            'nav.library': '文库',
+            'nav.vault': '文库',
             'nav.explore': '探索',
             'nav.profile': '个人',
 
