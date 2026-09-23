@@ -96,6 +96,7 @@
     function setAccount(isSignedIn, login, name, avatarUrl) {
         signedIn = !!isSignedIn;
         trace('account', 'signedIn=' + signedIn +
+            ' splashDone=' + splashDone +
             ' @' + Math.round(performance.now()) + 'ms');
 
         if (window.ScholariusLogin) {
@@ -103,10 +104,19 @@
         }
 
         /*
-          注意调用的是 tryDismissSplash 而不是 applyGate：
-          状态可能在动画播完前就到了，那时不能直接放行
-          （会让启动页消失得过早）。两个条件都满足时它自己会退场。
+          ⚠️ 这里直接 applyGate，**不再等 splash**。
+
+          之前调的是 tryDismissSplash()，它要求「动画播完 且 状态已知」两个条件。
+          这在实机上有风险：一旦动画事件因任何原因没到达，
+          splash 永不退场 → applyGate 永不被调 → **登录成功了也进不去**。
+
+          启动动画只是**视觉遮罩**，不该拥有阻塞功能的权力。
+          正确分工：
+            · 界面切换（界面层）← 只看 signedIn
+            · splash 退场（视觉层）← 只看动画
+          两者各自独立，互不干扰。
         */
+        applyGate();
         tryDismissSplash();
     }
 
@@ -214,15 +224,19 @@
     }
 
     /**
-     * 登录门控：splash 结束 + 拿到登录状态之后才放行。
+     * 登录门控：只按**登录状态**决定显示哪个界面。
      *
      * 未登录 → 只显示登录页，应用外壳整个藏起来。
      *          用 hidden 而不是盖遮罩 —— 藏起来才不会被别的路径绕进去。
      * 已登录 → 显示应用外壳。
+     *
+     * ⚠️ 这里**不**检查 splashDone。
+     *    早期版本要求「splash 演完」才放行，结果一旦动画事件丢失，
+     *    登录成功也进不去（用户卡在登录页）—— 视觉不该阻塞功能。
+     *    splash 的退场由 tryDismissSplash() 单独负责。
      */
     function applyGate() {
-        // 登录状态还没到、或 splash 还在演：都先不动，避免闪一下登录页
-        if (signedIn === null || !splashDone) {
+        if (signedIn === null) {
             return;
         }
 
@@ -414,11 +428,10 @@
         }, SPLASH_FALLBACK_MS);
     }
 
-    /** 动画播完 且 登录状态已知 → 才收起启动页并放行 */
+    /** 启动动画播完 → 收起启动页。**只关心动画**，与登录状态无关。 */
     function tryDismissSplash() {
-        if (!splashDone || signedIn === null) {
-            trace('dismiss:blocked',
-                'splashDone=' + splashDone + ' signedIn=' + signedIn);
+        if (!splashDone) {
+            trace('dismiss:blocked', 'splashDone=false');
             return;
         }
 
@@ -437,6 +450,11 @@
             }
         }
 
+        /*
+          兜一层：splash 可能晚于登录状态到达。
+          状态先到时 applyGate() 已经跑过（界面已切好），这里再调一次是幂等的；
+          若状态还没到，applyGate() 自己会 return，等 setAccount 再来。
+        */
         applyGate();
     }
 

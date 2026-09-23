@@ -31,6 +31,15 @@
     var signedIn = false;
     /** 正在走登录流程（设备码已到手，等用户授权） */
     var inProgress = false;
+    /** start() 的超时计时器；0 表示未计时 */
+    var startTimer = 0;
+
+    /**
+     * 点了登录后多久没任何回调就判定失败。
+     * 拿设备码是本地一次 HTTP，正常在 3s 内；给 15s 足够宽容，
+     * 同时不至于让用户对着一个禁用按钮干等。
+     */
+    var LOGIN_START_TIMEOUT_MS = 15000;
 
     function t(key) {
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
@@ -86,6 +95,7 @@
 
     function onCode(userCode, verificationUri, expiresIn) {
         inProgress = true;
+        clearStartTimer();
 
         codeEl.textContent = userCode;
         codeEl.dataset.uri = verificationUri || '';
@@ -94,10 +104,23 @@
         waitEl.textContent = t('login.waiting');
         errorEl.hidden = true;
 
-        actionBtn.hidden = true;
+        /*
+          ⚠️ 按钮**不能只是隐藏** —— 那会让用户卡死。
+
+          原来的写法是 `actionBtn.hidden = true`，只留一个「取消」。
+          但如果自动跳转没成功（GitHub App 拉不起来、浏览器也没起、
+          或用户跳过去又退回来了），**就再也没有入口可以重新打开授权页** ——
+          用户只能干瞪眼看设备码。
+
+          改成：按钮留着，文字变成「打开授权页」，点击重新跳转。
+          这样即使一次跳转失败，用户永远有办法自己再试。
+        */
+        actionBtn.hidden = false;
+        actionBtn.disabled = false;
+        setActionLabel(t('login.openPage'));
         cancelBtn.hidden = false;
 
-        // 顺手复制一次：多数用户会去手机浏览器粘贴
+        // 顺手复制一次：多数用户会去浏览器粘贴
         copyCode(true);
 
         if (global.ScholariusUI) {
@@ -115,6 +138,7 @@
 
     function onFailed(reason) {
         inProgress = false;
+        clearStartTimer();
 
         codeBox.hidden = true;
         actionBtn.hidden = false;
@@ -131,6 +155,12 @@
     // --- 交互 ---------------------------------------------------------------
 
     function start() {
+        // 已在等授权（按钮此时是「打开授权页」）→ 重新跳转，不要重开流程
+        if (inProgress) {
+            openVerificationPage();
+            return;
+        }
+
         errorEl.hidden = true;
         actionBtn.disabled = true;
 
@@ -141,10 +171,45 @@
             return;
         }
 
+        /*
+          ⚠️ 启动超时保护。
+          原生既要发 HTTP 请求拿设备码，又要跳转授权页 —— 任何一步卡住，
+          都可能既不回调 onCode 也不回调 onFailed，按钮就永久禁用，
+          用户只能卸载重装。这里兜一个超时，到点就恢复按钮并提示。
+        */
+        startTimer = global.setTimeout(function () {
+            startTimer = 0;
+            if (inProgress) {
+                return;
+            }
+            onFailed('network');
+        }, LOGIN_START_TIMEOUT_MS);
+
         global.ScholariusNative.startLogin();
     }
 
+    /** 重新打开 GitHub 授权页（设备码已经在手上时用） */
+    function openVerificationPage() {
+        var uri = codeEl.dataset.uri;
+        if (!uri) {
+            return;
+        }
+        if (global.ScholariusNative &&
+            typeof global.ScholariusNative.openExternal === 'function') {
+            global.ScholariusNative.openExternal(uri);
+        }
+    }
+
+    function clearStartTimer() {
+        if (startTimer) {
+            global.clearTimeout(startTimer);
+            startTimer = 0;
+        }
+    }
+
     function cancel() {
+        clearStartTimer();
+
         if (global.ScholariusNative &&
             typeof global.ScholariusNative.cancelLogin === 'function') {
             global.ScholariusNative.cancelLogin();
@@ -212,13 +277,17 @@
 
     function resetButton() {
         actionBtn.disabled = false;
-        /*
-          只重置**文字节点**，不能写 actionBtn.textContent ——
-          那会把里面的 GitHub 图标一起抹掉。
-        */
+        setActionLabel(t('login.action'));
+    }
+
+    /**
+     * 只改按钮里的**文字节点**，不能写 actionBtn.textContent ——
+     * 那会把里面的 GitHub 图标一起抹掉。
+     */
+    function setActionLabel(text) {
         if (actionLabel) {
-            actionLabel.setAttribute('data-i18n', 'login.action');
-            actionLabel.textContent = t('login.action');
+            actionLabel.removeAttribute('data-i18n');
+            actionLabel.textContent = text;
         }
     }
 

@@ -25,6 +25,7 @@
             // --- 登录页 ---
             'login.intro': 'Sign in with GitHub to Continue',
             'login.action': 'Sign in with GitHub',
+            'login.openPage': 'Open authorization page',
             'login.codeHint': 'Enter this code on GitHub:',
             'login.codeCopied': 'Code copied',
             'login.waiting': 'Waiting for authorization...',
@@ -89,6 +90,7 @@
 
             'login.intro': '用 GitHub 登录以继续',
             'login.action': '用 GitHub 登录',
+            'login.openPage': '打开授权页',
             'login.codeHint': '在 GitHub 上输入这个码：',
             'login.codeCopied': '已复制设备码',
             'login.waiting': '正在等待授权…',

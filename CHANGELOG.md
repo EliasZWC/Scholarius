@@ -4,6 +4,31 @@
 
 ---
 
+## [0.0.10] - 2026-09-23
+
+### 修复
+
+- **登录成功也进不去（卡在登录页）**：启动动画阻塞了界面切换。
+
+  `applyGate()` 原本要求「splash 演完 **且** 登录状态已知」两个条件。
+  只要动画事件因任何原因没到达，`splashDone` 永远是 `false` →
+  `applyGate()` 永不执行 → **登录成功了应用外壳也不显示**。
+
+  正确分工：
+  - 界面切换（功能层）→ 只看 `signedIn`
+  - splash 退场（视觉层）→ 只看动画
+
+  两者各自独立，互不阻塞。视觉遮罩不该拥有卡住功能的权力。
+
+- **登录时按钮消失导致无法操作**：`onCode()` 里把按钮
+  `hidden = true` 只留「取消」。一旦自动跳转失败（GitHub App 拉不起来、
+  浏览器也没起、或用户跳过去又退回），**再无任何入口可重开授权页**。
+
+  改为按钮文字变成「打开授权页」，点击重新跳转；并加 15s 启动超时保护 ——
+  原生沒回调时恢复按钮而不是永久禁用。
+
+---
+
 ## [0.0.9] - 2026-09-23
 
 ### 修复
@@ -315,3 +340,4 @@
 [0.0.7]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.7
 [0.0.8]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.8
 [0.0.9]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.9
+[0.0.10]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.10
