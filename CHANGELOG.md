@@ -4,6 +4,37 @@
 
 ---
 
+## [0.0.8] - 2026-09-23
+
+### 修复
+
+- **启动页一闪而过（找到根因）**：`installSplashScreen()` 的返回值被丢弃了，
+  没调 `setKeepOnScreenCondition`。
+
+  系统 splash 的默认行为是**画完第一帧就立刻退场**。但那一帧画的是
+  「还没加载完的 WebView」（空白），网页里的启动动画此时根本还没渲染 ——
+  于是用户看到的是：黑屏一闪 → 直接就是登录页，网页动画被整个跳过。
+
+  现在用 `setKeepOnScreenCondition { !webPainted }` 把系统 splash
+  **留在屏幕上**，直到网页真正画出第一帧（`onPageCommitVisible`）才交棒，
+  两者无缝衔接，网页的 2.2s 动画完整可见。
+
+  （之前几版都在调网页侧的 `animationend` / 兜底时长，方向错了 ——
+  问题不在网页动画，而在它前面那段没人管的空白期。）
+
+- **GitHub App 仍然只走浏览器**：`setPackage()` 与 App Links 冲突。
+
+  GitHub App 对 github.com 用的是 App Links（`android:autoVerify="true"`），
+  系统只有在**不指定包名**、走完整验证流程时才会把链接交给它。
+  一旦 `setPackage("com.github.android")` 锁定包名，系统就改成
+  「在该包内找能处理这个 intent 的 activity」—— 而它的 activity 只声明了
+  autoVerify 的 App Links，没有普通 BROWSABLE filter → 找不到 → 退回浏览器。
+
+  改为用 `queryIntentActivities` 返回的 **ComponentName** 直接启动，
+  绕开包名锁定。同时补上「包已装但不在候选里」的诊断日志。
+
+---
+
 ## [0.0.7] - 2026-09-23
 
 ### 诊断
@@ -256,3 +287,4 @@
 [0.0.5]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.5
 [0.0.6]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.6
 [0.0.7]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.7
+[0.0.8]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.8

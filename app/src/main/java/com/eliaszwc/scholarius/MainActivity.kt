@@ -83,6 +83,14 @@ import kotlin.math.roundToInt
     /** 正在下载，防止连点「更新」重复下载 */
     private var downloading = false
 
+    /**
+     * 网页是否已经画出第一帧。
+     *
+     * ⚠️ 这是「启动页一闪而过」的关键开关，见 onCreate 里的
+     *    `setKeepOnScreenCondition`。
+     */
+    private var webPainted = false
+
     private val assetLoader: WebViewAssetLoader by lazy {
         WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
@@ -91,15 +99,39 @@ import kotlin.math.roundToInt
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 接管系统启动页：主题里指定的纯黑底 + 全透明图标会在第一帧后自动退场，
-        // 紧接着交给网页里的启动动画。必须在 super.onCreate 之前调用。
-        installSplashScreen()
+        /*
+          接管系统启动页。必须在 super.onCreate 之前调用。
+
+          ⚠️⚠️ 这里必须接住返回值并调 setKeepOnScreenCondition ——
+               这是「启动页一闪而过」的真正原因，之前一直漏了。
+
+               系统 splash 的默认行为是**绘制完第一帧就立刻退场**。
+               但第一帧画的是还没加载完的 WebView（空白），
+               网页里的启动动画此时根本还没开始渲染 ——
+               于是用户看到的是：黑屏一闪 → 直接就是登录页，
+               中间那段网页启动动画被完全跳过。
+
+               setKeepOnScreenCondition { !webPainted } 让系统 splash
+               **一直留在屏幕上**，直到网页真正画出第一帧才交棒。
+               这样「系统 splash → 网页 splash」是无缝的，
+               网页动画 2.2s 完整可见。
+
+          兜底：webPainted 由两条路置 true ——
+            ① 网页画出第一帧（onPageCommitVisible，最准确）
+            ② SPLASH_TIMEOUT_MS 超时（网页一直画不出来时不能无限黑屏）
+        */
+        val splashScreen = installSplashScreen()
+        splashScreen.setKeepOnScreenCondition { !webPainted }
         super.onCreate(savedInstanceState)
 
         // 网页一直没就绪的话不能无限黑屏，兜一个上限
         window.decorView.postDelayed({
+            if (!webPainted) {
+                Log.w(TAG, "[native] 网页首帧超时 ${SPLASH_TIMEOUT_MS}ms，放行系统启动页")
+                webPainted = true
+            }
             if (splashActive) {
-                Log.i(TAG, "[native] splash 兜底超时 ${'$'}SPLASH_TIMEOUT_MS ms，强制结束")
+                Log.i(TAG, "[native] splash 兜底超时 ${SPLASH_TIMEOUT_MS}ms，强制结束")
                 finishSplash()
             }
         }, SPLASH_TIMEOUT_MS)
@@ -149,6 +181,14 @@ import kotlin.math.roundToInt
     private fun loadEntry() {
         if (!::webView.isInitialized) return
         pageReady = false
+        /*
+          ⚠️ 不能在这里把 webPainted 置回 false。
+          这个条件控制的是「**系统启动页**是否还在屏幕上」，
+          而系统启动页只在冷启动那一刻存在一次。
+          重建 WebView 时（后台被回收）系统启动页早就没了，
+          置回 false 没有任何效果，只会让日志误导。
+          所以 webPainted 只在冷启动路径上从 false 变 true，之后不再回退。
+        */
         try {
             webView.loadUrl(WEB_ENTRY_URL)
         } catch (t: Throwable) {
@@ -235,6 +275,21 @@ import kotlin.math.roundToInt
                 // 站内（appassets 域名）导航留在 WebView 内
                 if (url.host == APP_ASSETS_HOST) return false
                 return openExternally(url.toString())
+            }
+
+            /**
+             * 网页画出第一帧。这是「系统启动页什么时候交棒给网页」的判据 ——
+             * 比 onPageFinished 早，且早得多：onPageFinished 要等所有子资源
+             * （包括两个 1.6MB 字体）都加载完，那时网页启动动画早演完了。
+             *
+             * onPageCommitVisible 是内容真正可见的时刻，正好接住启动页。
+             */
+            override fun onPageCommitVisible(view: WebView, url: String?) {
+                super.onPageCommitVisible(view, url)
+                if (!webPainted) {
+                    webPainted = true
+                    Log.i(TAG, "[native] 网页首帧已可见，交棒给网页启动动画")
+                }
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
@@ -580,36 +635,46 @@ import kotlin.math.roundToInt
      * 做法分三层，逐层降级：
      *
      *   ① 用 `queryIntentActivities` 列出所有能接住这个 https 链接的 App，
-     *      排除浏览器，挑出 GitHub App（按包名/应用名判断）。
-     *      —— 不写死包名去 `setPackage`：包名可能随版本/渠道变化，
-     *         写死会让「优先 App」形同虚设。
+     *      排除浏览器，挑出 GitHub App，**用 `ComponentName` 精确启动它**。
      *
      *   ② 找不到就退回浏览器。
      *
      *   ③ 整个流程 try 住：任何一步异常都不能让登录卡死。
      *
-     * ⚠️ 为什么 GitHub App 装了却仍走浏览器（之前踩的坑）：
-     *   仅仅 `ACTION_VIEW` 打开 https 链接时，系统会在「已验证的 App Links」
-     *   和浏览器之间选。GitHub App 对 github.com 的 App Links 未必在所有
-     *   机型/版本上都验证通过（`autoVerify` 失败时会退化成普通 deeplink），
-     *   这时系统可能直接给浏览器。所以这里显式把 GitHub App 挑出来优先启动。
+     * ⚠️ 为什么之前一直走浏览器（三个坑叠在一起，都已修）：
+     *
+     *   坑 1｜包可见性。Android 11（API 30）起 `queryIntentActivities()`
+     *        默认只能看到系统浏览器这类「默认可见」的包，GitHub App 直接被过滤掉。
+     *        必须在 Manifest 里声明 `<queries>`（已加）。
+     *
+     *   坑 2｜**不能用 `setPackage`**。GitHub App 对 github.com 用的是
+     *        App Links（`android:autoVerify="true"`）：系统只有在**不指定包名**、
+     *        走完整 App Links 验证流程时才会把链接交给它。
+     *        一旦 `setPackage("com.github.android")` 强制锁定包名，
+     *        系统就改成「在这个包内找能处理该 intent 的 activity」，
+     *        而它的 activity 只声明了 autoVerify 的 App Links、没有普通
+     *        BROWSABLE filter → 找不到 → ActivityNotFoundException → 退回浏览器。
+     *
+     *   坑 3｜应该**直接用 `queryIntentActivities` 返回的 ComponentName 启动**。
+     *        那是系统自己算出来的「谁真的能接住这个链接」，
+     *        比我们猜包名可靠得多。
      */
     private fun openDeviceVerification(verificationUri: String): Boolean {
         val uri = Uri.parse(verificationUri)
 
-        // ① 先找 GitHub App
-        val githubApp = findGitHubAppFor(uri)
-        if (githubApp != null) {
+        // ① 先找 GitHub App（直接拿 ComponentName，不用 setPackage）
+        val target = findGitHubAppFor(uri)
+        if (target != null) {
             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri).apply {
-                setPackage(githubApp)
+                component = target
                 addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             try {
                 startActivity(intent)
-                Log.i(TAG, "用 GitHub App 打开授权页：$githubApp")
+                Log.i(TAG, "用 GitHub App 打开授权页：$target")
                 return true
             } catch (t: Throwable) {
-                Log.w(TAG, "GitHub App ($githubApp) 拉起失败，退回浏览器", t)
+                Log.w(TAG, "GitHub App ($target) 拉起失败，退回浏览器", t)
             }
         } else {
             Log.i(TAG, "没找到 GitHub App，用浏览器打开")
@@ -620,36 +685,55 @@ import kotlin.math.roundToInt
     }
 
     /**
-     * 找出能处理该链接的 GitHub App 包名；找不到返回 null。
+     * 找出能处理该链接的 GitHub App 组件；找不到返回 null。
      *
-     * 判定方式（不写死单一包名）：
-     *   · 先匹配已知的官方包名（最快最准）
-     *   · 再用「应用名包含 github 且不是浏览器」兜底
+     * 返回 `ComponentName` 而不是包名 —— 这样才能精确启动
+     * 系统认定的那个 activity，绕开 `setPackage` 与 App Links 的冲突。
+     *
+     * 分三层判定：
+     *   ① 官方包名出现在 `queryIntentActivities` 结果里 → 用系统给的 ComponentName
+     *   ② 应用名含 github 且不是浏览器 → 用系统给的 ComponentName
+     *   ③ 都没有 → null，调用方退回浏览器
      */
-    private fun findGitHubAppFor(uri: Uri): String? {
+    private fun findGitHubAppFor(uri: Uri): android.content.ComponentName? {
         return try {
             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
             val handlers = packageManager.queryIntentActivities(intent, 0)
 
             val candidates = handlers.mapNotNull { it.activityInfo?.packageName }.distinct()
             Log.i(TAG, "能处理授权链接的 App：$candidates")
+            for (pkg in GITHUB_APP_PACKAGES) {
+                Log.i(TAG, "  $pkg 已安装=${isInstalled(pkg)} 在候选=${pkg in candidates}")
+            }
 
-            // 优先：已知的官方包名
-            candidates.firstOrNull { it in GITHUB_APP_PACKAGES }
-                ?: candidates.firstOrNull { pkg ->
+            val picked = handlers.firstOrNull { it.activityInfo?.packageName in GITHUB_APP_PACKAGES }
+                ?: handlers.firstOrNull { info ->
+                    val pkg = info.activityInfo?.packageName ?: return@firstOrNull false
                     if (pkg in BROWSER_PACKAGES) return@firstOrNull false
                     val label = try {
                         packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0))
                     } catch (t: Throwable) {
                         ""
                     }.toString()
-                    // 应用名里带 github，且不是浏览器
                     label.contains("github", ignoreCase = true)
                 }
+
+            picked?.activityInfo?.let {
+                Log.i(TAG, "挑中：${it.packageName}/${it.name}")
+                android.content.ComponentName(it.packageName, it.name)
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "枚举处理程序失败", t)
             null
         }
+    }
+
+    /** 该包是否已安装 */
+    private fun isInstalled(pkg: String): Boolean = try {
+        packageManager.getApplicationInfo(pkg, 0)
+        true
+    } catch (t: Throwable) {
+        false
     }
 
     private fun toDp(px: Int): Int = (px / resources.displayMetrics.density).roundToInt()
