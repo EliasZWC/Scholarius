@@ -269,6 +269,9 @@ import kotlin.math.roundToInt
             WebAppBridge(
                 onThemeMode = { mode -> runOnUiThread { setThemeMode(mode) } },
                 onOpenExternal = { url -> runOnUiThread { openExternally(url) } },
+                onOpenVerification = { url ->
+                    runOnUiThread { openDeviceVerification(url) }
+                },
                 onFinishSplash = { runOnUiThread { finishSplash() } },
                 onStartLogin = { runOnUiThread { startLogin() } },
                 onCancelLogin = { GitHubAuth.cancel() },
@@ -448,14 +451,23 @@ import kotlin.math.roundToInt
                 return@requestDeviceCode
             }
 
-            // 把 user_code 显示给用户，并自动跳去授权页（优先 GitHub App，其次浏览器）
+            /*
+              ⚠️ 这里**故意不自动跳转**授权页（v0.0.21 改）。
+
+              原因：设备码显示在 Scholarius 自己的页面上，一旦自动拉起
+              GitHub App 或浏览器，用户就看不到码了 —— 而 GitHub App
+              盖住我们之后并不会帮他填，用户只能看到「没有任何反应」。
+
+              改成由用户在网页上点「打开授权页」，点击时先弹确认框
+              复述一遍设备码（网页层负责），用户记住了再跳。
+              跳转仍由 [openDeviceVerification] 执行，只是触发点交还给用户。
+            */
             evaluateInWeb(
                 "window.ScholariusShell && window.ScholariusShell.onLoginCode(" +
                     "${quote(device.userCode)}, " +
                     "${quote(device.verificationUri)}, " +
                     "${device.expiresInSeconds});"
             )
-            openDeviceVerification(device.verificationUri)
 
             GitHubAuth.pollForToken(
                 deviceCode = device,
@@ -887,40 +899,56 @@ import kotlin.math.roundToInt
     }
 
     /**
-     * 在指定包内打开授权链接。逐个尝试三种方式，任一成功即返回 true。
+     * 在指定包内打开授权链接。逐个尝试，任一成功即返回 true。
      *
-     * 实测（v0.0.17 真机日志）证实了 GitHub App 的行为：
-     *   · `getApplicationInfo` 能查到它（`<package>` 点名生效，名称 'GitHub'）
-     *   · 但 `queryIntentActivities` 结果里**没有它** —— 说明它没注册
-     *     `https` 的 VIEW intent-filter，`queryIntentActivities` 这条路走不通
-     *   · 而 `getLaunchIntentForPackage` 能拿到它的启动 Activity
+     * 实测（v0.0.20 真机反向探测，7 个候选逐个问系统）：
      *
-     * 所以这里不再依赖「谁声明了能处理这个链接」，而是**主动进它的包里去开**。
+     *   github://                          → 可处理
+     *   github://github.com                → 可处理
+     *   github://login/device              → 可处理
+     *   github://github.com/login/device   → 可处理
+     *   https://github.com/login/device    → 无匹配
+     *   https://github.com                 → 无匹配
+     *   https://github.com/login           → 无匹配
      *
-     * ⚠️ 必须用 `setPackage` + `ACTION_VIEW`（而不是 `component`）：
-     *    授权页是 https 链接，GitHub App 内部用 App Links/Custom Tabs 处理它，
-     *    只要 intent 落在它的包内，系统就会交给它。
+     * 两个结论，都推翻了之前的假设：
+     *
+     *   ① GitHub App **只认 `github://`，完全不管 `https`**。
+     *      所以 `ACTION_VIEW(https) + setPackage` 必然抛
+     *      ActivityNotFoundException —— 它不是「包可见性」问题，
+     *      是它压根没注册 https。`<queries>` 加 `https` 也没用。
+     *
+     *   ② `github://` 后面**可以带 path**（带 host+path 也「可处理」）。
+     *      上一版之所以「弹选择框」，是因为当时**没加 `setPackage`** ——
+     *      没有包名限定，path 不匹配时会退化成「让用户挑 App」。
+     *      加了 setPackage 之后 path 不匹配只会抛异常，不会弹框。
+     *
+     * ⚠️ 因此顺序必须**由具体到笼统**：
+     *    先试「带完整 host+path」（信息最全，GitHub App 能直接定位到设备授权页），
+     *    再退到裸 `github://`。
+     *    反过来先试裸 `github://` 会「成功」但什么都不做 ——
+     *    `startActivity` 返回成功只代表有 activity 接住，不代表它干了有用的事。
+     *    实测裸 scheme 的表现就是：日志写「成功」，用户看到「没有任何反应」。
      */
     private fun launchInPackage(pkg: String, uri: Uri): Boolean {
-        // 方式 1：ACTION_VIEW + setPackage —— 让系统在包内挑能接住这个 url 的 activity
-        if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
-                .apply { setPackage(pkg) }, "VIEW+setPackage")) {
-            return true
+        // 方式 1：把 https 的 host+path 原样搬到 github:// 上
+        val deep = httpsToGithubDeepLink(uri)
+        if (deep != null) {
+            if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW, deep)
+                    .apply { setPackage(pkg) }, "github:// 带路径深链 $deep")) {
+                return true
+            }
+        } else {
+            debugLog("  跳过带路径深链：无法从 $uri 构造")
         }
 
-        /*
-          方式 2：自定义深链。
-          ⚠️ 只试**裸 scheme**（github://），不带我们自己拼的 path ——
-             上一版拼了 `github://github.com/login/device` 并「成功」，
-             但系统弹的是「选择打开方式」，说明这个 path 不匹配它的规则。
-             裸 scheme 是最保守的写法，能匹配它任何一个 github:// 规则。
-        */
+        // 方式 2：裸 scheme。能匹配它任何一条 github:// 规则，但可能「成功却无动作」
         if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW,
                 Uri.parse("github://")).apply { setPackage(pkg) }, "github:// 裸深链")) {
             return true
         }
 
-        // 方式 3：直接启动它的主 Activity（最粗暴，但能保证把 App 带到前台）
+        // 方式 3：直接启动它的主 Activity（最粗暴，只保证把 App 带到前台）
         val launch = try {
             packageManager.getLaunchIntentForPackage(pkg)
         } catch (t: Throwable) {
@@ -933,6 +961,33 @@ import kotlin.math.roundToInt
         }
 
         return false
+    }
+
+    /**
+     * `https://github.com/login/device` → `github://github.com/login/device`
+     *
+     * 只搬 host + path + query，丢弃原 scheme。返回 null 表示构造不出来。
+     *
+     * ⚠️ 不做「猜它的 URL 规则」这种推断 ——
+     *    探测已证实带 host+path 的形式它接受，这里只做机械搬运。
+     */
+    private fun httpsToGithubDeepLink(uri: Uri): Uri? {
+        val host = uri.host ?: return null
+        val builder = StringBuilder("github://").append(host)
+        val path = uri.path
+        if (!path.isNullOrEmpty()) {
+            if (!path.startsWith("/")) builder.append('/')
+            builder.append(path)
+        }
+        val query = uri.query
+        if (!query.isNullOrEmpty()) {
+            builder.append('?').append(query)
+        }
+        return try {
+            Uri.parse(builder.toString())
+        } catch (t: Throwable) {
+            null
+        }
     }
 
     /** 启动一个 intent；成功返回 true，失败打日志并返回 false */

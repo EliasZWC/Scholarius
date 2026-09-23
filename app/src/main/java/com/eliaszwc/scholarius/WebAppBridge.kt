@@ -20,6 +20,8 @@ class WebAppBridge(
     private val onStartLogin: () -> Unit,
     private val onCancelLogin: () -> Unit,
     private val onSignOut: () -> Unit,
+    /** 打开 Device Flow 授权页：优先 GitHub App，其次浏览器 */
+    private val onOpenVerification: (String) -> Unit,
     // --- 更新 ---
     private val onCheckUpdate: () -> Unit,
     private val onDownloadUpdate: () -> Unit,
@@ -49,6 +51,19 @@ class WebAppBridge(
     @JavascriptInterface
     fun openExternal(url: String) {
         onOpenExternal(url)
+    }
+
+    /**
+     * 打开 Device Flow 授权页。
+     *
+     * ⚠️ 与 [openExternal] 的区别：这个**优先拉起 GitHub App**，
+     *    拉不起来才退回浏览器。
+     *    网页层不能自己决定用哪个 —— 包可见性、setPackage、深链格式
+     *    都只有原生才知道。
+     */
+    @JavascriptInterface
+    fun openVerification(url: String) {
+        onOpenVerification(url)
     }
 
     /** 网页的启动动画演完了，可以把窗口外观切回正常主题了 */

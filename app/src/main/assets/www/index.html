@@ -510,6 +510,22 @@
         </div>
     </section>
 
+    <!-- ==================================================================
+         通用确认弹层（由 ScholariusUI.confirmSheet 动态填充）
+
+         为什么要一个「通用」的：离开 Scholarius 去授权页前必须复述设备码，
+         而这段文案依赖运行时拿到的那串码，写不成静态 i18n 键。
+         ================================================================== -->
+    <section class="sheet" id="sheet-confirm" role="dialog" aria-modal="true"
+        aria-labelledby="confirm-title" hidden>
+        <h2 class="sheet-title" id="confirm-title"></h2>
+        <p class="sheet-text is-multiline" id="confirm-message"></p>
+        <div class="form-actions">
+            <button class="btn" type="button" id="confirm-cancel">Cancel</button>
+            <button class="btn btn-action" type="button" id="confirm-ok"></button>
+        </div>
+    </section>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <script src="i18n.js"></script>

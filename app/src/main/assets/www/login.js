@@ -188,15 +188,52 @@
         global.ScholariusNative.startLogin();
     }
 
-    /** 重新打开 GitHub 授权页（设备码已经在手上时用） */
+    /**
+     * 重新打开 GitHub 授权页（设备码已经在手上时用）。
+     *
+     * ⚠️ 不能直接跳 —— 必须先弹确认框把设备码复述一遍。
+     *
+     * 为什么：GitHub App / 浏览器一起来就会**盖住 Scholarius**，
+     * 而设备码显示在我们自己的页面上。用户被带走后既看不到码、
+     * App 也不会替他填，结果就是「没有任何反应」。
+     *
+     * 所以策略改成：用户点按钮 → 弹框显示设备码并提醒记下 →
+     * 用户确认后才跳。
+     */
     function openVerificationPage() {
         var uri = codeEl.dataset.uri;
         if (!uri) {
             return;
         }
-        if (global.ScholariusNative &&
-            typeof global.ScholariusNative.openExternal === 'function') {
-            global.ScholariusNative.openExternal(uri);
+
+        if (!global.ScholariusUI || !global.ScholariusUI.confirmSheet) {
+            launchVerification(uri);
+            return;
+        }
+
+        global.ScholariusUI.confirmSheet({
+            title: t('login.leaveTitle'),
+            message: t('login.leaveMessage').replace('{code}', codeEl.textContent),
+            confirmLabel: t('login.leaveConfirm'),
+            cancelLabel: t('login.leaveCancel'),
+            onConfirm: function () {
+                launchVerification(uri);
+            }
+        });
+    }
+
+    /** 确认后真正跳转：交给原生决定用 App 还是浏览器 */
+    function launchVerification(uri) {
+        var bridge = global.ScholariusNative;
+
+        if (bridge && typeof bridge.openVerification === 'function') {
+            bridge.openVerification(uri);
+            return;
+        }
+
+        // 兼容旧版桥（没有 openVerification 时退回纯浏览器）
+        if (bridge && typeof bridge.openExternal === 'function') {
+            bridge.openExternal(uri);
         }
     }
 

@@ -147,6 +147,70 @@
     }
 
     /* ----------------------------------------------------------------------
+       通用确认弹层
+       ---------------------------------------------------------------------- */
+
+    /** 当前的确认回调；null 表示弹层没开 */
+    var confirmHandler = null;
+
+    /**
+     * 弹一个「标题 + 正文 + 取消/确定」的确认框。
+     *
+     * @param options { title, message, confirmLabel, cancelLabel, onConfirm }
+     *
+     * 为什么不复用 sheet-signout：那个的文案写死在 i18n 里，
+     * 而这里要显示运行时才拿到的设备码，必须动态填。
+     */
+    function confirmSheet(options) {
+        var sheet = document.getElementById('sheet-confirm');
+        if (!sheet) {
+            // 没有元素就地降级：直接执行，不让功能卡住
+            if (options && typeof options.onConfirm === 'function') {
+                options.onConfirm();
+            }
+            return;
+        }
+
+        var titleEl = document.getElementById('confirm-title');
+        var messageEl = document.getElementById('confirm-message');
+        var okBtn = document.getElementById('confirm-ok');
+        var cancelBtn = document.getElementById('confirm-cancel');
+
+        titleEl.textContent = options.title || '';
+        /*
+          ⚠️ 用 textContent 而不是 innerHTML ——
+              正文里含用户可见的设备码，虽然是我们自己传的，
+              但保持「不用 innerHTML 渲染动态内容」这条规矩能避免以后出错。
+        */
+        messageEl.textContent = options.message || '';
+        okBtn.textContent = options.confirmLabel || '';
+        cancelBtn.textContent = options.cancelLabel || '';
+
+        confirmHandler = typeof options.onConfirm === 'function'
+            ? options.onConfirm
+            : null;
+
+        okBtn.onclick = function () {
+            var handler = confirmHandler;
+            confirmHandler = null;
+            closeSheet();
+            if (handler) {
+                handler();
+            }
+        };
+
+        cancelBtn.onclick = function () {
+            confirmHandler = null;
+            closeSheet();
+        };
+
+        openSheet(sheet, function () {
+            /* 被任何其它途径关掉（返回键、被顶掉）都视为取消 */
+            confirmHandler = null;
+        });
+    }
+
+    /* ----------------------------------------------------------------------
        设置行：左名称 / 右当前值，点整行弹选项
        ---------------------------------------------------------------------- */
 
@@ -388,6 +452,7 @@
         notifyDismissed: notifyDismissed,
         isSheetOpen: isSheetOpen,
         currentSheet: currentSheetEl,
+        confirmSheet: confirmSheet,
         createRowPicker: createRowPicker,
         attachLongPress: attachLongPress,
         justLongPressed: justLongPressed,

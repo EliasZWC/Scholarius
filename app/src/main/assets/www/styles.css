@@ -651,6 +651,15 @@ body {
     color: var(--on-surface-variant);
 }
 
+/*
+  含换行符的弹层正文（设备码确认框）。
+  JS 用 textContent 填入带 \n 的文案，默认会被折叠成空格，
+  必须显式 pre-line 才按换行显示。
+*/
+.sheet-text.is-multiline {
+    white-space: pre-line;
+}
+
 .form-actions {
     display: flex;
     align-items: center;
