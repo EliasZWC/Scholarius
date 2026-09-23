@@ -9,6 +9,27 @@
     -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!--
+        ⚠️ 包可见性（Android 11 / API 30 起）。
+
+        登录时要「优先用 GitHub App 打开授权页」，靠的是
+        `packageManager.queryIntentActivities()` 列出所有能处理该 https 链接的 App。
+        API 30 起，除非显式声明可见性，否则 queryIntentActivities() **只能看到
+        系统浏览器这类默认可见的包** —— GitHub App 会被直接过滤掉，
+        于是永远挑不到它、每次都退回浏览器。
+
+        这正是「GitHub App 明明装了却只打开浏览器」的原因。
+
+        这里声明「我要查询能浏览 https 链接的 App」，让 GitHub App 出现在结果里。
+        不用 QUERY_ALL_PACKAGES —— 那是敏感权限，上架要额外说明，且完全没必要。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

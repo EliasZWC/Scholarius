@@ -25,7 +25,19 @@ class WebAppBridge(
     private val onDownloadUpdate: () -> Unit,
     private val onInstallUpdate: () -> Unit,
     private val onCloseUpdate: () -> Unit,
+    // --- 临时诊断（v0.0.6，定位完删）---
+    private val onTrace: (String) -> Unit,
 ) {
+
+    /**
+     * ⚠️ 临时诊断接口（v0.0.6）：把网页侧的启动时序送到 logcat。
+     * 真机上「启动页一闪而过」在桌面浏览器复现不出来，只能靠现场数据定位。
+     * 定位完连同 app.js 里的 `trace()` 一起删掉。
+     */
+    @JavascriptInterface
+    fun trace(message: String) {
+        onTrace(message)
+    }
 
     /** 网页切换主题后通知原生（`light` / `dark` / `system`） */
     @JavascriptInterface

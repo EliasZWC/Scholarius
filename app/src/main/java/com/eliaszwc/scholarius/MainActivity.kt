@@ -98,7 +98,10 @@ import kotlin.math.roundToInt
 
         // 网页一直没就绪的话不能无限黑屏，兜一个上限
         window.decorView.postDelayed({
-            if (splashActive) finishSplash()
+            if (splashActive) {
+                Log.i(TAG, "[native] splash 兜底超时 ${'$'}SPLASH_TIMEOUT_MS ms，强制结束")
+                finishSplash()
+            }
         }, SPLASH_TIMEOUT_MS)
 
         startApp()
@@ -199,6 +202,7 @@ import kotlin.math.roundToInt
                 onDownloadUpdate = { runOnUiThread { startUpdateDownload() } },
                 onInstallUpdate = { runOnUiThread { installDownloaded() } },
                 onCloseUpdate = { runOnUiThread { closeUpdateFlow() } },
+                onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,
         )
@@ -693,8 +697,12 @@ import kotlin.math.roundToInt
 
     /** 网页的启动动画演完了，把外观切回正常主题 */
     private fun finishSplash() {
-        if (!splashActive) return
+        if (!splashActive) {
+            Log.i(TAG, "[native] finishSplash 忽略（已失效）")
+            return
+        }
         splashActive = false
+        Log.i(TAG, "[native] finishSplash 生效 @${android.os.SystemClock.elapsedRealtime()}")
         applyTheme()
     }
 

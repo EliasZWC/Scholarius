@@ -25,6 +25,19 @@
      */
     var SPLASH_FALLBACK_MS = 3400;
 
+    /**
+     * 启动页最短可见时长。
+     *
+     * ⚠️ 这是「一闪而过」的兜底保险。
+     *    样式表在 WebView 里是异步加载的：若脚本执行时 styles.css 还没生效，
+     *    .splash 上根本没有 animation，animationDuration 会是 0s，
+     *    于是 animationend 会**立即**触发，启动页瞬间被收掉。
+     *
+     *    真实动画是 2200ms，这里取 2000ms 作为下限 ——
+     *    比真时长略短，不会把正常动画也拖长，但足以拦住「瞬退」。
+     */
+    var SPLASH_MIN_VISIBLE_MS = 2000;
+
     var tabs = Array.prototype.slice.call(document.querySelectorAll('.nav-item'));
     var titleEl = document.getElementById('page-title');
     var appEl = document.getElementById('app');
@@ -38,6 +51,10 @@
     var signedIn = null;
     /** 启动动画是否已播完 */
     var splashDone = false;
+    /** 启动页开始显示的时刻（用于最短可见时长判定），见 setupSplash() */
+    var splashStartedAt = 0;
+    /** 是否已为「过早的 animationend」排过一次延后收尾，避免重复排 */
+    var splashRetryScheduled = false;
     /** 是否需要退场（动画播完 && 登录状态已知，两个条件都满足才退） */
     var pendingDismiss = false;
 
@@ -78,6 +95,8 @@
     /** 登录状态变化：这是「进哪个界面」的唯一判据 */
     function setAccount(isSignedIn, login, name, avatarUrl) {
         signedIn = !!isSignedIn;
+        trace('account', 'signedIn=' + signedIn +
+            ' @' + Math.round(performance.now()) + 'ms');
 
         if (window.ScholariusLogin) {
             window.ScholariusLogin.setAccount(isSignedIn, login, name, avatarUrl);
@@ -290,6 +309,23 @@
      *
      * 所以两个条件都满足才退场；先到的那个只是记一个标记。
      */
+    /*
+      ⚠️ 临时诊断（v0.0.6）：把启动时序送到 logcat。
+      真机上「一闪而过」在桌面浏览器复现不出来，只能靠现场数据定位。
+      定位完就删掉这个函数及其调用点。
+    */
+    function trace(stage, detail) {
+        try {
+            if (window.ScholariusNative &&
+                typeof window.ScholariusNative.trace === 'function') {
+                window.ScholariusNative.trace(
+                    stage + (detail === undefined ? '' : ' | ' + detail));
+            }
+        } catch (e) {
+            /* 预览环境没有桥，忽略 */
+        }
+    }
+
     /**
      * 启动动画的收尾。
      *
@@ -308,38 +344,88 @@
     function setupSplash() {
         var splash = document.getElementById('splash');
         if (!splash) {
+            trace('splash:missing');
             splashDone = true;
             tryDismissSplash();
             return;
         }
 
-        var markDone = function () {
+        var cssDur = getComputedStyle(splash).animationDuration;
+        var anims = splash.getAnimations ? splash.getAnimations() : null;
+        trace('splash:setup',
+            'readyState=' + document.readyState +
+            ' cssDur=' + cssDur +
+            ' animCount=' + (anims ? anims.length : 'n/a') +
+            ' reduced=' + (window.matchMedia
+                ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                : 'n/a'));
+
+        /*
+          ⚠️ 关键防御：不能只认 animationend。
+
+          如果 styles.css 还没被应用（WebView 里样式表是异步加载的），
+          .splash 上根本没有 animation，animationDuration 会是 0s，
+          于是「动画」瞬间就算走完、animationend 立即触发 ——
+          表现就是**启动页一闪而过**。
+
+          这是本次「一闪而过」最可能的机制：脚本执行早于样式表生效。
+
+          所以这里记下开始时刻，收尾时用「真实经过时间」兜住下限：
+          splash 至少要显示 SPLASH_MIN_VISIBLE_MS 才能退场。
+        */
+        splashStartedAt = Date.now();
+
+        var markDone = function (why) {
             if (splashDone) {
                 return;
             }
+
+            var elapsed = Date.now() - splashStartedAt;
+            if (elapsed < SPLASH_MIN_VISIBLE_MS) {
+                /*
+                  还没到最小可见时长 —— 判定为「样式表尚未生效导致的假 animationend」，
+                  延后到补足时长再收，别让品牌动画一闪而过。
+                */
+                trace('splash:early', why + ' elapsed=' + elapsed + 'ms，延后');
+                if (!splashRetryScheduled) {
+                    splashRetryScheduled = true;
+                    window.setTimeout(function () {
+                        splashRetryScheduled = false;
+                        markDone('delayed:' + why);
+                    }, SPLASH_MIN_VISIBLE_MS - elapsed);
+                }
+                return;
+            }
+
             splashDone = true;
+            trace('splash:done', why + ' @' + elapsed + 'ms');
             tryDismissSplash();
         };
 
         splash.addEventListener('animationend', function (event) {
             // 只认 splash 自己的动画；logo / 名称的 animationend 会一起冒泡上来
             if (event.target === splash) {
-                markDone();
+                markDone('animationend:' + event.animationName);
             }
         });
 
-        window.setTimeout(markDone, SPLASH_FALLBACK_MS);
+        window.setTimeout(function () {
+            markDone('fallback');
+        }, SPLASH_FALLBACK_MS);
     }
 
     /** 动画播完 且 登录状态已知 → 才收起启动页并放行 */
     function tryDismissSplash() {
         if (!splashDone || signedIn === null) {
+            trace('dismiss:blocked',
+                'splashDone=' + splashDone + ' signedIn=' + signedIn);
             return;
         }
 
         var splash = document.getElementById('splash');
         if (splash && !splash.hidden) {
             splash.hidden = true;
+            trace('splash:hidden', '@' + Math.round(performance.now()) + 'ms');
 
             try {
                 if (window.ScholariusNative &&

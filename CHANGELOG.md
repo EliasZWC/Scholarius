@@ -4,6 +4,40 @@
 
 ---
 
+## [0.0.6] - 2026-09-23
+
+### 修复
+
+- **登录只打开浏览器、从不拉起 GitHub App（找到根因）**：
+  Manifest 里**没有 `<queries>` 声明**。
+
+  登录时要「优先用 GitHub App 打开授权页」，靠的是 `queryIntentActivities()`
+  列出所有能处理该 https 链接的 App。
+  **Android 11（API 30）起，除非显式声明可见性，`queryIntentActivities()`
+  只能看到系统浏览器这类默认可见的包** —— GitHub App 会被直接过滤掉，
+  于是永远挑不到它，每次都退回浏览器。
+
+  这与「包名写错」无关，是包可见性限制。现在声明了
+  `<intent><action VIEW /><data scheme="https" /></intent>`，
+  不使用 `QUERY_ALL_PACKAGES`（敏感权限，上架需额外说明，没必要）。
+
+- 登录页布局（用户 2026-09-23 要求）：
+  - 整块内容上移（改为从 `14vh` 往下排，不再垂直居中）；
+  - 提示文字改为 `Sign in with GitHub to Continue`；
+  - **错误提示从按钮上方移到按钮下方** —— 放上面会把按钮往下推，
+    重试时按钮位置跳动，反而不好点。
+
+### 诊断（临时）
+
+- 启动页「一闪而过」到 v0.0.5 仍未解决，本轮**不再靠猜**：
+  在网页侧埋了时序日志（`app.js` 的 `trace()` + `WebAppBridge.trace()`），
+  输出到 logcat 的 `Scholarius` tag。
+  装上后跑一次 `adb logcat -s Scholarius` 即可看到
+  CSS 动画时长、`animationend` 实际到达时刻、退场被阻塞在哪个条件。
+  定位完成后会移除。
+
+---
+
 ## [0.0.5] - 2026-09-23
 
 ### 修复
@@ -195,3 +229,4 @@
 [0.0.3]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.3
 [0.0.4]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.4
 [0.0.5]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.5
+[0.0.6]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.6

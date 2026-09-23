@@ -23,7 +23,7 @@
             'action.copy': 'Copy',
 
             // --- 登录页 ---
-            'login.intro': 'Sign in with GitHub to sync your reading data.',
+            'login.intro': 'Sign in with GitHub to Continue',
             'login.action': 'Sign in with GitHub',
             'login.codeHint': 'Enter this code on GitHub:',
             'login.codeCopied': 'Code copied',
@@ -87,7 +87,7 @@
             'action.confirm': '确定',
             'action.copy': '复制',
 
-            'login.intro': '用 GitHub 登录，同步你的阅读数据。',
+            'login.intro': '用 GitHub 登录以继续',
             'login.action': '用 GitHub 登录',
             'login.codeHint': '在 GitHub 上输入这个码：',
             'login.codeCopied': '已复制设备码',

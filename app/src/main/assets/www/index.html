@@ -270,7 +270,7 @@
 
             <h1 class="login-title">Scholarius</h1>
             <p class="login-text" id="login-text" data-i18n="login.intro">
-                Sign in with GitHub to sync your reading data.
+                Sign in with GitHub to Continue
             </p>
 
             <!-- 设备码：等原生拿到后填进来 -->
@@ -281,8 +281,6 @@
                 <button class="login-code" type="button" id="login-code" aria-describedby="login-code-hint"></button>
                 <p class="login-code-wait" id="login-code-wait"></p>
             </div>
-
-            <p class="login-error" id="login-error" hidden></p>
 
             <button class="btn btn-login" type="button" id="login-action">
                 <span class="btn-login-icon" aria-hidden="true">
@@ -300,6 +298,12 @@
             </button>
             <button class="btn btn-ghost" type="button" id="login-cancel" hidden
                 data-i18n="action.cancel">Cancel</button>
+
+            <!--
+              错误提示放在按钮**下面**（用户 2026-09-23 裁决）。
+              放上面会把按钮往下推，重试时按钮位置跳动，反而不好点。
+            -->
+            <p class="login-error" id="login-error" hidden></p>
         </div>
     </div>
 
