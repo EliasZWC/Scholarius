@@ -76,16 +76,28 @@
           日志区 user-select: text 且 -webkit-user-select: text，
           否则移动端长按选不中、复制不了。
         */
+        /*
+          ⚠️ 诊断浮层**必须贴在顶部**，不能贴底部。
+
+          原因：所有弹层（更新、确认框、退出登录）都是从底部升起的。
+          浮层原来用 bottom: 0 + z-index: 9999，会**整块压住弹层**——
+          实测 elementFromPoint 在确认框「继续」按钮的位置返回的是
+          `.diag-log`，即按钮完全不可点。表现就是「点了没反应」。
+
+          挪到顶部后，两者不再抢同一块区域；弹层最高也只到屏幕中部附近。
+        */
         #__diag {
             position: fixed;
             left: 0;
             right: 0;
-            bottom: 0;
+            top: 0;
+            /* 让开状态栏 / 刘海 */
+            padding-top: var(--safe-top, 0px);
             z-index: 9999;
             background: rgba(0, 0, 0, .92);
             color: #7EE2A8;
             font: 11px/1.45 monospace;
-            border-top: 1px solid #2E5A3E;
+            border-bottom: 1px solid #2E5A3E;
         }
 
         #__diag .diag-bar {
@@ -131,7 +143,8 @@
         #__diag .diag-log {
             margin: 0;
             padding: 8px 10px;
-            max-height: 46vh;
+            /* 从顶部展开，太高会盖住内容；38vh 够看十几行 */
+            max-height: 38vh;
             overflow: auto;
             white-space: pre-wrap;
             word-break: break-all;

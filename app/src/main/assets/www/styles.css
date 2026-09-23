@@ -613,7 +613,21 @@ body {
     right: var(--safe-right);
     /* 键盘弹起时整体上移，避免被输入法盖住 */
     bottom: var(--keyboard);
-    z-index: 11;
+    /*
+      ⚠️ 必须**高于登录页（50）与导航栏**。
+
+      原来是 11，导致「打开授权页」的确认框实际弹出后
+      被登录页（z-index: 50）整块盖住 —— 用户看不到、也点不到。
+      实测：elementFromPoint 在「继续」按钮位置返回的是别的元素，
+      即按钮不可达（okIsReachable=false）。
+
+      层级设计（自下而上）：
+         11  普通弹层（在内容之上）
+         50  登录页 / 启动页
+        100  更新弹层（要盖住登录页）
+       9999  诊断浮层（最顶，调试用）
+    */
+    z-index: 100;
     max-height: calc(100dvh - var(--keyboard) - 24px);
     overflow-y: auto;
     overscroll-behavior: contain;
