@@ -76,6 +76,8 @@ object GitHubAuth {
         val login: String,
         val name: String,
         val avatarUrl: String,
+        /** GitHub 数字账号 ID。未登录/读取失败时为 0 */
+        val id: Long,
         val token: String,
     )
 
@@ -242,7 +244,7 @@ object GitHubAuth {
      * 拿不到资料只是个人页显示不全，不该让用户重登。
      */
     private fun fetchAccount(token: String): Account {
-        val fallback = Account(login = "", name = "", avatarUrl = "", token = token)
+        val fallback = Account(login = "", name = "", avatarUrl = "", id = 0L, token = token)
 
         return try {
             val connection = (URL(USER_URL).openConnection() as HttpURLConnection).apply {
@@ -265,6 +267,12 @@ object GitHubAuth {
                     // name 可能为 null，退回 login
                     name = json.optString("name").ifBlank { login },
                     avatarUrl = json.optString("avatar_url"),
+                    /*
+                      `id` 是 GitHub 给的数字账号 ID，一经分配永不变
+                      （改名、改邮箱都不影响）—— 账户页显示它，
+                      用户能据此确认「确实是这个账号」。
+                    */
+                    id = json.optLong("id", 0L),
                     token = token,
                 )
             } finally {

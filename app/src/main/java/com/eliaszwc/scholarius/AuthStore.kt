@@ -80,12 +80,21 @@ class AuthStore(context: Context) {
         get() = read(KEY_AVATAR)
         set(value) = write(KEY_AVATAR, value)
 
+    /**
+     * GitHub 数字账号 ID。以字符串存 —— 老的 SharedPreferences 只有字符串读写，
+     * 为一个字段另开一套 int 存取不划算；读的时候转回 Long。
+     */
+    var accountId: Long
+        get() = read(KEY_ACCOUNT_ID)?.toLongOrNull() ?: 0L
+        set(value) = write(KEY_ACCOUNT_ID, if (value > 0) value.toString() else null)
+
     /** 一次写入全部账号信息 */
     fun save(account: GitHubAuth.Account) {
         token = account.token
         login = account.login
         name = account.name
         avatarUrl = account.avatarUrl
+        accountId = account.id
     }
 
     /**
@@ -98,6 +107,7 @@ class AuthStore(context: Context) {
             .remove(KEY_LOGIN)
             .remove(KEY_NAME)
             .remove(KEY_AVATAR)
+            .remove(KEY_ACCOUNT_ID)
             .apply()
     }
 
@@ -116,5 +126,6 @@ class AuthStore(context: Context) {
         private const val KEY_LOGIN = "login"
         private const val KEY_NAME = "name"
         private const val KEY_AVATAR = "avatar_url"
+        private const val KEY_ACCOUNT_ID = "account_id"
     }
 }

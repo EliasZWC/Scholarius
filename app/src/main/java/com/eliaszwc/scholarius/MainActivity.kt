@@ -424,12 +424,17 @@ import kotlin.math.roundToInt
      */
     private fun pushAccountToWeb() {
         val signedIn = auth.isSignedIn
+        /*
+          ⚠️ token **不在这里** —— 网页只拿到展示用的四个字段。
+          accountId 是数字，不能走 quote()（那会包成字符串），直接拼。
+        */
         evaluateInWeb(
             "window.ScholariusShell && window.ScholariusShell.setAccount(" +
                 "$signedIn, " +
                 "${quote(auth.login)}, " +
                 "${quote(auth.name)}, " +
-                "${quote(auth.avatarUrl)});"
+                "${quote(auth.avatarUrl)}, " +
+                "${auth.accountId});"
         )
     }
 

@@ -496,6 +496,197 @@ body {
     text-overflow: ellipsis;
 }
 
+/*
+  整块可点：进入账户详情页。
+  只加 pointer 反馈，不改布局 —— 布局仍由 .account-card 的 flex 决定。
+*/
+.account-card[role="button"] {
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 120ms ease, opacity 120ms ease, background-color 160ms ease;
+}
+
+.account-card[role="button"]:active {
+    transform: scale(0.985);
+    opacity: 0.7;
+}
+
+/* 右侧指示箭头：与 .account-info 同排，靠 flex 自动贴到最右 */
+.account-chevron {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    color: var(--on-surface-variant);
+}
+
+.account-chevron svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+}
+
+/* --------------------------------------------------------------------------
+   账户详情页（全屏覆盖层，照搬 Livolog 的 .detail）
+   -------------------------------------------------------------------------- */
+
+.detail {
+    position: fixed;
+    inset: 0;
+    /*
+      z-index 6：高于内容与底部导航，低于 .login(50) 与 .sheet(100)。
+      账户页是从「已登录」状态进入的，不会被登录页盖住；
+      但在它之上仍需要能弹出确认框（.sheet = 100）。
+    */
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    padding-top: var(--safe-top);
+    padding-right: var(--safe-right);
+    padding-bottom: var(--safe-bottom);
+    padding-left: var(--safe-left);
+    background: var(--bg);
+    /* 从右侧滑入，与 Livolog 一致 */
+    transform: translateX(100%);
+    transition: transform 280ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.detail[hidden] {
+    display: none;
+}
+
+.detail.is-open {
+    transform: translateX(0);
+}
+
+.detail-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: 56px;
+    padding: 0 8px;
+}
+
+/* 标题吃掉中间所有空间并居中 —— 左右两个等宽元素把它压到正中 */
+.detail-header .page-title {
+    flex: 1 1 auto;
+    text-align: center;
+}
+
+/* 右侧占位：与 .icon-button 等宽，保证标题真居中而不是偏左 */
+.detail-header-spacer {
+    flex: 0 0 auto;
+    width: 40px;
+    height: 40px;
+}
+
+/* 圆形图标按钮（返回键）：与 Livolog 同一套 */
+.icon-button {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--on-surface-variant);
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 160ms ease, color 160ms ease;
+}
+
+.icon-button:active {
+    background: var(--surface-raised);
+    color: var(--on-surface);
+}
+
+.icon-button svg {
+    width: 22px;
+    height: 22px;
+    fill: currentColor;
+}
+
+.detail-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+
+/* 大头像 + 名字 + handle 的英雄区 */
+.profile-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 24px 20px;
+}
+
+.profile-avatar {
+    display: grid;
+    place-items: center;
+    width: 96px;
+    height: 96px;
+    margin-bottom: 12px;
+    border-radius: 50%;
+    background: var(--surface-raised);
+    color: var(--on-surface-variant);
+    font-size: 36px;
+    font-weight: 700;
+    overflow: hidden;
+}
+
+.profile-avatar img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    box-shadow: inset 0 0 0 1px var(--outline);
+    border-radius: 50%;
+}
+
+.profile-name {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--on-surface);
+    text-align: center;
+    word-break: break-word;
+}
+
+.profile-handle {
+    margin: 0;
+    font-size: 14px;
+    color: var(--on-surface-variant);
+    text-align: center;
+    word-break: break-all;
+}
+
+/*
+  只读的设置行：与可点行同一套排版，但不给按下反馈。
+  用 div 而非 button（不可点，不该进 tab 序、也不该有 role=button）。
+*/
+.setting-action.setting-static {
+    cursor: default;
+}
+
+/* 设置值里的小图标（如「在 GitHub 打开」的外链图标） */
+.setting-value-icon {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+    vertical-align: -4px;
+}
+
 /* --------------------------------------------------------------------------
    设置项
    -------------------------------------------------------------------------- */

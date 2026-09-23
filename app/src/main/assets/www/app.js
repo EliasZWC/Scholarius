@@ -85,14 +85,14 @@
     }
 
     /** 登录状态变化：这是「进哪个界面」的唯一判据 */
-    function setAccount(isSignedIn, login, name, avatarUrl) {
+    function setAccount(isSignedIn, login, name, avatarUrl, accountId) {
         signedIn = !!isSignedIn;
         trace('account', 'signedIn=' + signedIn +
             ' splashDone=' + splashDone +
             ' @' + Math.round(performance.now()) + 'ms');
 
         if (window.ScholariusLogin) {
-            window.ScholariusLogin.setAccount(isSignedIn, login, name, avatarUrl);
+            window.ScholariusLogin.setAccount(isSignedIn, login, name, avatarUrl, accountId);
         }
 
         /*

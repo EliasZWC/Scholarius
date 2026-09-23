@@ -19,6 +19,13 @@
     var versionName = '';
     var versionCode = 0;
 
+    /** 当前账号的展示信息（原生推过来；token 不跨层，这里没有） */
+    var currentLogin = '';
+    var currentAvatar = '';
+    var currentId = 0;
+    /** 显示名（GitHub 的 name，可能与 login 不同） */
+    var displayName = '';
+
     var setters = {};
 
     function t(key) {
@@ -150,7 +157,88 @@
         }
     }
 
+    /**
+     * 账户详情页的开合入口。
+     * 由 mountAccountDetail() 填充；导出给外部调用。
+     */
+    var detailController = {
+        open: function () { },
+        close: function () { }
+    };
+
+    /**
+     * 账户卡片 → 账户详情页（全屏覆盖层，照搬 Livolog 的 .detail 交互）。
+     *
+     * ⚠️ 用 `hidden` + `is-open` 两段式，而不是只切 class：
+     *    hidden 控制是否参与布局，is-open 控制位移动画。
+     *    只切 class 的话元素还在文档流里、且没 hidden，
+     *    首屏就会有一层透明的覆盖层盖住内容（点击全被它吃掉）。
+     */
+    function mountAccountDetail() {
+        var card = document.getElementById('account-card');
+        var panel = document.getElementById('account-detail');
+        var backBtn = document.getElementById('account-detail-back');
+        var openBtn = document.getElementById('account-detail-open');
+
+        if (!card || !panel) {
+            return;
+        }
+
+        function open() {
+            panel.hidden = false;
+            // 先让浏览器算一次布局，再加 is-open，否则 transition 不触发
+            if (panel.offsetWidth < 0) return;
+            panel.classList.add('is-open');
+        }
+
+        function close() {
+            panel.classList.remove('is-open');
+            /*
+              等滑出动画跑完再 hidden，否则会「啪」地消失。
+              280ms 与 .detail 的 transition 时长一致。
+            */
+            global.setTimeout(function () {
+                if (!panel.classList.contains('is-open')) {
+                    panel.hidden = true;
+                }
+            }, 280);
+        }
+
+        card.addEventListener('click', open);
+        // 键盘可达（卡片是 role="button" tabindex="0"）
+        card.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                open();
+            }
+        });
+
+        if (backBtn) {
+            backBtn.addEventListener('click', close);
+        }
+
+        if (openBtn) {
+            openBtn.addEventListener('click', function () {
+                if (currentLogin &&
+                    global.ScholariusNative &&
+                    typeof global.ScholariusNative.openExternal === 'function') {
+                    // 只开公开主页，不带任何凭据
+                    global.ScholariusNative.openExternal(
+                        'https://github.com/' + encodeURIComponent(currentLogin)
+                    );
+                }
+            });
+        }
+
+        // 暴露给外部（例如以后从别处也要打开账户页）
+        detailController.open = open;
+        detailController.close = close;
+    }
+
     function mountActions() {
+        // 账户卡片：进入账户详情页
+        mountAccountDetail();
+
         // 版本行：点一下手动检查更新
         var versionRow = document.getElementById('setting-version');
         if (versionRow) {
@@ -198,7 +286,12 @@
      * 由 login.js 在登录状态变化时调用。
      * 注意：**没有 token 参数** —— token 不跨层到网页。
      */
-    function setAccount(login, name, avatarUrl) {
+    function setAccount(login, name, avatarUrl, accountId) {
+        currentLogin = login || '';
+        currentAvatar = avatarUrl || '';
+        currentId = Number(accountId) || 0;
+        displayName = name || login || '';
+
         var avatarEl = document.getElementById('account-avatar');
         var nameEl = document.getElementById('account-name');
         var handleEl = document.getElementById('account-handle');
@@ -214,17 +307,66 @@
             handleEl.hidden = !login;
         }
         if (avatarEl) {
-            if (avatarUrl) {
-                // 用 <img> 而不是背景图：加载失败时能显示 alt 占位
-                avatarEl.innerHTML = '';
-                var img = document.createElement('img');
-                img.src = avatarUrl;
-                img.alt = '';
-                img.referrerPolicy = 'no-referrer';
-                avatarEl.appendChild(img);
-            } else {
-                avatarEl.textContent = (login || '?').charAt(0).toUpperCase();
-            }
+            renderAvatar(avatarEl, avatarUrl, login, 1);
+        }
+
+        renderDetail();
+    }
+
+    /**
+     * 渲染一个头像容器。
+     *
+     * @param container 目标元素
+     * @param avatarUrl 头像地址，空则退回首字母
+     * @param login     用来取首字母
+     * @param scale     字号系数（列表里 48px 头像用 1，详情页 96px 用 1.8）
+     */
+    function renderAvatar(container, avatarUrl, login, scale) {
+        if (avatarUrl) {
+            // 用 <img> 而不是背景图：加载失败时能显示 alt 占位
+            container.innerHTML = '';
+            var img = document.createElement('img');
+            img.src = avatarUrl;
+            img.alt = '';
+            img.referrerPolicy = 'no-referrer';
+            container.appendChild(img);
+            return;
+        }
+        container.textContent = (login || '?').charAt(0).toUpperCase();
+        container.style.fontSize = scale > 1 ? '36px' : '';
+    }
+
+    /** 把当前账号信息填进账户详情页 */
+    function renderDetail() {
+        var nameEl = document.getElementById('account-detail-name');
+        var handleEl = document.getElementById('account-detail-handle');
+        var loginEl = document.getElementById('account-detail-login');
+        var displayEl = document.getElementById('account-detail-display');
+        var idEl = document.getElementById('account-detail-id');
+        var avatarEl = document.getElementById('account-detail-avatar');
+
+        if (nameEl) {
+            nameEl.textContent = currentLogin || '—';
+        }
+        if (handleEl) {
+            handleEl.textContent = currentLogin ? '@' + currentLogin : '';
+            handleEl.hidden = !currentLogin;
+        }
+        if (loginEl) {
+            loginEl.textContent = currentLogin || '—';
+        }
+        if (displayEl) {
+            displayEl.textContent = displayName || currentLogin || '—';
+        }
+        if (idEl) {
+            /*
+              账号 ID 不展示 0 —— 那是「读取失败」的哨兵值，不是真 ID。
+              另外用 tabular-nums 让数字等宽，比列右对齐时更整齐。
+            */
+            idEl.textContent = currentId > 0 ? String(currentId) : '—';
+        }
+        if (avatarEl) {
+            renderAvatar(avatarEl, currentAvatar, currentLogin, 1.8);
         }
     }
 
@@ -251,6 +393,10 @@
             // data-i18n 会把账户名覆盖掉，重新写一遍
             reapplyAccountName();
         }
+
+        // 详情页里的值不在 data-i18n 词条里，i18n.apply() 不会碰它们；
+        // 但名字/ID 是运行时数据，这里重绘一次保证与 currentXxx 一致
+        renderDetail();
     }
 
     /** i18n.apply() 是无差别覆写，账户名不在词条里，要单独恢复 */
@@ -265,6 +411,8 @@
         init: init,
         setAccount: setAccount,
         setVersion: setVersion,
-        refresh: refresh
+        refresh: refresh,
+        openDetail: function () { detailController.open(); },
+        closeDetail: function () { detailController.close(); }
     };
 })(window);

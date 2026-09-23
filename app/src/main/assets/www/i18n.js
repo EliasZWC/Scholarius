@@ -46,6 +46,12 @@
             'account.signOutTitle': 'Sign out of Scholarius?',
             'account.signOutConfirm': 'The saved credentials will be removed from this device. Your reading data stays. You can revoke access any time on GitHub.',
             'account.signedOut': 'Signed out',
+            'account.detailTitle': 'Account',
+            'account.field.login': 'Username',
+            'account.field.name': 'Display name',
+            'account.field.id': 'Account ID',
+            'account.openOnGitHub': 'Open on GitHub',
+            'action.back': 'Back',
 
             // --- 个人页：设置项 ---
             'setting.group.general': 'General',
@@ -117,6 +123,12 @@
             'account.signOutTitle': '确定退出登录？',
             'account.signOutConfirm': '本设备上保存的凭据会被删除，阅读数据保留。随时可以在 GitHub 上撤销授权。',
             'account.signedOut': '已退出登录',
+            'account.detailTitle': '账户',
+            'account.field.login': '用户名',
+            'account.field.name': '显示名',
+            'account.field.id': '账号 ID',
+            'account.openOnGitHub': '在 GitHub 中打开',
+            'action.back': '返回',
 
             'setting.group.general': '通用',
             'setting.group.about': '关于',

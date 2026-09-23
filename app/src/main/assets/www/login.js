@@ -5,7 +5,7 @@
  * （WebView 里 fetch github.com 会被 CORS 拦，GitHub 不返回 ACAO 头）。
  *
  * 原生 → 网页（都挂在 ScholariusShell 上）：
- *   setAccount(signedIn, login, name, avatarUrl)  登录状态变化
+ *   setAccount(signedIn, login, name, avatarUrl, accountId)  登录状态变化
  *   onLoginCode(userCode, verificationUri, expiresIn)  拿到设备码，显示给用户
  *   onLoginWaiting(waitedSeconds)                 轮询中，秒数递增
  *   onLoginFailed(reason)                         失败（对应 i18n 的 login.error.*）
@@ -74,7 +74,7 @@
      *   signedIn=true  → 收起登录页
      *   signedIn=false → 显示登录页（强制登录，没有跳过）
      */
-    function setAccount(isSignedIn, login, name, avatarUrl) {
+    function setAccount(isSignedIn, login, name, avatarUrl, accountId) {
         signedIn = !!isSignedIn;
 
         if (signedIn) {
@@ -82,7 +82,7 @@
             hide();
             // 账号信息交给 account.js 渲染，这里只管进出
             if (global.ScholariusAccount) {
-                global.ScholariusAccount.setAccount(login, name, avatarUrl);
+                global.ScholariusAccount.setAccount(login, name, avatarUrl, accountId);
             }
             return;
         }
