@@ -867,7 +867,14 @@ body {
     height: 108px;
     /* 与 splash 保持同一套几何；这里 scale(1.4) 让它在登录页不至于太小 */
     transform: scale(1.4);
-    margin-bottom: 26px;
+    /*
+      ⚠️ logo 用了 transform: scale(1.4) —— 它只影响绘制，**不撑开布局盒**。
+      布局盒仍是 108×108（实测 151，含 splash 几何留白），
+      但视觉高度是 151×1.4 ≈ 211，上下各溢出约 30px。
+      所以真正的视觉间隙 = margin-bottom 减去这 30px 溢出量。
+      78 - 30 ≈ 48px 的实际留白，logo 与标题之间才拉得开。
+    */
+    margin-bottom: 78px;
 }
 
 .login-logo svg {
