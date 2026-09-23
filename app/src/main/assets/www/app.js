@@ -627,10 +627,61 @@
         applyGate();
     }
 
+    /**
+     * 处理系统返回键。原生调这个方法，用返回值决定是否自己吞掉按键。
+     *
+     * @return true  网页已经处理了（关了某个覆盖层），原生什么都不用做
+     *         false 网页无事可做，原生应该退出应用
+     *
+     * ⚠️ 为什么必须由网页来判定：
+     *    Scholarius 是**单页应用**（只有一个 index.html，界面全靠 JS 切换），
+     *    `WebView.canGoBack()` 永远是 false —— 所以原生那边「有历史才回退」
+     *    的判断不成立，按返回键会直接退出应用，
+     *    即使屏幕上正开着一个全屏覆盖层（账户页 / 弹窗 / 菜单）。
+     *
+     * 收尾顺序遵循「最上层先关」：
+     *    行内菜单 → 弹层（sheet）→ 账户详情页
+     *    （账户页是最底层的覆盖层，所以最后关）
+     */
+    function handleBack() {
+        // ① 行内选择菜单（语言 / 主题 / Logger 弹出的那个）
+        if (window.ScholariusUI &&
+            typeof window.ScholariusUI.hasOpenRowMenu === 'function' &&
+            window.ScholariusUI.hasOpenRowMenu()) {
+            window.ScholariusUI.closeRowMenu();
+            trace('back', 'closed row menu');
+            return true;
+        }
+
+        // ② 底部弹层（更新 / 退出登录 / 通用确认）
+        if (window.ScholariusUI &&
+            typeof window.ScholariusUI.isSheetOpen === 'function' &&
+            window.ScholariusUI.isSheetOpen()) {
+            window.ScholariusUI.closeSheet();
+            trace('back', 'closed sheet');
+            return true;
+        }
+
+        // ③ 账户详情页（全屏覆盖层）
+        var detail = document.getElementById('account-detail');
+        if (detail && !detail.hidden) {
+            if (window.ScholariusAccount &&
+                typeof window.ScholariusAccount.closeDetail === 'function') {
+                window.ScholariusAccount.closeDetail();
+            }
+            trace('back', 'closed account detail');
+            return true;
+        }
+
+        trace('back', 'nothing to close, letting native exit');
+        return false;
+    }
+
     // 暴露给后续功能扩展使用
     window.Scholarius = {
         selectTab: selectTab,
         TAB_ORDER: TAB_ORDER,
+        handleBack: handleBack,
         isSignedIn: function () {
             return signedIn === true;
         }

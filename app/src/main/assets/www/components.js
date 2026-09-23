@@ -220,6 +220,30 @@
      * @param config   { getOptions, getValue, onChange, placeholder, isDisabled }
      *                 getOptions() -> [{ value, label }]
      */
+    /**
+     * 当前打开的「行内选择菜单」的收尾函数；null 表示没有菜单打开。
+     *
+     * 为什么要有这个模块级登记：
+     *   菜单状态（menu / scrim）本来是在每个 createRowPicker 的闭包里的，
+     *   一个 picker 一份，彼此看不见。但系统返回键需要一个**全局**入口问
+     *   「现在有没有菜单开着」。用登记表把「当前那个」暴露出来最简单。
+     *
+     *   菜单是互斥的（同一时刻只有一个），所以只需要存一个。
+     */
+    var openRowMenuCloser = null;
+
+    /** 有没有行内选择菜单开着 */
+    function hasOpenRowMenu() {
+        return !!openRowMenuCloser;
+    }
+
+    /** 关掉当前打开的行内选择菜单（没有则什么都不做） */
+    function closeRowMenu() {
+        if (openRowMenuCloser) {
+            openRowMenuCloser();
+        }
+    }
+
     function createRowPicker(row, valueEl, config) {
         var menu = null;
         /** 菜单的全屏蒙层。必须与 menu 同生共死，见 closeMenu 的说明。 */
@@ -258,6 +282,11 @@
          *   elementFromPoint(设置项按钮) = "row-menu-scrim"
          */
         function closeMenu() {
+            // 先清登记：从这一刻起「没有菜单开着」
+            if (openRowMenuCloser === closeMenu) {
+                openRowMenuCloser = null;
+            }
+
             if (scrim) {
                 if (scrim.parentNode) {
                     scrim.parentNode.removeChild(scrim);
@@ -334,6 +363,8 @@
             document.body.appendChild(scrim);
             document.body.appendChild(box);
             menu = box;
+            // 登记「当前打开的菜单」，供系统返回键查询（见 openRowMenuCloser）
+            openRowMenuCloser = closeMenu;
 
             // 贴着该行下沿展开
             var rect = row.getBoundingClientRect();
@@ -478,6 +509,8 @@
         currentSheet: currentSheetEl,
         confirmSheet: confirmSheet,
         createRowPicker: createRowPicker,
+        hasOpenRowMenu: hasOpenRowMenu,
+        closeRowMenu: closeRowMenu,
         attachLongPress: attachLongPress,
         justLongPressed: justLongPressed,
         icon: icon,

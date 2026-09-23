@@ -16,6 +16,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.pm.PackageInfoCompat
@@ -53,6 +54,12 @@ import kotlin.math.roundToInt
 
     /** 页面加载完成前不往网页里注入脚本 */
     private var pageReady = false
+
+    /**
+     * 返回键回调。保存引用是为了能临时启用/禁用 ——
+     * 见 [passThroughBack] 对「一次置 false 就永久失效」的说明。
+     */
+    private var backCallback: OnBackPressedCallback? = null
 
     /**
      * 网页的启动动画还在演（或还没结束）时为 true。
@@ -201,15 +208,63 @@ import kotlin.math.roundToInt
             insets
         }
 
-        // 返回键优先让网页回退历史
-        onBackPressedDispatcher.addCallback(this) {
-            if (::webView.isInitialized && webView.canGoBack()) {
-                webView.goBack()
-            } else {
-                isEnabled = false
-                onBackPressedDispatcher.onBackPressed()
+        /*
+          ⚠️ 返回键：**先问网页有没有东西要关**，网页说没有才退出应用。
+          （v0.0.30 改，之前是「WebView 有历史就回退，否则退出」）
+
+          为什么原来的写法不成立：
+            Scholarius 是**单页应用** —— 只有一个 index.html，
+            所有界面（文库/榜单/个人页/账户详情/弹窗）都靠 JS 切换。
+            因此 WebView 的历史栈里只有那一个条目，
+            `canGoBack()` 永远是 false → 按返回键**直接退出应用**，
+            即使屏幕上正开着一个全屏覆盖层。
+
+          实现要点：判定结果要等网页异步回传，所以分两步走。
+            ① 按键先拦下来，绝不立刻退出；
+            ② 网页回话后，若它说「没东西可关」，再手动触发一次返回。
+
+          ⚠️ 这里**不能**用 `isEnabled = false` 的写法。
+             OnBackPressedCallback 一旦置 false 就永久失效，
+             之后再也不会触发 —— 用户第一次在首页按返回时被放行，
+             第二次按就完全没反应了。
+             正确做法是把回调保存起来，用 isEnabled 做**一次性闸门**，
+             放行后立刻恢复为 true，让下一次按键还能进来。
+         */
+        backCallback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (!::webView.isInitialized || !pageReady) {
+                    // 网页还没就绪：没有覆盖层可言，直接放行
+                    passThroughBack()
+                    return
+                }
+
+                webView.evaluateJavascript(
+                    "(function(){try{" +
+                        "return (window.Scholarius && window.Scholarius.handleBack)" +
+                        " ? String(window.Scholarius.handleBack()) : 'false';" +
+                        "}catch(e){return 'false';}})();"
+                ) { result ->
+                    val handled = result?.trim()?.trim('"') == "true"
+                    if (!handled) {
+                        debugLog("[back] web has nothing to close, exiting")
+                        passThroughBack()
+                    } else {
+                        debugLog("[back] handled by web")
+                    }
+                }
             }
-        }
+        }.also { onBackPressedDispatcher.addCallback(this, it) }
+    }
+
+    /**
+     * 放行一次返回键：临时禁用自己，触发系统默认行为（退出），
+     * 再把自己启用回来 —— 否则这个回调就永久失效了。
+     */
+    private fun passThroughBack() {
+        val callback = backCallback ?: return
+        callback.isEnabled = false
+        onBackPressedDispatcher.onBackPressed()
+        callback.isEnabled = true
     }
 
     /** 加载入口页 */
