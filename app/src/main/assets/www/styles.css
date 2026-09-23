@@ -868,12 +868,12 @@ body {
     /* 与 splash 保持同一套几何；这里 scale(1.4) 让它在登录页不至于太小 */
     transform: scale(1.4);
     /*
-      ⚠️ logo 图形的 margin 要扣掉 scale(1.4) 的溢出量。
+      ⚠️ logo 图形用了 transform: scale(1.4) —— 只影响绘制，不撑开布局盒。
       布局盒 151px，视觉高度 151×1.4 ≈ 211，上下各溢出约 30px。
-      26 - 30 < 0，所以字标实际是紧贴图形底部的 ——
-      要图形与字标之间留出约 36px，margin 得给 66px。
+      所以 margin-bottom 里有一半是「补溢出」，另一半才是真正的间距。
+      56px → 视觉间距约 26px 左右；再小就会重叠（46px 实测 -6px）。
     */
-    margin-bottom: 66px;
+    margin-bottom: 56px;
 }
 
 .login-logo svg {
