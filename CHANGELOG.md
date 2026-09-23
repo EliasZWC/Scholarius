@@ -4,6 +4,57 @@
 
 ---
 
+## 关于 0.0.4 – 0.0.13 的无效迭代（记录在案，勿重犯）
+
+启动页「一闪而过」**真正的唯一原因**是：
+
+```
+.splash { z-index: 40 }     ← 被压在下面
+.login  { z-index: 50 }     ← 盖住了它
+```
+
+一行 `grep z-index` 就能查出，却在 **0.0.4 – 0.0.13 共 10 个版本**里被反复误诊，
+其中 **0.0.9 – 0.0.12 的 4 个版本全部是同一错误假设下的无效改动**
+（反复调整动画时长与 `animationend` 逻辑），并一度把问题**改得更糟**：
+
+| 版本 | 当时以为的原因 | 真实情况 |
+|---|---|---|
+| 0.0.4 | `getAnimations()` 误判 | 无关 |
+| 0.0.5 | 兜底超时太短 | 无关 |
+| 0.0.9 | `updateFlowActive` 死锁 | 无关（那是更新检测的独立 bug） |
+| 0.0.10 | splash 阻塞门控 | 无关 |
+| 0.0.11 | 动画前 82% 静止 | 无关 |
+| 0.0.12 | `animationend` 不可靠，改显式计时 | 无关 |
+| **0.0.13** | 加诊断浮层 | **这才拿到决定性日志** |
+| **0.0.14** | — | **真正修复（z-index）** |
+
+**教训**：用户报告「看不见」时，先按「可能被别的东西挡住」查（`z-index` / 堆叠上下文 /
+`elementFromPoint`），再查逻辑。详见长期记忆的调试铁律。
+
+---
+
+## [0.0.15] - 2026-09-23
+
+### 诊断（临时）
+
+为排查「GitHub App 没被拉起」，把**原生日志也接到屏幕浮层上**：
+
+- 新增 `MainActivity.debugLog()` —— 同时写 logcat 与网页浮层
+  （通过 `ScholariusShell.diag()`）。原生日志本来只进 logcat，
+  手机上根本看不到。
+- `openDeviceVerification()` 全链路日志：
+  - 要打开的 URL、`scheme` / `host` / `path`
+  - `com.github.android 已安装=true/false`（区分「没装」与「装了但挑不到」）
+  - **枚举出所有能处理该链接的 App**（包名/activity 名）
+  - 挑中的 ComponentName
+  - 拉起成功 / 失败（含异常类型与消息）
+  - 退回浏览器及其结果
+
+装上后点一次「Sign in with GitHub」，对屏幕底部截图即可看出
+到底是哪一步断的。
+
+---
+
 ## [0.0.14] - 2026-09-23
 
 ### 修复
@@ -470,3 +521,4 @@
 [0.0.12]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.12
 [0.0.13]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.13
 [0.0.14]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.14
+[0.0.15]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.15

@@ -174,7 +174,16 @@
         onUpdateNone: onUpdateNone,
         onUpdateProgress: onUpdateProgress,
         onUpdateReady: onUpdateReady,
-        onUpdateFailed: onUpdateFailed
+        onUpdateFailed: onUpdateFailed,
+        /*
+          原生 → 网页的诊断日志入口（临时，v0.0.15）。
+          原生日志只会进 logcat，手机上根本看不到；
+          这个接口让原生把关键信息直接画到屏幕上。
+          排查完「GitHub App 没被拉起」之后连同 trace() 一起删。
+        */
+        diag: function (message) {
+            trace(String(message));
+        }
     };
 
     /* ----------------------------------------------------------------------

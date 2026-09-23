@@ -709,6 +709,21 @@ import kotlin.math.roundToInt
         }
     }
 
+    /**
+     * 原生日志 → logcat + 网页诊断浮层。
+     *
+     * ⚠️ 临时诊断（v0.0.15）。为排查「GitHub App 没被拉起」，
+     *    需要把原生侧看到的信息（候选包、校验结果、异常）直接显示到屏幕上，
+     *    而不是让用户去跑 adb。定位完删掉。
+     */
+    private fun debugLog(message: String) {
+        Log.i(TAG, "[auth] $message")
+        evaluateInWeb(
+            "window.ScholariusShell && window.ScholariusShell.diag(" +
+                "${quote("native | " + message)});"
+        )
+    }
+
     /** 用系统浏览器打开外部链接（站内导航不走这里） */
     private fun openExternally(url: String): Boolean = try {
         startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(url)))
@@ -750,27 +765,51 @@ import kotlin.math.roundToInt
      */
     private fun openDeviceVerification(verificationUri: String): Boolean {
         val uri = Uri.parse(verificationUri)
+        debugLog("要打开的授权页：$verificationUri")
+        debugLog("scheme=${uri.scheme} host=${uri.host} path=${uri.path}")
 
-        // ① 先找 GitHub App（直接拿 ComponentName，不用 setPackage）
+        // ① 先查 GitHub App 是否安装（这一步能立刻区分「没装」与「装了但挑不到」）
+        for (pkg in GITHUB_APP_PACKAGES) {
+            debugLog("$pkg 已安装=${isInstalled(pkg)}")
+        }
+
+        // ② 枚举所有能处理该链接的 App
+        try {
+            val probe = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+            val handlers = packageManager.queryIntentActivities(probe, 0)
+            debugLog("能处理该链接的 App 共 ${handlers.size} 个：")
+            handlers.forEach { info ->
+                val ai = info.activityInfo
+                debugLog("  · ${ai?.packageName}/${ai?.name}")
+            }
+        } catch (t: Throwable) {
+            debugLog("枚举处理程序失败：$t")
+        }
+
+        // ③ 挑 GitHub App（直接拿 ComponentName，不用 setPackage）
         val target = findGitHubAppFor(uri)
         if (target != null) {
+            debugLog("挑中：$target")
             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri).apply {
                 component = target
                 addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             try {
                 startActivity(intent)
-                Log.i(TAG, "用 GitHub App 打开授权页：$target")
+                debugLog("已用 GitHub App 拉起 ✓")
                 return true
             } catch (t: Throwable) {
-                Log.w(TAG, "GitHub App ($target) 拉起失败，退回浏览器", t)
+                debugLog("GitHub App 拉起失败：${t.javaClass.simpleName} ${t.message}")
             }
         } else {
-            Log.i(TAG, "没找到 GitHub App，用浏览器打开")
+            debugLog("没找到 GitHub App")
         }
 
-        // ② 退回浏览器
-        return openExternally(verificationUri)
+        // ④ 退回浏览器
+        debugLog("退回浏览器")
+        val ok = openExternally(verificationUri)
+        debugLog("浏览器打开结果=$ok")
+        return ok
     }
 
     /**
@@ -783,17 +822,14 @@ import kotlin.math.roundToInt
      *   ① 官方包名出现在 `queryIntentActivities` 结果里 → 用系统给的 ComponentName
      *   ② 应用名含 github 且不是浏览器 → 用系统给的 ComponentName
      *   ③ 都没有 → null，调用方退回浏览器
+     *
+     * 日志由调用方 [openDeviceVerification] 负责（它已经枚举过一次，
+     * 这里不重复打印，免得浮层被刷屏）。
      */
     private fun findGitHubAppFor(uri: Uri): android.content.ComponentName? {
         return try {
             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
             val handlers = packageManager.queryIntentActivities(intent, 0)
-
-            val candidates = handlers.mapNotNull { it.activityInfo?.packageName }.distinct()
-            Log.i(TAG, "能处理授权链接的 App：$candidates")
-            for (pkg in GITHUB_APP_PACKAGES) {
-                Log.i(TAG, "  $pkg 已安装=${isInstalled(pkg)} 在候选=${pkg in candidates}")
-            }
 
             val picked = handlers.firstOrNull { it.activityInfo?.packageName in GITHUB_APP_PACKAGES }
                 ?: handlers.firstOrNull { info ->
@@ -808,7 +844,6 @@ import kotlin.math.roundToInt
                 }
 
             picked?.activityInfo?.let {
-                Log.i(TAG, "挑中：${it.packageName}/${it.name}")
                 android.content.ComponentName(it.packageName, it.name)
             }
         } catch (t: Throwable) {
