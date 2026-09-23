@@ -4,6 +4,29 @@
 
 ---
 
+## [0.0.13] - 2026-09-23
+
+### 诊断（临时）
+
+启动页「一闪而过」经多轮修复仍未解决，本轮不再靠推断：
+把启动时序做成**屏幕上的浮层**，不需要 adb、不需要远程调试。
+
+入口页默认带 `?diag=1`，浮层显示在屏幕底部（`z-index:9999`，
+盖过启动页），内容包含：
+
+| 字段 | 含义 |
+|---|---|
+| `cssDur` / `animName` | 样式表是否生效、动画是否挂上 |
+| `sheetApplied` | `<link>` 是否解析完 |
+| `atDomReady.position` | 首帧时 `.splash` 是否已是 `fixed` |
+| `splash:timer` | 计时器设定的退场时刻 |
+| `splash:done` / `splash:hidden` | 实际退场时刻与原因 |
+
+安装后打开应用，直接对屏幕底部截图即可。
+定位完会连同 `trace()` 一起移除。
+
+---
+
 ## [0.0.12] - 2026-09-23
 
 ### 修复
@@ -411,3 +434,4 @@
 [0.0.10]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.10
 [0.0.11]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.11
 [0.0.12]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.12
+[0.0.13]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.13

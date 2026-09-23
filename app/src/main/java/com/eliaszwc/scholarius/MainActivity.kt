@@ -963,7 +963,15 @@ import kotlin.math.roundToInt
         const val TAG = "Scholarius"
 
         const val APP_ASSETS_HOST = "appassets.androidplatform.net"
-        const val WEB_ENTRY_URL = "https://appassets.androidplatform.net/assets/www/index.html"
+        /**
+         * 入口页。`?diag=1` 会让网页把启动时序显示成屏幕上的浮层 ——
+         * 用户不需要 adb、不需要远程调试，直接截图就能看到原因。
+         *
+         * ⚠️ 临时诊断（v0.0.13）。定位完「启动页一闪而过」后，
+         *    把这个参数连同 app.js 的 trace() 一起删掉。
+         */
+        const val WEB_ENTRY_URL =
+            "https://appassets.androidplatform.net/assets/www/index.html?diag=1"
 
         const val JS_BRIDGE_NAME = "ScholariusNative"
 

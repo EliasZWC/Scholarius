@@ -316,20 +316,46 @@
      * 所以两个条件都满足才退场；先到的那个只是记一个标记。
      */
     /*
-      ⚠️ 临时诊断（v0.0.6）：把启动时序送到 logcat。
-      真机上「一闪而过」在桌面浏览器复现不出来，只能靠现场数据定位。
-      定位完就删掉这个函数及其调用点。
+      ⚠️ 临时诊断（v0.0.13）：把启动时序同时送到三处，定位「启动页一闪而过」。
+
+      三处的理由：
+        · logcat —— 最完整，但要用电脑连 USB 跑 adb；
+        · 屏幕浮层 —— 不需要任何工具，肉眼/截图即可（URL 加 ?diag=1 开启）；
+        · window.__bootLog —— Chrome 远程调试直接读。
+
+      定位完成后，这段连同所有 trace() 调用点一起删。
     */
     function trace(stage, detail) {
+        var line = stage + (detail === undefined ? '' : ' | ' + detail);
+        var stamp = Math.round(performance.now()) + 'ms ';
+
         try {
             if (window.ScholariusNative &&
                 typeof window.ScholariusNative.trace === 'function') {
-                window.ScholariusNative.trace(
-                    stage + (detail === undefined ? '' : ' | ' + detail));
+                window.ScholariusNative.trace(line);
             }
-        } catch (e) {
-            /* 预览环境没有桥，忽略 */
-        }
+        } catch (e) { /* 预览环境没有桥 */ }
+
+        try {
+            (window.__bootLog = window.__bootLog || []).push(stamp + line);
+        } catch (e) { /* 忽略 */ }
+
+        try {
+            if (location.search.indexOf('diag=1') === -1) return;
+            var box = document.getElementById('__diag');
+            if (!box) {
+                box = document.createElement('pre');
+                box.id = '__diag';
+                box.style.cssText =
+                    'position:fixed;left:0;right:0;bottom:0;z-index:9999;' +
+                    'margin:0;padding:8px;max-height:46vh;overflow:auto;' +
+                    'background:rgba(0,0,0,.86);color:#7EE2A8;' +
+                    'font:11px/1.45 monospace;white-space:pre-wrap;';
+                document.body.appendChild(box);
+            }
+            box.textContent += stamp + line + '\n';
+            box.scrollTop = box.scrollHeight;
+        } catch (e) { /* 忽略 */ }
     }
 
     /**
