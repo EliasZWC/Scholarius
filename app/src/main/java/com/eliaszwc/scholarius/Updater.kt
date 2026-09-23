@@ -65,18 +65,21 @@ object Updater {
     /** 有新版本时回调非 null；网络/解析出错或已是最新都回调 null */
     fun check(context: Context, onResult: (Release?) -> Unit) {
         val localVersion = installedVersionName(context)
+        Log.i(TAG, "[update] 查询 $releaseApiUrl（当前 $localVersion）")
 
         Thread {
             val release = try {
                 fetchLatest()
             } catch (t: Throwable) {
-                Log.w(TAG, "检查更新失败", t)
+                Log.w(TAG, "[update] 检查更新抛异常", t)
                 null
             }
 
             val newer = release?.takeIf { localVersion != null && isNewer(it.version, localVersion) }
             if (newer != null) {
-                Log.i(TAG, "发现新版本 ${newer.version}（当前 $localVersion）")
+                Log.i(TAG, "[update] 发现新版本 ${newer.version}（当前 $localVersion）")
+            } else if (release != null) {
+                Log.i(TAG, "[update] 最新版本 ${release.version} 不大于当前 $localVersion")
             }
             MainThread.post { onResult(newer) }
         }.start()
@@ -91,8 +94,10 @@ object Updater {
         }
 
         try {
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                Log.w(TAG, "查询 Release 失败：HTTP ${connection.responseCode}")
+            val code = connection.responseCode
+            Log.i(TAG, "[update] Release API 返回 HTTP $code")
+            if (code != HttpURLConnection.HTTP_OK) {
+                Log.w(TAG, "[update] 查询 Release 失败：HTTP $code")
                 return null
             }
 
