@@ -33,6 +33,13 @@ object Updater {
     private const val USER_AGENT = "Scholarius-Android"
     private const val APK_DIR = "update"
 
+    /**
+     * 最多跟随几次重定向。
+     * GitHub Release 资源通常是 1~2 跳（github.com → objects.githubusercontent.com），
+     * 给 5 足够，同时能挡住重定向环。
+     */
+    private const val MAX_REDIRECTS = 5
+
     /** 安装失败的原因，会原样传给网页（对应 i18n 的 update.failed.*） */
     const val ERROR_PERMISSION = "permission"
     const val ERROR_NETWORK = "network"
@@ -231,17 +238,48 @@ object Updater {
 
         val target = File(dir, "scholarius.apk")
 
-        val connection = (URL(release.assetUrl).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 30_000
-            instanceFollowRedirects = true
-            useCaches = false
-            setRequestProperty("User-Agent", USER_AGENT)
-            setRequestProperty("Cache-Control", "no-cache")
-        }
+        /*
+          ⚠️ 必须**自己跟随重定向**，不能只靠 instanceFollowRedirects。
 
+          GitHub 的 browser_download_url 会 302 到 objects.githubusercontent.com
+          —— 那是**跨主机、跨 CDN** 的跳转。而 HttpURLConnection 的
+          instanceFollowRedirects 只会自动跟随**同协议且同主机**的重定向，
+          跨主机时它**不跟随，直接把 302 返回来**。
+
+          后果：拿到的是 302 响应，其响应体只是一小段 HTML/空内容；
+          若代码没检查状态码就写文件，落盘的就是一个 300 字节的「APK」，
+          后面 readApkVersionName() 解不开 zip → 报「不是合法 APK」。
+
+          原来只写了 `if (responseCode != HTTP_OK) throw`，
+          但在部分 ROM / CDN 组合下 302 会被就地当成 200 处理，
+          于是校验形同虚设。这里显式把 3xx 走完。
+         */
+        var connection = openConnection(release.assetUrl)
         try {
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+            var redirects = 0
+            while (connection.responseCode in 300..399) {
+                val location = connection.getHeaderField("Location")
+                if (location.isNullOrEmpty()) {
+                    throw UpdateException(ERROR_NETWORK)
+                }
+                if (++redirects > MAX_REDIRECTS) {
+                    // 防重定向环
+                    throw UpdateException(ERROR_NETWORK)
+                }
+                connection.disconnect()
+                connection = openConnection(location)
+            }
+
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                Log.w(TAG, "下载 APK 失败：HTTP $code")
+                throw UpdateException(ERROR_NETWORK)
+            }
+
+            // 有些 CDN 会返回 text/html（授权失效页），绝不能当真包写盘
+            val contentType = connection.contentType ?: ""
+            if (contentType.contains("text/html", ignoreCase = true)) {
+                Log.w(TAG, "下载到的不是 APK：Content-Type=$contentType")
                 throw UpdateException(ERROR_NETWORK)
             }
 
@@ -276,14 +314,38 @@ object Updater {
         return target
     }
 
+    /** 一次下载请求；不自动跟随重定向（由调用方显式处理跨主机跳转） */
+    private fun openConnection(url: String): HttpURLConnection =
+        (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            /*
+              ⚠️ 关掉它。跨主机跳转它本来就不跟随，开着只会让人误以为已经处理了。
+                  统一由 fetchApk 里的循环处理，行为可预期。
+            */
+            instanceFollowRedirects = false
+            useCaches = false
+            setRequestProperty("User-Agent", USER_AGENT)
+            setRequestProperty("Cache-Control", "no-cache")
+            // 明确要二进制，别让中间层做内容协商
+            setRequestProperty("Accept", "application/octet-stream")
+        }
+
     // -----------------------------------------------------------------------
     // 校验（三道，缺一不可）
     // -----------------------------------------------------------------------
 
     private fun verify(context: Context, file: File, release: Release) {
         if (!file.exists() || file.length() == 0L) {
+            Log.w(TAG, "校验失败：文件不存在或为空 (exists=${file.exists()}, len=${file.length()})")
             throw UpdateException(ERROR_INVALID)
         }
+
+        Log.i(
+            TAG,
+            "[update] verifying: ${file.length()} bytes, " +
+                "expected ${release.size}, path=${file.absolutePath}"
+        )
 
         // ① 体积：Release 里声明了多少字节就该是多少
         if (release.size > 0 && file.length() != release.size) {
@@ -291,19 +353,52 @@ object Updater {
             throw UpdateException(ERROR_TRUNCATED)
         }
 
-        // ② 包结构 + 版本号
-        val version = readApkVersionName(file) ?: throw UpdateException(ERROR_INVALID)
+        // ② 前两个字节必须是 zip 的 PK 魔数 —— 这能一眼区分「真 APK」
+        //    和「HTML 错误页 / 半截文件」，比解析版本号更早、更明确
+        if (!hasZipMagic(file)) {
+            Log.w(TAG, "校验失败：不是 zip（前 4 字节不是 PK\\x03\\x04）")
+            throw UpdateException(ERROR_INVALID)
+        }
+
+        // ③ 包结构 + 版本号
+        val version = readApkVersionName(file)
+        if (version == null) {
+            Log.w(TAG, "校验失败：读不到包内 versionName（zip 里没有 AndroidManifest.xml？）")
+            throw UpdateException(ERROR_INVALID)
+        }
         if (!sameVersion(version, release.version)) {
             Log.w(TAG, "包内版本 $version 与发布标签 ${release.version} 不一致")
             throw UpdateException(ERROR_MISMATCH)
         }
 
-        // ③ 不比当前装的版本新就没意义（还可能是降级攻击）
+        // ④ 不比当前装的版本新就没意义（还可能是降级攻击）
         val installed = installedVersionName(context)
         if (installed != null && !isNewer(release.version, installed)) {
             Log.w(TAG, "包不比已装的 $installed 新，阻止安装")
             throw UpdateException(ERROR_DOWNGRADE)
         }
+
+        Log.i(TAG, "[update] verified OK: version=$version, ${file.length()} bytes")
+    }
+
+    /**
+     * 前 4 字节是不是 zip 的本地文件头魔数 `PK\x03\x04`。
+     *
+     * APK 本质是 zip；拿到 HTML 错误页/空响应/半截文件时这一步就能立刻判定，
+     * 不必等 readApkVersionName 里 zip 解析抛异常（那种失败很难看出原因）。
+     */
+    private fun hasZipMagic(file: File): Boolean = try {
+        file.inputStream().use { input ->
+            val head = ByteArray(4)
+            if (input.read(head) < 4) {
+                false
+            } else {
+                head[0] == 0x50.toByte() && head[1] == 0x4B.toByte() &&
+                    head[2] == 0x03.toByte() && head[3] == 0x04.toByte()
+            }
+        }
+    } catch (t: Throwable) {
+        false
     }
 
     private fun sameVersion(a: String, b: String): Boolean {
