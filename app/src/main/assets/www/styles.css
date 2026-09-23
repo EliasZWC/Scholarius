@@ -868,13 +868,12 @@ body {
     /* 与 splash 保持同一套几何；这里 scale(1.4) 让它在登录页不至于太小 */
     transform: scale(1.4);
     /*
-      ⚠️ logo 用了 transform: scale(1.4) —— 它只影响绘制，**不撑开布局盒**。
-      布局盒仍是 108×108（实测 151，含 splash 几何留白），
-      但视觉高度是 151×1.4 ≈ 211，上下各溢出约 30px。
-      所以真正的视觉间隙 = margin-bottom 减去这 30px 溢出量。
-      78 - 30 ≈ 48px 的实际留白，logo 与标题之间才拉得开。
+      ⚠️ logo 图形的 margin 要扣掉 scale(1.4) 的溢出量。
+      布局盒 151px，视觉高度 151×1.4 ≈ 211，上下各溢出约 30px。
+      26 - 30 < 0，所以字标实际是紧贴图形底部的 ——
+      要图形与字标之间留出约 36px，margin 得给 66px。
     */
-    margin-bottom: 78px;
+    margin-bottom: 66px;
 }
 
 .login-logo svg {
@@ -884,7 +883,13 @@ body {
 }
 
 .login-title {
-    margin: 0 0 10px;
+    /*
+      这是「Logo（Σ 图形 + SCHOLARIUS 字标）整体」与下方正文之间的间距
+      （用户 2026-09-23 要求加大）。
+      ⚠️ 视觉间距比这个值小：字号 24px 的行盒比字形高，上下各有约 4px 空白，
+         所以 26px 实测只有 26px 左右，观感仍偏紧 —— 给到 40px 才拉得开。
+    */
+    margin: 0 0 40px;
     font-size: 24px;
     font-weight: 700;
     letter-spacing: 0.18em;
