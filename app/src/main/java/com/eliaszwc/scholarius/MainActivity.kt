@@ -70,6 +70,19 @@ import kotlin.math.roundToInt
     /** 弹窗里当前讨论的那个版本，下载时要用 */
     private var pendingRelease: Updater.Release? = null
 
+    /**
+     * 已经下好、等着安装的包。
+     *
+     * ⚠️ 必须缓存这个 `File` 对象本身，不能用版本号再拼一次路径。
+     *    Updater 里的目录名是它自己 `safeFileName()` 换算出来的内部细节，
+     *    在 MainActivity 里重新拼一遍等于把实现细节抄一遍 —— 两边一旦不同步，
+     *    就会拿着一个不存在的 File 去拉起安装器，表现为「下载完却没反应」。
+     */
+    private var downloadedApk: File? = null
+
+    /** 正在下载，防止连点「更新」重复下载 */
+    private var downloading = false
+
     private val assetLoader: WebViewAssetLoader by lazy {
         WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
@@ -422,6 +435,8 @@ import kotlin.math.roundToInt
 
     private fun startUpdateDownload() {
         val release = pendingRelease ?: return
+        if (downloading) return
+        downloading = true
 
         Updater.download(
             context = this,
@@ -432,21 +447,37 @@ import kotlin.math.roundToInt
                 )
             },
             onDone = { file, error ->
-                updateFlowActive = false
+                downloading = false
+
                 if (file == null) {
+                    /*
+                      下载失败：流程结束，让弹窗回到可用状态给用户重试。
+                     */
+                    updateFlowActive = false
                     notifyUpdateFailed(error ?: Updater.ERROR_NETWORK, downloaded = false)
                     return@download
                 }
-                installApk(file)
+
+                /*
+                  下载成功：把 File 留在 downloadedApk 上。
+                  此时**不能**把 updateFlowActive 置 false —— 安装器还没起来，
+                  流程仍在进行中。提前置 false 会让 onStop 误以为“可以重置已查标记”，
+                  用户从安装器回来时会又弹一次「发现新版本」。
+                 */
+                downloadedApk = file
+                installDownloaded()
             },
         )
     }
 
-    /** 包已经下好了，重试安装（上次可能是权限没给） */
+    /** 安装已下好的包（也可能是上次被权限拦下后的重试） */
     private fun installDownloaded() {
-        val release = pendingRelease ?: return
-        val apk = File(File(cacheDir, UPDATE_DIR), safeDirName(release.version))
-            .resolve("scholarius.apk")
+        val apk = downloadedApk
+        if (apk == null) {
+            // 没有可安装的包：说明是弹窗重开后的误触，直接提示重下
+            notifyUpdateFailed(Updater.ERROR_INSTALL, downloaded = false)
+            return
+        }
         installApk(apk)
     }
 
@@ -455,6 +486,11 @@ import kotlin.math.roundToInt
         val release = pendingRelease
 
         if (error != null) {
+            /*
+              权限没给（或安装器起不来）：把包留着，弹窗进入「重试安装」状态。
+              包路径是 content:// URI，下次拉起安装器时只要文件还在就能装，
+              所以这里**不**清 downloadedApk。
+             */
             notifyUpdateFailed(error, downloaded = true)
             return
         }
@@ -482,13 +518,13 @@ import kotlin.math.roundToInt
         )
     }
 
+    /** 弹窗被关掉：清干净状态，下次进入 app 可以重新检查 */
     private fun closeUpdateFlow() {
         updateFlowActive = false
         pendingRelease = null
+        downloadedApk = null
+        downloading = false
     }
-
-    private fun safeDirName(version: String): String =
-        version.replace(Regex("[^0-9A-Za-z._-]"), "_")
 
     // -----------------------------------------------------------------------
 
@@ -694,6 +730,21 @@ import kotlin.math.roundToInt
             updateChecked = false
         }
         maybeCheckUpdate()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        /*
+          退到后台再回来算「重新进入 app」；更新流程进行中不重置，
+          否则从系统安装器切回来会又弹一次窗。
+
+          ⚠️ onStop 也会在「拉起安装器」时触发 —— 这正是要防护的场景。
+          所以 downloading / downloadedApk 非空期间也不能重置标记；
+          单看 updateFlowActive 不够，因为下载失败时它会被置回 false。
+        */
+        if (!updateFlowActive && !downloading && downloadedApk == null) {
+            updateChecked = false
+        }
     }
 
     override fun onDestroy() {

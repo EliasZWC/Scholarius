@@ -35,6 +35,8 @@
     var state = STATE_AVAILABLE;
     /** 包已经下好，只差安装（点确定走 installUpdate 而不是重新下载） */
     var downloaded = false;
+    /** 本次关闭弹窗是「安装器已拉起」而不是「用户取消」 */
+    var closingAfterInstall = false;
     var info = null;
 
     function t(key) {
@@ -76,7 +78,29 @@
         setState(STATE_AVAILABLE);
         renderText();
 
-        global.ScholariusUI.openSheet(sheet);
+        global.ScholariusUI.openSheet(sheet, onSheetDismissed);
+    }
+
+    /**
+     * 弹层被关掉（无论点「稍后」、「取消」还是其它任何途径）时的收尾。
+     *
+     * ⚠️ 必须把「弹窗没了」告诉原生：不说的话那边 updateFlowActive
+     *    会一直停在 true，之后就再也不会检查更新了。
+     */
+    function onSheetDismissed() {
+        // 下载中不允许被关；真被外力关掉也把包留着，下次能重试安装
+        if (state === STATE_DOWNLOADING) {
+            return;
+        }
+
+        // onReady 引起的关闭：原生那边已经自己把状态收干净了
+        if (closingAfterInstall) {
+            closingAfterInstall = false;
+            return;
+        }
+
+        downloaded = false;
+        notifyNativeClosed();
     }
 
     /** 手动点了「检查更新」但已是最新 */
@@ -99,6 +123,9 @@
     function onReady() {
         // 安装器已经起来，收起弹窗并给一句反馈
         downloaded = false;
+        // 先标记：这一次关闭是「安装成功」而不是「用户取消」，
+        // 免得 onSheetDismissed 把它当成取消去重置原生状态
+        closingAfterInstall = true;
         setState(STATE_AVAILABLE);
         global.ScholariusUI.closeSheet();
         global.ScholariusUI.toast(t('update.installing'));
@@ -153,9 +180,8 @@
             return;
         }
 
-        downloaded = false;
+        // 收尾统一在 onSheetDismissed 里做（closeSheet 会回调它）
         global.ScholariusUI.closeSheet();
-        notifyNativeClosed();
     }
 
     /** 告诉原生「弹窗没了」，它才能重置「本次进入已检查过」的状态 */
@@ -202,6 +228,16 @@
         onNone: onNone,
         onProgress: onProgress,
         onReady: onReady,
-        onFailed: onFailed
+        onFailed: onFailed,
+        /** 语言 / 主题切换后重刷文案（下载中不打扰） */
+        refresh: function () {
+            if (state === STATE_DOWNLOADING) {
+                return;
+            }
+            if (info) {
+                renderText();
+            }
+            confirmBtn.textContent = t(downloaded ? 'update.retryInstall' : 'update.now');
+        }
     };
 })(window);

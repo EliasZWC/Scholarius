@@ -51,8 +51,8 @@
     --nav-active: #1B1B1B;
     --nav-inactive: #8C8C8A;
     /* 破坏性操作（退出登录）：日间用深一点的红，保证在白底上对比够 */
-    --danger: #C0392B;
-
+    --danger: #C0392B;    /* 确认操作专用：与 --danger 同一色系（同明度、同饱和度水平）的绿 */
+    --success: #15803D;
     /* 悬浮按钮 / 主按钮：反色，跟随当前主题最强的前景色 */
     --fab-bg: var(--nav-active);
     --fab-fg: var(--bg);
@@ -71,8 +71,7 @@
         --nav-active: #F2F2F0;
         --nav-inactive: #7E7E7C;
         /* 夜间要用亮一点的红，否则在黑底上发黑看不清 */
-        --danger: #E06C5E;
-    }
+        --danger: #E06C5E;        --success: #7EE2A8;    }
 }
 
 /* 夜间主题：用户在设置里手动指定 */
@@ -87,6 +86,7 @@
     --nav-active: #F2F2F0;
     --nav-inactive: #7E7E7C;
     --danger: #E06C5E;
+    --success: #7EE2A8;
 }
 
 /* 让原生表单控件（如下拉框）的配色也跟随手动主题 */
@@ -562,85 +562,113 @@ body {
 
 .sheet {
     position: fixed;
-    left: 8px;
-    right: 8px;
-    bottom: 8px;
-    /* 键盘弹出时要让开 */
-    margin-bottom: var(--keyboard);
-    z-index: 60;
-    padding: 22px 22px calc(18px + var(--safe-bottom));
+    left: var(--safe-left);
+    right: var(--safe-right);
+    /* 键盘弹起时整体上移，避免被输入法盖住 */
+    bottom: var(--keyboard);
+    z-index: 11;
+    max-height: calc(100dvh - var(--keyboard) - 24px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 8px 20px calc(20px + var(--safe-bottom));
     background: var(--surface);
-    border: 1px solid var(--outline);
-    border-radius: 22px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
-    transform: translateY(12px) scale(0.98);
-    opacity: 0;
-    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), opacity 200ms ease;
-}
-
-.sheet.is-open {
-    transform: translateY(0) scale(1);
-    opacity: 1;
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.28);
+    transform: translateY(100%);
+    transition: transform 240ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 .sheet[hidden] {
     display: none;
 }
 
+.sheet.is-open {
+    transform: translateY(0);
+}
+
 .sheet-title {
-    margin: 0 0 10px;
-    font-size: 17px;
+    margin: 12px 0 8px;
+    font-size: 16px;
+    /* 表单标题：深色 + 全大写 + 粗体，居中 */
     font-weight: 700;
+    letter-spacing: 0.5px;
     color: var(--on-surface);
+    text-align: center;
+    text-transform: uppercase;
 }
 
 .sheet-text {
     margin: 0 0 8px;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.55;
     color: var(--on-surface-variant);
 }
 
 .form-actions {
     display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    margin-top: 18px;
+    align-items: center;
+    /* Cancel 靠左，Confirm 靠右 */
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 18px;
 }
 
+/* 纯文字按钮：没有底、无边框，按下时缩小并淡出 */
 .btn {
-    padding: 10px 18px;
+    padding: 10px 8px;
     border: 0;
-    border-radius: 12px;
-    background: var(--surface-raised);
-    color: var(--on-surface);
+    border-radius: 0;
+    background: none;
+    color: var(--nav-inactive);
     font: inherit;
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 700;
+    /* 取消 / 确定这类底部按钮：全大写 */
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
     cursor: pointer;
     outline: none;
     -webkit-tap-highlight-color: transparent;
-    transition: opacity 140ms ease, transform 120ms ease;
+    transition: transform 120ms cubic-bezier(0.2, 0, 0, 1),
+        opacity 120ms ease,
+        color 160ms ease;
 }
 
 .btn:active {
-    transform: scale(0.97);
-    opacity: 0.7;
+    transform: scale(0.94);
+    opacity: 0.55;
+}
+
+/*
+  确认按钮：用与「删除」红色同色系的绿（用户 2026-09-22 要求）。
+  ⚠️ 只有**确认**性质的按钮用绿色；普通动作用 .btn-action，
+     否则整页到处都是绿的，绿色就不代表「确认」了。
+*/
+.btn-primary {
+    color: var(--success);
+}
+
+/*
+  普通动作按钮（如更新弹窗的「更新」）：用原来最强的前景色，不占用绿色。
+  「更新」是执行动作，不是对某个操作的确认，所以不该是绿的。
+*/
+.btn-action {
+    color: var(--nav-active);
 }
 
 .btn:disabled {
-    opacity: 0.45;
+    cursor: default;
+    pointer-events: none;
 }
 
-/* 「更新」是动作不是确认，所以不用主色 */
-.btn-action {
-    background: var(--outline);
-    color: var(--on-surface);
+/* 不可用时 Confirm 退成与 Cancel 同级的灰 */
+.btn-primary:disabled {
+    color: var(--nav-inactive);
+    opacity: 0.5;
 }
 
 .btn-danger {
-    background: var(--danger);
-    color: #FFFFFF;
+    color: var(--danger);
 }
 
 /* --------------------------------------------------------------------------
@@ -650,14 +678,24 @@ body {
 .update-progress {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin: 12px 0 0;
+    gap: 12px;
+    padding: 14px 0 0;
+}
+
+/*
+  ⚠️ 必须显式写 [hidden]。
+  display:flex 的优先级高于浏览器给 [hidden] 的默认 display:none，
+  不补这一条的话 hidden 属性形同虚设 —— 进度条在「未开始下载」时
+  也会一直显示，看起来就像弹窗没进入进度态。
+*/
+.update-progress[hidden] {
+    display: none;
 }
 
 .update-track {
     flex: 1 1 auto;
-    height: 6px;
-    border-radius: 3px;
+    height: 4px;
+    border-radius: 2px;
     background: var(--surface-raised);
     overflow: hidden;
 }
@@ -666,9 +704,9 @@ body {
     display: block;
     width: 0;
     height: 100%;
-    border-radius: 3px;
+    border-radius: 2px;
     background: var(--nav-active);
-    transition: width 160ms linear;
+    transition: width 200ms ease;
 }
 
 .update-percent {
@@ -911,6 +949,10 @@ body {
     color: #1B1B1B;
     font-size: 15px;
     font-weight: 700;
+    /* 复位 .btn 的底部按钮形态：登录按钮是独立的大按钮，
+       不跟表单里那对「取消 / 确定」走同一套排版 */
+    letter-spacing: normal;
+    text-transform: none;
 }
 
 /* GitHub 官方 Octocat 标识（16×16 viewBox，与 Material 的 24×24 不同） */
@@ -943,6 +985,8 @@ body {
     color: #9A9A98;
     font-size: 14px;
     font-weight: 600;
+    letter-spacing: normal;
+    text-transform: none;
 }
 
 .btn-ghost:active {

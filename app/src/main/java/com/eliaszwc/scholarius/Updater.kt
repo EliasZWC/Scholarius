@@ -1,8 +1,12 @@
 package com.eliaszwc.scholarius
 
+import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
 import org.json.JSONObject
@@ -331,26 +335,45 @@ object Updater {
 
     /**
      * 拉起系统安装器。
+     *
+     * ⚠️ 一定要传 Activity，不要传 Context。用 Activity 启动安装器，
+     *    系统才知道是「当前前台界面发起的安装」，部分 ROM 用
+     *    ApplicationContext 启动会直接拒绝（表现为点更新毫无反应）。
+     *
      * @return 成功给 null；失败给错误码
      */
-    fun install(context: Context, apk: File): String? {
+    fun install(activity: Activity, apk: File): String? {
         if (!apk.exists()) return ERROR_INVALID
+
+        /*
+          Android 8（O）起，安装「未知来源」的应用需要用户**在系统设置里手动授权**。
+          只在 Manifest 里声明 REQUEST_INSTALL_PACKAGES 是不够的 ——
+          没授权时 startActivity 不会有任何反应（安装器根本不出现），
+          用户看到的就是「点了更新、下载完了、然后什么都没发生」。
+
+          所以这里必须先查 canRequestPackageInstalls()，没给权限就把用户
+          送到授权页，并回一个 ERROR_PERMISSION 让弹窗显示「去授权」的提示。
+         */
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !activity.packageManager.canRequestPackageInstalls()
+        ) {
+            openInstallPermissionSettings(activity)
+            return ERROR_PERMISSION
+        }
 
         return try {
             val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
+                activity,
+                "${activity.packageName}.fileprovider",
                 apk,
             )
 
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                setDataAndType(uri, APK_MIME)
                 // 必须给安装器读这个 content:// 的权限，否则它拿不到包
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-
-            context.startActivity(intent)
+            activity.startActivity(intent)
             null
         } catch (e: ActivityNotFoundException) {
             Log.w(TAG, "没有可用的安装器", e)
@@ -364,4 +387,21 @@ object Updater {
             ERROR_INSTALL
         }
     }
+
+    /** 把用户送到「安装未知应用」授权页；不回来自动重试，由用户点弹窗重试 */
+    private fun openInstallPermissionSettings(activity: Activity) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        try {
+            activity.startActivity(
+                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                    .setData(Uri.parse("package:" + activity.packageName)),
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "打开「安装未知应用」设置失败", t)
+        }
+    }
+
+    /** 安装包 MIME，与 FileProvider 暴露的路径配套 */
+    const val APK_MIME = "application/vnd.android.package-archive"
+}
 }

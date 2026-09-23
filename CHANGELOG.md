@@ -4,6 +4,54 @@
 
 ---
 
+## [0.0.5] - 2026-09-23
+
+### 修复
+
+- **下载完不变安装（根的因）**：`Updater.install()` 完全没检查「安装未知应用」权限。
+  Android 8+ 上只在 Manifest 声明 `REQUEST_INSTALL_PACKAGES` 是不够的，
+  没授权时 `startActivity` 不会有任何反应 —— 安装器根本不出现，
+  用户看到的就是「点了更新、下载完了、然后什么都没发生」。
+  现在先查 `canRequestPackageInstalls()`，没权限就送到授权页并回 `permission`。
+- `Updater.install()` 的参数从 `Context` 改回 `Activity`，
+  并去掉 `FLAG_ACTIVITY_NEW_TASK`。用 ApplicationContext 启动安装器
+  在部分 ROM 上会被直接拒绝。
+- 已下载的 APK 改为缓存 `File` 对象本身。原来靠版本号重新拼路径，
+  等于把 `Updater` 的内部目录规则拄一遍，两边一旦不同步就会
+  拿着不存在的文件去拉起安装器。
+- `updateFlowActive` 不再在下载完成时就被置 `false`；
+  此时安装器还没起来，提前置 false 会让 `onStop` 误判，
+  从安装器回来自动重弹一次。
+- 补 `downloading` 重入守卫，防止连点「更新」重复下载。
+- 补 `onStop()`：退到后台时重置「本次已查过」标记
+  （安装中 / 已下好包的情况除外）。
+- 弹层关闭改为通过 `openSheet(sheet, onDismiss)` 回调收尾。
+  原来依赖一个**根本不存在**的 `scrim` 元素，监听从未注册，
+  `closeUpdateFlow()` 永远不会被调用 —— `updateFlowActive` 会
+  一直停在 `true`，之后再也不弹更新提示。
+
+### 样式
+
+弹层与表单按钮全面对齐 Livolog：
+
+| 项 | 修正前 | 修正后 |
+|---|---|---|
+| 弹层定位 | 四边 8px 的浮起卡片 | 贴底整宽、仅上圆角 20px |
+| 最大高度 | 无限制 | `calc(100dvh - ...)` + 滚动 |
+| 入场动画 | `translateY(12px) scale(.98)` + 透明度 | `translateY(100%)` 滑入 |
+| 标题 | 左对齐普通标题 | 居中 + 全大写 + 字距 0.5px |
+| 按钮 | 填充胶囊（有底色、圆角 12px） | 纯文字按钮（无底无边框） |
+| 按钮排列 | 靠右聚集 | Cancel 靠左 / Confirm 靠右 |
+| 进度条 | `hidden` 无效，永远显示 | 补 `[hidden]` 规则 |
+| 进度条尺寸 | 6px 高、160ms | 4px 高、200ms |
+
+- 补上缺失的 `--success` 变量（亮 `#15803D` / 暗 `#7EE2A8`），
+  这是 `.btn-primary` 的确认色，「确定」类按钮之前一直是错的颜色。
+- `.btn-login` / `.btn-ghost` 显式复位 `text-transform` 与 `letter-spacing`，
+  避免被表单按钮的「全大写」形态污染。
+
+---
+
 ## [0.0.4] - 2026-09-23
 
 ### 修复
@@ -146,3 +194,4 @@
 [0.0.1]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.1
 [0.0.3]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.3
 [0.0.4]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.4
+[0.0.5]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.5

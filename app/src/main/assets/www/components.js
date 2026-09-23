@@ -15,6 +15,8 @@
     'use strict';
 
     var currentSheet = null;
+    /** 当前弹层的「被关掉」回调，见 notifyDismissed() */
+    var currentDismissHandler = null;
     var toastTimer = null;
     var longPressed = false;
 
@@ -47,7 +49,7 @@
        底部弹层
        ---------------------------------------------------------------------- */
 
-    function openSheet(sheet) {
+    function openSheet(sheet, onDismiss) {
         if (!sheet) {
             return;
         }
@@ -55,10 +57,12 @@
         // 同一时刻只允许一个弹层
         if (currentSheet && currentSheet !== sheet) {
             currentSheet.hidden = true;
+            notifyDismissed();
         }
 
         sheet.hidden = false;
         currentSheet = sheet;
+        currentDismissHandler = typeof onDismiss === 'function' ? onDismiss : null;
         document.body.classList.add('sheet-open');
 
         // 进场动画：先加类再强制回流，保证 transition 能触发
@@ -77,6 +81,27 @@
         sheet.classList.remove('is-open');
 
         sheet.hidden = true;
+        notifyDismissed();
+    }
+
+    /**
+     * 弹层被关掉时通知调用方做收尾。
+     *
+     * 为什么需要：有些弹层（更新提示）在原生侧也有一份状态，
+     * 关了不告诉原生，那边就会一直以为「弹窗还开着」，之后再也不会检查更新。
+     * 用回调比在全局挂一个 scrim 的点击监听可靠 —— 后者在
+     * 「按返回键关闭」「被其它弹层顶掉」这些路径上都不会触发。
+     */
+    function notifyDismissed() {
+        var handler = currentDismissHandler;
+        currentDismissHandler = null;
+        if (handler) {
+            try {
+                handler();
+            } catch (e) {
+                /* 收尾失败不该影响关闭本身 */
+            }
+        }
     }
 
     function isSheetOpen() {
@@ -326,6 +351,7 @@
         toast: toast,
         openSheet: openSheet,
         closeSheet: closeSheet,
+        notifyDismissed: notifyDismissed,
         isSheetOpen: isSheetOpen,
         currentSheet: currentSheetEl,
         createRowPicker: createRowPicker,
