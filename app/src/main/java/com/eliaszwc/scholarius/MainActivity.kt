@@ -768,7 +768,7 @@ import kotlin.math.roundToInt
 
         // ① 先查 GitHub App 是否安装（这一步能立刻区分「没装」与「装了但挑不到」）
         for (pkg in GITHUB_APP_PACKAGES) {
-            debugLog("$pkg 已安装=${isInstalled(pkg)}")
+            probePackage(pkg)
         }
 
         // ② 枚举所有能处理该链接的 App
@@ -856,6 +856,33 @@ import kotlin.math.roundToInt
         true
     } catch (t: Throwable) {
         false
+    }
+
+    /**
+     * 诊断用：打印查询某个包时的详细信息。
+     *
+     * 区分两种「查不到」：
+     *   · NameNotFoundException —— 真的没装
+     *   · 其它异常（SecurityException 等）—— 包存在但被包可见性挡住
+     *
+     * ⚠️ 临时（v0.0.16）。定位完删。
+     */
+    private fun probePackage(pkg: String) {
+        try {
+            val info = packageManager.getApplicationInfo(pkg, 0)
+            val label = packageManager.getApplicationLabel(info).toString()
+            debugLog("$pkg 存在，名称='$label' enabled=${info.enabled}")
+        } catch (t: Throwable) {
+            debugLog("$pkg 查询失败：${t.javaClass.simpleName} ${t.message}")
+        }
+
+        // 再试一次「用 launch intent 反查」——这条路绕过 getApplicationInfo 的可见性
+        try {
+            val launch = packageManager.getLaunchIntentForPackage(pkg)
+            debugLog("$pkg getLaunchIntent=${if (launch == null) "null" else launch.component}")
+        } catch (t: Throwable) {
+            debugLog("$pkg getLaunchIntent 抛异常：${t.javaClass.simpleName}")
+        }
     }
 
     private fun toDp(px: Int): Int = (px / resources.displayMetrics.density).roundToInt()

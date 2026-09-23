@@ -33,6 +33,41 @@
 
 ---
 
+## [0.0.17] - 2026-09-23
+
+### 诊断（临时）
+
+v0.0.15 真机日志已定位到 GitHub App 问题的位置：
+
+```
+com.github.android 已安装=false        ← getApplicationInfo 查不到
+能处理该链接的 App 共 1 个：
+  · com.android.chrome/...             ← 只剩浏览器
+没找到 GitHub App → 退回浏览器
+```
+
+新增 `probePackage()` 区分两种「查不到」：
+- `NameNotFoundException` → 真的没装
+- `SecurityException` 等 → 包存在但被可见性挡住
+
+并额外输出 `getApplicationLabel`、`enabled`、`getLaunchIntentForPackage`
+（后者走另一条不受 `getApplicationInfo` 可见性限制的路径）。
+
+### 同时修复（待验证）
+
+`<queries>` 改为三层声明：
+
+| 层 | 内容 | 作用 |
+|---|---|---|
+| ① `<package>` | `com.github.android` / `.beta` | 直接点名，不依赖对方注册了什么 filter |
+| ② `<intent>` | VIEW + `scheme=https` | 按能力查（浏览器、第三方客户端） |
+| ③ `<intent>` | VIEW + `scheme=github` | GitHub App 的自定义深链 |
+
+之前只有第 ② 层，而 `getApplicationInfo()` 查不到说明
+**光声明 intent 能力不够**，需要 `<package>` 直接点名。
+
+---
+
 ## [0.0.16] - 2026-09-23
 
 ### 诊断（临时）
@@ -542,3 +577,4 @@
 [0.0.14]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.14
 [0.0.15]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.15
 [0.0.16]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.16
+[0.0.17]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.17
