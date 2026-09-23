@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+    <title>Scholarius 导航栏 · 中英对照</title>
+    <style>
+        :root {
+            --bg: #EFEFED; --ink: #1B1B1B; --muted: #6E6E6E; --line: #DCDCD8;
+            --nav-bg: #FCFCFB; --nav-active: #1B1B1B; --nav-inactive: #8C8C8A;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; padding: 24px 24px 80px; background: var(--bg); color: var(--ink);
+            font: 14px/1.6 Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        }
+        h1 { margin: 0 0 4px; font-size: 19px; }
+        h2 { margin: 30px 0 8px; font-size: 14px; letter-spacing: .4px; }
+        p.note { margin: 0 0 14px; color: var(--muted); font-size: 12.5px; max-width: 940px; }
+        code { background: #E8E8E5; padding: 1px 4px; }
+
+        .board { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+        .cell { text-align: center; }
+        .cell .name { margin-top: 10px; font-size: 12.5px; font-weight: 700; }
+        .cell .sub { color: var(--muted); font-size: 11.5px; max-width: 300px; margin: 3px auto 0; }
+
+        .phone {
+            width: 260px; background: var(--nav-bg); border: 1px solid var(--line);
+            border-radius: 12px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,.06);
+        }
+        .phone .screen {
+            height: 120px; background: #F7F7F5; display: grid; place-items: center;
+            color: #B4B4B0; font-size: 12px; border-bottom: 1px solid var(--line);
+        }
+        .phone .screen.dark { background: #1B1B1B; color: #4A4A4A; border-color: #2A2A2A; }
+
+        /* 照抄 Livolog 的 .bottom-nav 系列 */
+        .bottom-nav { display: flex; align-items: stretch; background: var(--nav-bg); padding: 8px 4px; }
+        .nav-item {
+            flex: 1 1 0; min-width: 0;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            gap: 3px; min-height: 48px; padding: 0 2px;
+            border: 0; background: transparent; color: var(--nav-inactive);
+            font: inherit; cursor: pointer; outline: none;
+            -webkit-tap-highlight-color: transparent;
+            transition: color 160ms ease, opacity 160ms ease;
+        }
+        .nav-item.is-active { color: var(--nav-active); }
+        .nav-item:active { opacity: .55; }
+        .nav-icon { display: grid; place-items: center; }
+        .nav-icon svg { display: block; width: 24px; height: 24px; fill: currentColor; }
+        .nav-label {
+            max-width: 100%; font-size: 12px; font-weight: 500; line-height: 16px;
+            letter-spacing: .2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .nav-item.is-active .nav-label { font-weight: 600; }
+
+        .dark-theme { --nav-bg: #131313; --nav-active: #F2F2F0; --nav-inactive: #7E7E7C; }
+
+        table { border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+        th, td { border: 1px solid var(--line); padding: 5px 11px; text-align: left; vertical-align: top; }
+        th { background: #F6F6F4; font-weight: 600; }
+        .pick { color: #1B7A3D; font-weight: 700; }
+        .no { color: #9A3B3B; }
+        .grp { background: #F6F6F4; font-weight: 600; }
+    </style>
+</head>
+
+<body>
+    <h1>Scholarius 导航栏 · 中英对照</h1>
+    <p class="note">
+        三项：<b>文库 / 榜单 / 个人</b>，默认英文。尺寸与配色照抄 Livolog；Livolog 的导航词是
+        <code>Time / Behavior / Track / Setting</code> —— 全是<b>单个普通名词、无装饰</b>，Scholarius 继承这个气质。
+        <br>每格可点击切换选中态。含亮色与暗色两套（Livolog 有 dark 主题）。
+    </p>
+
+    <h2>① 定稿 · Library / Ranking / Profile</h2>
+    <p class="note">
+        图标全部取自 Google Material Icons。<b>文库 = <code>menu_book</code></b>（摊开的书，Book 3）、
+        榜单 = <code>leaderboard</code>、个人 = <code>person</code>。
+    </p>
+    <div class="board" id="rowRec"></div>
+
+    <h2>② 「文库」的书本图标候选</h2>
+    <p class="note">
+        Material Icons 里<b>没有</b> <code>book_2</code>/<code>book_3</code>/<code>book_4</code>。“Book 4”我理解为这行里按序数的第 4 个。
+        下面是全部 10 个书形图标，按编号排列：
+    </p>
+    <div class="board" id="rowBooks"></div>
+
+    <h2>③ 「榜单」与「个人」的图标候选</h2>
+    <div class="board" id="rowAlt"></div>
+
+    <h2>④ 暗色主题</h2>
+    <div class="board" id="rowDark"></div>
+
+    <h2>⑤ 命名评估</h2>
+    <div id="tbl"></div>
+
+    <script>
+        // 全部取自 Google Material Icons 官方仓库 google/material-design-icons
+        var ICON = {
+            // av/library_books —— 当前默认：前面的书 + 后面一本的边
+            libraryBooks: 'M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z',
+            // image/auto_stories —— 摊开的书 + 右侧竖立书脊
+            autoStories: 'M19 1l-5 5v11l5-4.5V1zM1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5V6c-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6zm22 13.5V6c-.6-.45-1.25-.75-2-1v13.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5v2c1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5v-1.1z',
+            // action/book —— 单本合上的书（封面有书签）
+            book: 'M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z',
+            // action/book_online —— 书 + 屏幕纹样
+            bookOnline: 'M17,1H7C5.9,1,5,1.9,5,3v18c0,1.1,0.9,2,2,2h10c1.1,0,2-0.9,2-2V3C19,1.9,18.1,1,17,1z M7,18V6h10v12H7z M16,11V9.14 C16,8.51,15.55,8,15,8H9C8.45,8,8,8.51,8,9.14l0,1.96c0.55,0,1,0.45,1,1c0,0.55-0.45,1-1,1l0,1.76C8,15.49,8.45,16,9,16h6 c0.55,0,1-0.51,1-1.14V13c-0.55,0-1-0.45-1-1C15,11.45,15.45,11,16,11z M12.5,14.5h-1v-1h1V14.5z M12.5,12.5h-1v-1h1V12.5z M12.5,10.5h-1v-1h1V10.5z',
+            // maps/local_library —— 人 + 开卷
+            localLibrary: 'M12 11.55C9.64 9.35 6.48 8 3 8v11c3.48 0 6.64 1.35 9 3.55 2.36-2.19 5.52-3.55 9-3.55V8c-3.48 0-6.64 1.35-9 3.55zM12 8c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3z',
+            // image/collections_bookmark —— 书 + 书签
+            collectionsBookmark: 'M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6z|M20 2H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 10l-2.5-1.5L15 12V4h5v8z',
+            // maps/menu_book —— 摊开的书（三行文字）
+            menuBook: 'M21,5c-1.11-0.35-2.33-0.5-3.5-0.5c-1.95,0-4.05,0.4-5.5,1.5c-1.45-1.1-3.55-1.5-5.5-1.5S2.45,4.9,1,6v14.65 c0,0.25,0.25,0.5,0.5,0.5c0.1,0,0.15-0.05,0.25-0.05C3.1,20.45,5.05,20,6.5,20c1.95,0,4.05,0.4,5.5,1.5c1.35-0.85,3.8-1.5,5.5-1.5 c1.65,0,3.35,0.3,4.75,1.05c0.1,0.05,0.15,0.05,0.25,0.05c0.25,0,0.5-0.25,0.5-0.5V6C22.4,5.55,21.75,5.25,21,5z M21,18.5 c-1.1-0.35-2.3-0.5-3.5-0.5c-1.7,0-4.15,0.65-5.5,1.5V8c1.35-0.85,3.8-1.5,5.5-1.5c1.2,0,2.4,0.15,3.5,0.5V18.5z|M17.5,10.5c0.88,0,1.73,0.09,2.5,0.26V9.24C19.21,9.09,18.36,9,17.5,9c-1.7,0-3.24,0.29-4.5,0.83v1.66 C14.13,10.85,15.7,10.5,17.5,10.5z|M13,12.49v1.66c1.13-0.64,2.7-0.99,4.5-0.99c0.88,0,1.73,0.09,2.5,0.26V11.9c-0.79-0.15-1.64-0.24-2.5-0.24 C15.8,11.66,14.26,11.96,13,12.49z|M17.5,14.33c-1.7,0-3.24,0.29-4.5,0.83v1.66c1.13-0.64,2.7-0.99,4.5-0.99c0.88,0,1.73,0.09,2.5,0.26v-1.52 C19.21,14.41,18.36,14.33,17.5,14.33z',
+            // communication/import_contacts —— 摊开的书（简版）
+            importContacts: 'M17.5,4.5c-1.95,0-4.05,0.4-5.5,1.5c-1.45-1.1-3.55-1.5-5.5-1.5S2.45,4.9,1,6v14.65c0,0.65,0.73,0.45,0.75,0.45 C3.1,20.45,5.05,20,6.5,20c1.95,0,4.05,0.4,5.5,1.5c1.35-0.85,3.8-1.5,5.5-1.5c1.65,0,3.35,0.3,4.75,1.05 C22.66,21.26,23,20.86,23,20.6V6C21.51,4.88,19.37,4.5,17.5,4.5z M21,18.5c-1.1-0.35-2.3-0.5-3.5-0.5c-1.7,0-4.15,0.65-5.5,1.5V8 c1.35-0.85,3.8-1.5,5.5-1.5c1.2,0,2.4,0.15,3.5,0.5V18.5z',
+            // av/library_add —— 书 + 加号
+            libraryAdd: 'M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9h-4v4h-2v-4H9V9h4V5h2v4h4v2z',
+            // av/library_add_check —— 书 + 勾
+            libraryAddCheck: 'M20 2H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7.53 12L9 10.5l1.4-1.41 2.07 2.08L17.6 6 19 7.41 12.47 14zM4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6z',
+            // action/history_edu —— 羽毛笔 + 书（学术感）
+            historyEdu: 'M9,4v1.38c-0.83-0.33-1.72-0.5-2.61-0.5c-1.79,0-3.58,0.68-4.95,2.05l3.33,3.33h1.11v1.11c0.86,0.86,1.98,1.31,3.11,1.36 V15H6v3c0,1.1,0.9,2,2,2h10c1.66,0,3-1.34,3-3V4H9z M7.89,10.41V8.26H5.61L4.57,7.22C5.14,7,5.76,6.88,6.39,6.88 c1.34,0,2.59,0.52,3.54,1.46l1.41,1.41l-0.2,0.2c-0.51,0.51-1.19,0.8-1.92,0.8C8.75,10.75,8.29,10.63,7.89,10.41z M19,17 c0,0.55-0.45,1-1,1s-1-0.45-1-1v-2h-6v-2.59c0.57-0.23,1.1-0.57,1.56-1.03l0.2-0.2L15.59,14H17v-1.41l-6-5.97V6h8V17z',
+            // business/leaderboard —— 三个柱（榜单专用）
+            leaderboard: 'M7.5 21H2V9h5.5v12zm7.25-18h-5.5v18h5.5V3zM22 11h-5.5v10H22V11z',
+            // editor/bar_chart —— 三个不同高的柱
+            rankBars: 'M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 8H19v6h-2.8v-6z',
+            // social/person —— 个人
+            person: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z',
+            // action/account_circle —— 个人（圆圈版）
+            accountCircle: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z'
+        };
+
+        function navHTML(items, activeIdx) {
+            var h = '<nav class="bottom-nav">';
+            items.forEach(function (it, i) {
+                var ds = ICON[it.icon].split('|');
+                var paths = '';
+                ds.forEach(function (d) { paths += '<path d="' + d + '"/>'; });
+                h += '<button class="nav-item' + (i === activeIdx ? ' is-active' : '') + '" type="button">' +
+                    '<span class="nav-icon"><svg viewBox="0 0 24 24">' + paths + '</svg></span>' +
+                    '<span class="nav-label">' + it.label + '</span></button>';
+            });
+            return h + '</nav>';
+        }
+
+        function cell(items, activeIdx, name, sub, dark) {
+            return '<div class="cell' + (dark ? ' dark-theme' : '') + '">' +
+                '<div class="phone"><div class="screen' + (dark ? ' dark' : '') + '">内容区</div>' +
+                navHTML(items, activeIdx) + '</div>' +
+                '<div class="name">' + name + '</div>' +
+                (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>';
+        }
+
+        var REC = [
+            { icon: 'menuBook', label: 'Library' },
+            { icon: 'leaderboard', label: 'Ranking' },
+            { icon: 'person', label: 'Profile' }
+        ];
+        var REC_ZH = [
+            { icon: 'menuBook', label: '文库' },
+            { icon: 'leaderboard', label: '榜单' },
+            { icon: 'person', label: '个人' }
+        ];
+
+        document.getElementById('rowRec').innerHTML =
+            cell(REC, 0, 'Library / Ranking / Profile', '选中 Library') +
+            cell(REC, 1, 'Library / Ranking / Profile', '选中 Ranking') +
+            cell(REC, 2, 'Library / Ranking / Profile', '选中 Profile') +
+            cell(REC_ZH, 0, '文库 / 榜单 / 个人', '中文版（同一套图标）');
+
+        // ---- 全部「书」形图标（Google Material Icons），按编号排列 ----
+        var BOOKS = [
+            { icon: 'book', label: 'Book 1 · book' },
+            { icon: 'bookOnline', label: 'Book 2 · book_online' },
+            { icon: 'menuBook', label: 'Book 3 · menu_book' },
+            { icon: 'autoStories', label: 'Book 4 · auto_stories' },
+            { icon: 'importContacts', label: 'Book 5 · import_contacts' },
+            { icon: 'collectionsBookmark', label: 'Book 6 · collections_bookmark' },
+            { icon: 'libraryBooks', label: 'Book 7 · library_books' },
+            { icon: 'localLibrary', label: 'Book 8 · local_library' },
+            { icon: 'historyEdu', label: 'Book 9 · history_edu' },
+            { icon: 'libraryAddCheck', label: 'Book 10 · library_add_check' }
+        ];
+        var bookHTML = '';
+        BOOKS.forEach(function (b) {
+            var items = [
+                { icon: b.icon, label: 'Library' },
+                { icon: 'leaderboard', label: 'Ranking' },
+                { icon: 'person', label: 'Profile' }
+            ];
+            bookHTML += cell(items, 0, b.label, '', false);
+        });
+        document.getElementById('rowBooks').innerHTML = bookHTML;
+
+        // ---- 榜单 / 个人 图标候选 ----
+        var RANKS = [
+            { icon: 'leaderboard', label: 'leaderboard' },
+            { icon: 'rankBars', label: 'bar_chart' }
+        ];
+        var USERS = [
+            { icon: 'person', label: 'person' },
+            { icon: 'accountCircle', label: 'account_circle' }
+        ];
+        var altHTML = '';
+        RANKS.forEach(function (r) {
+            altHTML += cell([{ icon: 'menuBook', label: 'Library' }, { icon: r.icon, label: 'Ranking' },
+            { icon: 'person', label: 'Profile' }], 1, '榜单：' + r.label, '', false);
+        });
+        USERS.forEach(function (u) {
+            altHTML += cell([{ icon: 'menuBook', label: 'Library' }, { icon: 'leaderboard', label: 'Ranking' },
+            { icon: u.icon, label: 'Profile' }], 2, '个人：' + u.label, '', false);
+        });
+        document.getElementById('rowAlt').innerHTML = altHTML;
+
+        document.getElementById('rowDark').innerHTML =
+            cell(REC, 0, 'Library / Ranking / Profile', '暗色 · 选中 Library', true) +
+            cell(REC, 1, 'Library / Ranking / Profile', '暗色 · 选中 Ranking', true) +
+            cell(REC_ZH, 1, '文库 / 榜单 / 个人', '暗色 · 中文', true);
+
+        var rows = [
+            ['h', '中文', '候选英文', '判断'],
+            ['g', '文库'],
+            ['r', 'Library', '✓ 推荐。library 本义即「收藏 + 管理」，最准'],
+            ['r', 'Shelf', '偏「书架」物理感；库里还有 PDF/网页/标注，不只是书'],
+            ['r', 'Collections', '偏「合集」，易与书城里的合集混淆'],
+            ['g', '榜单'],
+            ['r', 'Ranking', '✓ 推荐。准确指向「排序列表」，且 7 字符与其他两词对齐'],
+            ['r', 'Rankings', '复数强调多个榜单并列；但 Livolog 用单数 Setting，单数更贴既有风格'],
+            ['r', 'Leaderboard', '12 字符，导航标签会挤，且偏「游戏排行」气质'],
+            ['r', 'Charts', '太短且易与「图表」混淆'],
+            ['g', '个人'],
+            ['r', 'Profile', '✓ 推荐。App 标准用语，正式名词'],
+            ['r', 'Account', '偏「账号」；这页还有笔记/收藏，不全是账号'],
+            ['r', 'Me', '太口语，与 Livolog 的正式名词风格冲突'],
+            ['r', 'Mine', '不通顺']
+        ];
+        var t = '<table>';
+        rows.forEach(function (r) {
+            if (r[0] === 'h') {
+                t += '<tr><th>' + r[1] + '</th><th>' + r[2] + '</th><th>' + r[3] + '</th></tr>';
+            } else if (r[0] === 'g') {
+                t += '<tr><td colspan="3" class="grp">' + r[1] + '</td></tr>';
+            } else {
+                var cls = r[1].indexOf('✓') === 0 ? ' class="pick"' : ' class="no"';
+                t += '<tr><td' + cls + '>' + r[1] + '</td><td>' + r[2] + '</td></tr>';
+            }
+        });
+        document.getElementById('tbl').innerHTML = t + '</table>';
+
+        document.addEventListener('click', function (e) {
+            var b = e.target.closest('.nav-item');
+            if (!b) return;
+            var nav = b.parentElement;
+            Array.prototype.forEach.call(nav.children, function (x) {
+                x.classList.toggle('is-active', x === b);
+            });
+        });
+    </script>
+</body>
+
+</html>

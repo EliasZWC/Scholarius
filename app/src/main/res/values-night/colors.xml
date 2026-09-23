@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 夜间主题：以黑为主，但不使用纯黑 -->
+<resources>
+    <color name="app_background">#1E1E1E</color>
+    <color name="app_surface">#131313</color>
+</resources>

@@ -1,0 +1,36 @@
+# Gradle / Android
+.gradle/
+build/
+app/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# 产物
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# 签名文件绝不入库
+*.jks
+*.keystore
+*.p12
+.signing/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python（tools/ 下的辅助脚本）
+__pycache__/
+*.pyc

@@ -1,0 +1,907 @@
+/* ==========================================================================
+   Scholarius - 基础样式
+   主题色：黑白，但使用不同质感的灰阶，避免纯黑 #000 / 纯白 #fff。
+   白天主题以白为主，夜间主题以黑为主。
+   与 Livolog 同一套设计语言。
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   内置字体：更纱等宽黑体（Sarasa Mono SC）的子集版。
+   Regular / Bold 各约 1.5 MB，放 fonts/ 目录。
+   用户输入生僻字时浏览器会自动回退到下一个兜底字体，不会出现方块。
+   授权 SIL OFL 1.1（见 fonts/LICENSE-Sarasa-OFL.txt）；因为做了子集化，
+   按 OFL 的「修改版」处理，这里用自定族名，不冒用 Sarasa 的名号。
+   -------------------------------------------------------------------------- */
+@font-face {
+    font-family: "Scholarius Mono";
+    src: url("fonts/scholarius-mono-regular.woff2") format("woff2");
+    /* 界面里用到 400 / 500 / 600 / 700 四档；两个文件各自吃两档，映射保持确定 */
+    font-weight: 400 500;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Scholarius Mono";
+    /* 用 Bold 而不是 SemiBold：SemiBold 在 15px 的黑白界面上几乎看不出「粗」 */
+    src: url("fonts/scholarius-mono-bold.woff2") format("woff2");
+    font-weight: 600 700;
+    font-style: normal;
+    font-display: swap;
+}
+
+/* 白天主题（默认）：页面背景比导航栏更深 */
+:root {
+    color-scheme: light dark;
+
+    /* 原生壳推过来的系统栏尺寸（会以行内样式覆写这里）；env() 只是浏览器预览时的兜底 */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --keyboard: 0px;
+
+    --bg: #EFEFED;
+    --nav-bg: #FCFCFB;
+    --surface: #FCFCFB;
+    --surface-raised: #E6E6E4;
+    --on-surface: #1B1B1B;
+    --on-surface-variant: #6E6E6E;
+    --outline: #E1E1DE;
+    --nav-active: #1B1B1B;
+    --nav-inactive: #8C8C8A;
+    /* 破坏性操作（退出登录）：日间用深一点的红，保证在白底上对比够 */
+    --danger: #C0392B;
+
+    /* 悬浮按钮 / 主按钮：反色，跟随当前主题最强的前景色 */
+    --fab-bg: var(--nav-active);
+    --fab-fg: var(--bg);
+}
+
+/* 夜间主题：跟随系统（用户显式选了日间时不生效） */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --bg: #1E1E1E;
+        --nav-bg: #131313;
+        --surface: #242424;
+        --surface-raised: #303030;
+        --on-surface: #ECECEA;
+        --on-surface-variant: #9A9A98;
+        --outline: #333333;
+        --nav-active: #F2F2F0;
+        --nav-inactive: #7E7E7C;
+        /* 夜间要用亮一点的红，否则在黑底上发黑看不清 */
+        --danger: #E06C5E;
+    }
+}
+
+/* 夜间主题：用户在设置里手动指定 */
+:root[data-theme="dark"] {
+    --bg: #1E1E1E;
+    --nav-bg: #131313;
+    --surface: #242424;
+    --surface-raised: #303030;
+    --on-surface: #ECECEA;
+    --on-surface-variant: #9A9A98;
+    --outline: #333333;
+    --nav-active: #F2F2F0;
+    --nav-inactive: #7E7E7C;
+    --danger: #E06C5E;
+}
+
+/* 让原生表单控件（如下拉框）的配色也跟随手动主题 */
+:root[data-theme="light"] {
+    color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--on-surface);
+    font-family: "Scholarius Mono", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: manipulation;
+    overscroll-behavior: none;
+    overflow: hidden;
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    height: 100dvh;
+    /* WebView 是全屏的，这里自己让开状态栏与挖孔 */
+    padding-top: var(--safe-top);
+    padding-right: var(--safe-right);
+    padding-left: var(--safe-left);
+}
+
+#content {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+}
+
+/* --------------------------------------------------------------------------
+   页面顶部标题
+   -------------------------------------------------------------------------- */
+
+.page-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 56px;
+    padding: 0 16px;
+}
+
+.page-title {
+    margin: 0;
+    font-size: 17px;
+    /* 标题统一：深色 + 全大写 + 粗体（中文没有大小写，uppercase 对中文无效，不影响） */
+    font-weight: 700;
+    line-height: 24px;
+    letter-spacing: 0.5px;
+    color: var(--on-surface);
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* --------------------------------------------------------------------------
+   页面容器
+   -------------------------------------------------------------------------- */
+
+.page {
+    position: absolute;
+    inset: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.page[hidden] {
+    display: none;
+}
+
+/* --------------------------------------------------------------------------
+   底部导航栏
+   -------------------------------------------------------------------------- */
+
+.bottom-nav {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: stretch;
+    /* 导航栏在主背景之上还留出系统导航条的高度 */
+    background: var(--nav-bg);
+    padding: 8px 4px;
+    padding-bottom: calc(8px + var(--safe-bottom));
+}
+
+.nav-item {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 48px;
+    padding: 0 2px;
+    border: 0;
+    background: transparent;
+    color: var(--nav-inactive);
+    font: inherit;
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 160ms ease, opacity 160ms ease;
+}
+
+.nav-item.is-active {
+    color: var(--nav-active);
+}
+
+.nav-item:active {
+    opacity: 0.55;
+}
+
+.nav-icon {
+    display: grid;
+    place-items: center;
+}
+
+.nav-icon svg {
+    display: block;
+    width: 24px;
+    height: 24px;
+    fill: currentColor;
+}
+
+.nav-label {
+    max-width: 100%;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 16px;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.nav-item.is-active .nav-label {
+    font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   启动动画（splash）
+   ⚠️ 这一屏**不跟随日间 / 夜间主题**：底色固定为与桌面图标相同的品牌黑
+      （#1B1B1B），要突出的是 Scholarius 本身，而不是一块图标（所以也不画图标底块）。
+   几何与 launcher 图标同一套（108 视口）。
+   播放与收尾全在 CSS 里（animation ... forwards 停在 visibility: hidden），
+   app.js 只负责「播完通知原生 + 把元素摘掉」。
+   -------------------------------------------------------------------------- */
+
+.splash {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 26px;
+    background: #1B1B1B;
+    animation: splash-cover 2200ms cubic-bezier(0.2, 0, 0, 1) forwards;
+}
+
+.splash[hidden] {
+    display: none;
+}
+
+/* 前 4/5 保持不透明，最后淡出 */
+@keyframes splash-cover {
+
+    0%,
+    82% {
+        opacity: 1;
+        visibility: visible;
+    }
+
+    100% {
+        opacity: 0;
+        visibility: hidden;
+    }
+}
+
+/*
+   108 视口里图标外接框只有 38，放大 2 倍才像一张启动页。
+   scale 只影响视觉大小，动画与几何坐标不受影响。
+*/
+.splash-logo {
+    position: relative;
+    width: 108px;
+    height: 108px;
+    animation: splash-logo-in 520ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@keyframes splash-logo-in {
+    from {
+        opacity: 0;
+        transform: scale(1.76);
+    }
+
+    to {
+        opacity: 1;
+        transform: scale(2);
+    }
+}
+
+.splash-sigma {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.splash-name {
+    /* 跟着 logo 一起放大：logo 1 → 2 倍，文字 15px → 30px（保持原有视觉比例） */
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    /* 黑底固定亮色，不跟随主题 */
+    color: #ECECEA;
+    animation: splash-name-in 620ms 160ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@keyframes splash-name-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+    .splash {
+        animation: splash-cover 600ms linear forwards;
+    }
+
+    .splash-logo,
+    .splash-name {
+        animation: none;
+    }
+}
+
+/* ==========================================================================
+   v0.0.2 新增：个人页 / 登录页 / 弹层 / 选择菜单 / toast
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   个人页 · 账户信息卡片
+   -------------------------------------------------------------------------- */
+
+.account-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin: 4px 16px 12px;
+    padding: 16px 20px;
+    background: var(--surface);
+    border-top: 1px solid var(--outline);
+    border-radius: 16px;
+}
+
+.account-avatar {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: var(--surface-raised);
+    color: var(--on-surface-variant);
+    font-size: 20px;
+    font-weight: 700;
+    overflow: hidden;
+}
+
+.account-avatar img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    /* 头像多为浅色底，圆边之外补一圈描边，夜间主题下不至于糊在背景里 */
+    box-shadow: inset 0 0 0 1px var(--outline);
+    border-radius: 50%;
+}
+
+.account-info {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.account-name {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--on-surface);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.account-handle {
+    font-size: 13px;
+    color: var(--on-surface-variant);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* --------------------------------------------------------------------------
+   设置项
+   -------------------------------------------------------------------------- */
+
+.setting-group {
+    padding: 4px 0;
+}
+
+.setting-group-title {
+    margin: 0;
+    /* 左内边距 = 卡片外边距(16) + 行内边距(20)，保证分组标题与设置项名称左对齐 */
+    padding: 14px 36px 6px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--on-surface-variant);
+}
+
+.setting-list {
+    list-style: none;
+    margin: 0 16px;
+    padding: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--outline);
+    border-radius: 16px;
+    overflow: hidden;
+}
+
+.setting-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 56px;
+    padding: 6px 20px;
+    border-bottom: 1px solid var(--outline);
+}
+
+.setting-item:last-child {
+    border-bottom: 0;
+}
+
+.setting-item:has(.setting-action:active) {
+    background: var(--surface-raised);
+}
+
+/* 整行可点的设置项（如语言、主题） */
+.setting-action {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    /* button 的 UA 默认是居中，不改的话名称看起来就不是左对齐的 */
+    text-align: left;
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 120ms ease, opacity 120ms ease;
+}
+
+.setting-action:active {
+    transform: scale(0.985);
+    opacity: 0.6;
+}
+
+.setting-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: left;
+    font-size: 15px;
+    /* 与表单一致：条目名 = 深色 + 粗体，值 = 浅色 + 正常字重 */
+    font-weight: 700;
+    color: var(--on-surface);
+}
+
+.setting-value {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 50%;
+    font-size: 15px;
+    color: var(--on-surface-variant);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    white-space: nowrap;
+    text-align: right;
+    text-overflow: ellipsis;
+}
+
+/* 破坏性操作（退出登录）：红色文字，与普通设置区分 */
+.setting-danger .setting-label {
+    color: var(--danger);
+}
+
+.setting-note {
+    margin: 8px 36px 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--on-surface-variant);
+}
+
+/* --------------------------------------------------------------------------
+   弹层（底部弹出的对话框）
+   -------------------------------------------------------------------------- */
+
+.sheet {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    /* 键盘弹出时要让开 */
+    margin-bottom: var(--keyboard);
+    z-index: 60;
+    padding: 22px 22px calc(18px + var(--safe-bottom));
+    background: var(--surface);
+    border: 1px solid var(--outline);
+    border-radius: 22px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+    transform: translateY(12px) scale(0.98);
+    opacity: 0;
+    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), opacity 200ms ease;
+}
+
+.sheet.is-open {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+}
+
+.sheet[hidden] {
+    display: none;
+}
+
+.sheet-title {
+    margin: 0 0 10px;
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--on-surface);
+}
+
+.sheet-text {
+    margin: 0 0 8px;
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--on-surface-variant);
+}
+
+.form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 18px;
+}
+
+.btn {
+    padding: 10px 18px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--surface-raised);
+    color: var(--on-surface);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: opacity 140ms ease, transform 120ms ease;
+}
+
+.btn:active {
+    transform: scale(0.97);
+    opacity: 0.7;
+}
+
+.btn:disabled {
+    opacity: 0.45;
+}
+
+/* 「更新」是动作不是确认，所以不用主色 */
+.btn-action {
+    background: var(--outline);
+    color: var(--on-surface);
+}
+
+.btn-danger {
+    background: var(--danger);
+    color: #FFFFFF;
+}
+
+/* --------------------------------------------------------------------------
+   更新进度条
+   -------------------------------------------------------------------------- */
+
+.update-progress {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0 0;
+}
+
+.update-track {
+    flex: 1 1 auto;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--surface-raised);
+    overflow: hidden;
+}
+
+.update-fill {
+    display: block;
+    width: 0;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--nav-active);
+    transition: width 160ms linear;
+}
+
+.update-percent {
+    flex: 0 0 auto;
+    min-width: 40px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--on-surface-variant);
+}
+
+/* --------------------------------------------------------------------------
+   设置行的下拉菜单
+   -------------------------------------------------------------------------- */
+
+.row-menu-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    background: transparent;
+}
+
+.row-menu {
+    position: fixed;
+    z-index: 71;
+    padding: 6px;
+    background: var(--surface);
+    border: 1px solid var(--outline);
+    border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+    transform: translateY(-6px);
+    opacity: 0;
+    transition: transform 180ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms ease;
+}
+
+.row-menu.is-open {
+    transform: translateY(0);
+    opacity: 1;
+}
+
+.row-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    min-height: 48px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 12px;
+    background: none;
+    color: var(--on-surface);
+    font: inherit;
+    font-size: 15px;
+    text-align: left;
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.row-menu-item:active {
+    background: var(--surface-raised);
+}
+
+.row-menu-item.is-selected .row-menu-label {
+    font-weight: 700;
+}
+
+.row-menu-check {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    color: var(--on-surface);
+}
+
+.row-menu-check svg {
+    display: block;
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+}
+
+/* --------------------------------------------------------------------------
+   toast
+   -------------------------------------------------------------------------- */
+
+.toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(84px + var(--safe-bottom));
+    z-index: 80;
+    max-width: 80vw;
+    padding: 10px 18px;
+    background: var(--on-surface);
+    color: var(--bg);
+    font-size: 14px;
+    border-radius: 999px;
+    transform: translate(-50%, 8px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 200ms ease, transform 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.toast.is-visible {
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
+
+/* --------------------------------------------------------------------------
+   登录页
+   固定品牌黑底（同 splash），要突出的是 Scholarius 本身。
+   -------------------------------------------------------------------------- */
+
+.login {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 28px calc(32px + var(--safe-bottom));
+    background: #1B1B1B;
+    opacity: 0;
+    transition: opacity 260ms ease;
+}
+
+.login.is-open {
+    opacity: 1;
+}
+
+.login[hidden] {
+    display: none;
+}
+
+.login-body {
+    width: 100%;
+    max-width: 340px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+}
+
+.login-logo {
+    width: 108px;
+    height: 108px;
+    /* 与 splash 保持同一套几何；这里 scale(1.4) 让它在登录页不至于太小 */
+    transform: scale(1.4);
+    margin-bottom: 26px;
+}
+
+.login-logo svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.login-title {
+    margin: 0 0 10px;
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #ECECEA;
+}
+
+.login-text {
+    margin: 0 0 26px;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #9A9A98;
+}
+
+.login-code-box {
+    width: 100%;
+    margin-bottom: 18px;
+}
+
+.login-code-hint {
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: #9A9A98;
+}
+
+/*
+   设备码：用户要去浏览器里手输，所以要**极大、极清楚**，
+   等宽字体 + 大字距，数字与字母不会看混。
+*/
+.login-code {
+    display: block;
+    width: 100%;
+    padding: 16px 8px;
+    border: 1px solid #3A3A3A;
+    border-radius: 14px;
+    background: #242424;
+    color: #F2F2F0;
+    font-family: inherit;
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-align: center;
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 160ms ease, border-color 160ms ease;
+}
+
+.login-code:active,
+.login-code.is-copied {
+    background: #2E2E2E;
+    border-color: #4A4A4A;
+}
+
+.login-code-wait {
+    margin: 10px 0 0;
+    font-size: 13px;
+    color: #7E7E7C;
+    min-height: 18px;
+}
+
+.login-error {
+    margin: 0 0 16px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #E8A0A0;
+}
+
+.btn-login {
+    width: 100%;
+    padding: 14px 18px;
+    border-radius: 14px;
+    background: #ECECEA;
+    color: #1B1B1B;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.btn-login:disabled {
+    opacity: 0.45;
+}
+
+.btn-ghost {
+    width: 100%;
+    margin-top: 10px;
+    padding: 12px 18px;
+    border-radius: 14px;
+    background: transparent;
+    color: #9A9A98;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.btn-ghost:active {
+    background: #242424;
+}
+

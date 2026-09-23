@@ -1,0 +1,311 @@
+/**
+ * Scholarius - 通用 UI 组件。
+ *
+ * 提供设置页与个人页要用的几样东西：
+ *   toast            底部浮现的短提示
+ *   openSheet/closeSheet  底部弹层（更新弹窗、确认弹窗都用它）
+ *   createRowPicker  「左名称 / 右当前值，点整行弹选项」的设置行
+ *   attachLongPress  长按（退出登录的二次确认会用到）
+ *
+ * 设计约束（继承 Livolog）：
+ *   · 弹层打开时 body 加 .sheet-open，遮罩与滚动锁都靠它
+ *   · 弹层自己不负责关闭动画之外的收尾，调用方要显式 closeSheet()
+ */
+(function (global) {
+    'use strict';
+
+    var currentSheet = null;
+    var toastTimer = null;
+    var longPressed = false;
+
+    function t(key) {
+        return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
+    }
+
+    /* ----------------------------------------------------------------------
+       toast
+       ---------------------------------------------------------------------- */
+
+    function toast(message) {
+        var el = document.getElementById('toast');
+        if (!el) {
+            return;
+        }
+
+        el.textContent = message;
+        el.classList.add('is-visible');
+
+        if (toastTimer) {
+            global.clearTimeout(toastTimer);
+        }
+        toastTimer = global.setTimeout(function () {
+            el.classList.remove('is-visible');
+        }, 2200);
+    }
+
+    /* ----------------------------------------------------------------------
+       底部弹层
+       ---------------------------------------------------------------------- */
+
+    function openSheet(sheet) {
+        if (!sheet) {
+            return;
+        }
+
+        // 同一时刻只允许一个弹层
+        if (currentSheet && currentSheet !== sheet) {
+            currentSheet.hidden = true;
+        }
+
+        sheet.hidden = false;
+        currentSheet = sheet;
+        document.body.classList.add('sheet-open');
+
+        // 进场动画：先加类再强制回流，保证 transition 能触发
+        void sheet.offsetWidth;
+        sheet.classList.add('is-open');
+    }
+
+    function closeSheet() {
+        var sheet = currentSheet;
+        if (!sheet) {
+            return;
+        }
+
+        currentSheet = null;
+        document.body.classList.remove('sheet-open');
+        sheet.classList.remove('is-open');
+
+        sheet.hidden = true;
+    }
+
+    function isSheetOpen() {
+        return !!currentSheet;
+    }
+
+    function currentSheetEl() {
+        return currentSheet;
+    }
+
+    /* ----------------------------------------------------------------------
+       设置行：左名称 / 右当前值，点整行弹选项
+       ---------------------------------------------------------------------- */
+
+    /**
+     * @param row      整行可点的容器（通常是 <button class="setting-action">）
+     * @param valueEl  显示当前值的元素
+     * @param config   { getOptions, getValue, onChange, placeholder, isDisabled }
+     *                 getOptions() -> [{ value, label }]
+     */
+    function createRowPicker(row, valueEl, config) {
+        var menu = null;
+
+        function refresh() {
+            var value = config.getValue();
+            var found = null;
+            var options = config.getOptions() || [];
+            for (var i = 0; i < options.length; i++) {
+                if (options[i].value === value) {
+                    found = options[i];
+                    break;
+                }
+            }
+
+            valueEl.textContent = found
+                ? found.label
+                : (config.placeholder ? config.placeholder() : '');
+            row.disabled = config.isDisabled ? !!config.isDisabled() : false;
+        }
+
+        function closeMenu() {
+            if (!menu) {
+                return;
+            }
+            var el = menu;
+            menu = null;
+            el.classList.remove('is-open');
+            global.setTimeout(function () {
+                if (el.parentNode) {
+                    el.parentNode.removeChild(el);
+                }
+            }, 180);
+        }
+
+        function openMenu() {
+            if (menu) {
+                closeMenu();
+                return;
+            }
+
+            var options = config.getOptions() || [];
+            if (!options.length) {
+                return;
+            }
+
+            var box = document.createElement('div');
+            box.className = 'row-menu';
+
+            options.forEach(function (option) {
+                var item = document.createElement('button');
+                item.type = 'button';
+                item.className = 'row-menu-item';
+                if (option.value === config.getValue()) {
+                    item.classList.add('is-selected');
+                }
+
+                var label = document.createElement('span');
+                label.className = 'row-menu-label';
+                label.textContent = option.label;
+                item.appendChild(label);
+
+                if (option.value === config.getValue()) {
+                    // Google Material Icons: check
+                    var check = document.createElement('span');
+                    check.className = 'row-menu-check';
+                    check.innerHTML =
+                        '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+                        '<path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>';
+                    item.appendChild(check);
+                }
+
+                item.addEventListener('click', function () {
+                    closeMenu();
+                    if (option.value !== config.getValue()) {
+                        config.onChange(option.value);
+                        refresh();
+                    }
+                });
+
+                box.appendChild(item);
+            });
+
+            // 蒙层：点别处就收起
+            var scrim = document.createElement('div');
+            scrim.className = 'row-menu-scrim';
+            scrim.addEventListener('click', closeMenu);
+
+            document.body.appendChild(scrim);
+            document.body.appendChild(box);
+            menu = box;
+
+            // 贴着该行下沿展开
+            var rect = row.getBoundingClientRect();
+            var spaceBelow = global.innerHeight - rect.bottom;
+            var estimated = Math.min(options.length * 48 + 16, 320);
+            var openUp = spaceBelow < estimated + 20;
+
+            box.style.left = '16px';
+            box.style.right = '16px';
+            if (openUp) {
+                box.style.bottom = (global.innerHeight - rect.top + 6) + 'px';
+            } else {
+                box.style.top = (rect.bottom + 6) + 'px';
+            }
+
+            void box.offsetWidth;
+            box.classList.add('is-open');
+            row.setAttribute('aria-expanded', 'true');
+        }
+
+        row.addEventListener('click', function () {
+            if (row.disabled) {
+                return;
+            }
+            openMenu();
+        });
+
+        // 页面滚动/切页时收起，避免菜单浮在别处
+        global.addEventListener('scroll', closeMenu, true);
+        global.addEventListener('resize', closeMenu);
+
+        refresh();
+
+        return {
+            refresh: refresh,
+            close: closeMenu
+        };
+    }
+
+    /* ----------------------------------------------------------------------
+       长按
+       ---------------------------------------------------------------------- */
+
+    /**
+     * 长按 600ms 触发 handler，并置一个「刚长按过」的标记，
+     * 供 click 里判断要不要跳过（长按后系统还会补一个 click）。
+     */
+    function attachLongPress(element, handler) {
+        var timer = null;
+
+        function cancel() {
+            if (timer) {
+                global.clearTimeout(timer);
+                timer = null;
+            }
+        }
+
+        element.addEventListener('touchstart', function () {
+            cancel();
+            timer = global.setTimeout(function () {
+                timer = null;
+                longPressed = true;
+                handler();
+            }, 600);
+        }, { passive: true });
+
+        ['touchend', 'touchcancel', 'touchmove'].forEach(function (type) {
+            element.addEventListener(type, cancel, { passive: true });
+        });
+
+        element.addEventListener('contextmenu', function (event) {
+            event.preventDefault();
+        });
+    }
+
+    /** 读一次就清零：只在长按后的那一次 click 里返回 true */
+    function justLongPressed() {
+        var value = longPressed;
+        longPressed = false;
+        return value;
+    }
+
+    /* ----------------------------------------------------------------------
+       Google Material Icons
+       ---------------------------------------------------------------------- */
+
+    var ICON_PATHS = {
+        check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
+        chevronRight: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
+        refresh: 'M17.65 6.35A7.958 7.958 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
+        logout: 'M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z',
+        info: 'M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z',
+        copy: 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
+        openInNew: 'M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z',
+        download: 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z',
+        warning: 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z'
+    };
+
+    /** 返回一段 svg 标记，图标全部来自 Google Material Icons */
+    function icon(name) {
+        var path = ICON_PATHS[name];
+        if (!path) {
+            return '';
+        }
+        return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+            '<path d="' + path + '"/></svg>';
+    }
+
+    global.ScholariusUI = {
+        t: t,
+        toast: toast,
+        openSheet: openSheet,
+        closeSheet: closeSheet,
+        isSheetOpen: isSheetOpen,
+        currentSheet: currentSheetEl,
+        createRowPicker: createRowPicker,
+        attachLongPress: attachLongPress,
+        justLongPressed: justLongPressed,
+        icon: icon,
+        ICON_PATHS: ICON_PATHS
+    };
+})(window);

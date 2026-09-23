@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 白天主题：以白为主，但不使用纯白 -->
+<resources>
+    <!-- 默认值，会随系统深浅色切换（见 values-night/colors.xml） -->
+    <color name="app_background">#EFEFED</color>
+    <color name="app_surface">#FCFCFB</color>
+
+    <!-- 固定值，由代码根据应用内「主题」设置选用 -->
+    <color name="app_background_light">#EFEFED</color>
+    <color name="app_background_dark">#1E1E1E</color>
+
+    <color name="ic_launcher_background">#1B1B1B</color>
+</resources>

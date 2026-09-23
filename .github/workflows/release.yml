@@ -1,0 +1,118 @@
+name: Release
+
+# 发布流程：推送形如 v0.0.2 的标签时自动构建 APK 并创建 GitHub Release。
+#
+# ⚠️ APK 的命名必须是 `Scholarius-vX.Y.Z.apk` —— Updater.kt 会去 Release 的
+#    assets 里找第一个 `.apk` 结尾的文件，名字不必一致，但保持规范便于排查。
+#
+# 发布前的准备：
+#   1. 在 app/build.gradle.kts 中把 appVersionCode +1、appVersionName 改为新版本号；
+#   2. 提交；把 CHANGELOG.md 一并更新；
+#   3. git tag v0.0.2 && git push origin v0.0.2
+#
+# ⚠️ 必须配置发布签名。不配的话：
+#      · 每次 CI 生成的 debug 密钥都不同，用户装不上去（签名不符）
+#      · 下面「准备发布签名」步骤会直接报错退出，不会产出不可用的包
+#    仓库 Settings -> Secrets and variables -> Actions 中添加：
+#      KEYSTORE_BASE64   : keystore 文件的 base64 内容（base64 -w0 release.jks）
+#      KEYSTORE_PASSWORD : keystore 密码
+#      KEY_ALIAS         : 密钥别名
+#      KEY_PASSWORD      : 密钥密码
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布 APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: 配置 Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.11.1'
+
+      - name: 校验标签与 versionName 一致
+        run: |
+          set -euo pipefail
+          VERSION_NAME=$(grep -oP 'val appVersionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          VERSION_CODE=$(grep -oP 'val appVersionCode\s*=\s*\K[0-9]+' app/build.gradle.kts)
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "标签版本: $TAG_VERSION / versionName: $VERSION_NAME (code $VERSION_CODE)"
+          if [ "$VERSION_NAME" != "$TAG_VERSION" ]; then
+            echo "::error::标签 $GITHUB_REF_NAME 与 app/build.gradle.kts 中的 versionName $VERSION_NAME 不一致，请先修改版本号再发布。"
+            exit 1
+          fi
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+
+      - name: 校验 client_id 已配置
+        run: |
+          set -euo pipefail
+          if ! grep -qP '^GITHUB_CLIENT_ID=\S+' gradle.properties; then
+            echo "::error::gradle.properties 里缺少 GITHUB_CLIENT_ID，登录功能会失效。"
+            exit 1
+          fi
+          echo "✅ GITHUB_CLIENT_ID 已配置"
+
+      - name: 准备发布签名
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "::error::未配置 KEYSTORE_BASE64。发布包必须用固定密钥签名，否则每次构建密钥都不同，用户无法覆盖安装。"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "✅ 已准备发布密钥库"
+
+      - name: 构建 Release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_ALIAS:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
+            echo "::error::请同时配置 KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD 三个 Secret。"
+            exit 1
+          fi
+          gradle --no-daemon --stacktrace assembleRelease
+
+      - name: 收集产物
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/Scholarius-v${VERSION_NAME}.apk"
+          ls -lh dist
+
+      - name: 校验签名
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          # 不加管道，否则 exit code 会被 head 吞掉
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK"
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Scholarius v${{ env.VERSION_NAME }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: dist/Scholarius-v${{ env.VERSION_NAME }}.apk

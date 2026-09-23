@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#EFEFED" />
+    <title>Scholarius</title>
+    <link rel="stylesheet" href="styles.css" />
+
+    <!-- 在解析样式前先套用已保存的主题，避免首屏闪一下系统主题 -->
+    <script>
+        (function () {
+            try {
+                var mode = localStorage.getItem('scholarius.theme');
+                if (mode === 'light' || mode === 'dark') {
+                    document.documentElement.setAttribute('data-theme', mode);
+                }
+            } catch (e) { /* 忽略 */ }
+        })();
+    </script>
+</head>
+
+<body>
+    <!--
+      启动动画（splash）：冷启动时盖在最上层，Σ 由大到小落定，名称淡入上移，
+      整个 overlay 随后自己淡出（约 2.2s），不需要 JS 参与。
+      几何与 res/drawable/ic_launcher_foreground.xml 完全一致（视口 108）。
+
+      ⚠ 渐变必须走「按累计弧长」。不要改用一条对角线线性渐变：
+        Σ 折返导致对角线投影不单调（折点 B 与 D 的投影都≈0.5，弧长占比却是
+        0.32 / 0.77），单条线性渐变在数学上表达不了弧长渐变。
+        这里把 4 段拆开、各挂一条 userSpaceOnUse 线性渐变 —— 段内是直线，
+        投影与弧长单调一致，于是精确。各段端点色 = lerp(#FFFFFF, #6E6E6E,
+        累计弧长占比)：
+          A(70.665,37.335)=#FFFFFF   B(37.335,37.335)=#D1D1D1
+          C(54,54)=#B0B0B0           D(37.335,70.665)=#8F8F8F
+          E(61.325,70.665)=#6E6E6E
+
+      ⚠ 折点处**不要**给后段加「段首延长」去补接缝：
+        后段用 round cap，延长会让圆头在折点**外侧**鼓出一块方角
+        （实测在折点 B 外侧 (34,34) 出现 #D4D4D4 色块，定稿那里是背景）。
+        正确做法是**相邻两段共享折点、端点色相同**：两段的圆头圆心都落在折点上、
+        半径相同 → 完全重合，接缝自然消失。
+        实测对比定稿：平均像素差 0.34/255，>48 的差异仅 0.026%（全在抗锯齿边缘）。
+        验算脚本 design/tools/gen_svg_arc.py + 逐像素比对。
+    -->
+    <div class="splash" id="splash" aria-hidden="true">
+        <div class="splash-logo">
+            <svg class="splash-sigma" viewBox="0 0 108 108" aria-hidden="true" focusable="false">
+                <defs>
+                    <linearGradient id="splash-g1" gradientUnits="userSpaceOnUse"
+                        x1="70.665" y1="37.335" x2="37.335" y2="37.335">
+                        <stop offset="0" stop-color="#FFFFFF" />
+                        <stop offset="1" stop-color="#D1D1D1" />
+                    </linearGradient>
+                    <linearGradient id="splash-g2" gradientUnits="userSpaceOnUse"
+                        x1="37.335" y1="37.335" x2="54" y2="54">
+                        <stop offset="0" stop-color="#D1D1D1" />
+                        <stop offset="1" stop-color="#B0B0B0" />
+                    </linearGradient>
+                    <linearGradient id="splash-g3" gradientUnits="userSpaceOnUse"
+                        x1="54" y1="54" x2="37.335" y2="70.665">
+                        <stop offset="0" stop-color="#B0B0B0" />
+                        <stop offset="1" stop-color="#8F8F8F" />
+                    </linearGradient>
+                    <linearGradient id="splash-g4" gradientUnits="userSpaceOnUse"
+                        x1="37.335" y1="70.665" x2="61.325" y2="70.665">
+                        <stop offset="0" stop-color="#8F8F8F" />
+                        <stop offset="1" stop-color="#6E6E6E" />
+                    </linearGradient>
+                </defs>
+                <!-- 从前往后画：后段覆盖前段，折点圆头完全重合 -->
+                <path d="M70.665,37.335 L37.335,37.335" stroke="url(#splash-g1)"
+                    stroke-width="4.67" stroke-linecap="round" fill="none" />
+                <path d="M37.335,37.335 L54,54" stroke="url(#splash-g2)"
+                    stroke-width="4.67" stroke-linecap="round" fill="none" />
+                <path d="M54,54 L37.335,70.665" stroke="url(#splash-g3)"
+                    stroke-width="4.67" stroke-linecap="round" fill="none" />
+                <path d="M37.335,70.665 L61.325,70.665" stroke="url(#splash-g4)"
+                    stroke-width="4.67" stroke-linecap="round" fill="none" />
+                <!-- 端点短线：不参与渐变，各取该端字形色 -->
+                <path d="M70.665,37.335 L70.665,46.000" stroke="#FFFFFF" stroke-width="4.67"
+                    stroke-linecap="round" fill="none" />
+                <path d="M70.665,70.665 L70.665,62.000" stroke="#6E6E6E" stroke-width="4.67"
+                    stroke-linecap="round" fill="none" />
+            </svg>
+        </div>
+        <span class="splash-name">Scholarius</span>
+    </div>
+
+    <div id="app">
+        <header class="page-header">
+            <h1 class="page-title" id="page-title" data-i18n="nav.library">Library</h1>
+        </header>
+
+        <main id="content">
+            <section class="page" id="page-library" role="tabpanel" aria-labelledby="tab-library">
+                <!-- 文库：导入与管理文献、阅读、标注、笔记 -->
+            </section>
+
+            <section class="page" id="page-ranking" role="tabpanel" aria-labelledby="tab-ranking" hidden>
+                <!-- 榜单：文献发现、推荐、投票 -->
+            </section>
+
+            <section class="page" id="page-profile" role="tabpanel" aria-labelledby="tab-profile" hidden>
+                <!--
+                  个人页 = 账户信息区 + 设置项。
+                  设置项沿用 Livolog 的排版（分组标题 + 卡片列表），
+                  但**排除**了它的三个数据项（存储位置 / 导入数据 / 导出数据）
+                  —— 用户 2026-09-23 明确要求排除。
+                -->
+                <div class="account-card" id="account-card">
+                    <div class="account-avatar" id="account-avatar" aria-hidden="true"></div>
+                    <div class="account-info">
+                        <span class="account-name" id="account-name" data-i18n="account.loading">Loading...</span>
+                        <span class="account-handle" id="account-handle"></span>
+                    </div>
+                </div>
+
+                <section class="setting-group">
+                    <h2 class="setting-group-title" data-i18n="setting.group.general">General</h2>
+                    <ul class="setting-list">
+                        <li class="setting-item">
+                            <button class="setting-action" type="button" id="setting-language"
+                                aria-haspopup="menu" aria-expanded="false">
+                                <span class="setting-label" data-i18n="setting.language">Language</span>
+                                <span class="setting-value" id="setting-language-value">&mdash;</span>
+                            </button>
+                        </li>
+                        <li class="setting-item">
+                            <button class="setting-action" type="button" id="setting-theme"
+                                aria-haspopup="menu" aria-expanded="false">
+                                <span class="setting-label" data-i18n="setting.theme">Theme</span>
+                                <span class="setting-value" id="setting-theme-value">&mdash;</span>
+                            </button>
+                        </li>
+                    </ul>
+                </section>
+
+                <section class="setting-group">
+                    <h2 class="setting-group-title" data-i18n="setting.group.about">About</h2>
+                    <ul class="setting-list">
+                        <li class="setting-item">
+                            <!-- 点这一行检查更新 -->
+                            <button class="setting-action" type="button" id="setting-version">
+                                <span class="setting-label" data-i18n="setting.version">Version</span>
+                                <span class="setting-value" id="setting-version-value">&mdash;</span>
+                            </button>
+                        </li>
+                        <li class="setting-item">
+                            <button class="setting-action" type="button" id="setting-contact">
+                                <span class="setting-label" data-i18n="setting.contact">Contact</span>
+                                <span class="setting-value" id="setting-contact-value"></span>
+                            </button>
+                        </li>
+                    </ul>
+                </section>
+
+                <!-- 退出登录：破坏性操作，单独一组、红色文字，不与普通设置混排 -->
+                <section class="setting-group">
+                    <ul class="setting-list">
+                        <li class="setting-item">
+                            <button class="setting-action setting-danger" type="button" id="setting-signout">
+                                <span class="setting-label" data-i18n="account.signOut">Sign out</span>
+                                <span class="setting-value" id="setting-signout-value"></span>
+                            </button>
+                        </li>
+                    </ul>
+                    <p class="setting-note" data-i18n="account.signOutNote">
+                        Signing out only removes the saved credentials on this device.
+                        Reading data stays.
+                    </p>
+                </section>
+            </section>
+        </main>
+
+        <nav class="bottom-nav" role="tablist" aria-label="Main navigation"
+            data-i18n-aria-label="nav.label">
+
+            <button class="nav-item" type="button" role="tab" id="tab-library"
+                aria-controls="page-library" aria-selected="true" data-page="library">
+                <span class="nav-icon" aria-hidden="true">
+                    <!-- Google Material Icons: menu_book -->
+                    <svg viewBox="0 0 24 24" focusable="false">
+                        <path
+                            d="M21,5c-1.11-0.35-2.33-0.5-3.5-0.5c-1.95,0-4.05,0.4-5.5,1.5c-1.45-1.1-3.55-1.5-5.5-1.5S2.45,4.9,1,6v14.65 c0,0.25,0.25,0.5,0.5,0.5c0.1,0,0.15-0.05,0.25-0.05C3.1,20.45,5.05,20,6.5,20c1.95,0,4.05,0.4,5.5,1.5c1.35-0.85,3.8-1.5,5.5-1.5 c1.65,0,3.35,0.3,4.75,1.05c0.1,0.05,0.15,0.05,0.25,0.05c0.25,0,0.5-0.25,0.5-0.5V6C22.4,5.55,21.75,5.25,21,5z M21,18.5 c-1.1-0.35-2.3-0.5-3.5-0.5c-1.7,0-4.15,0.65-5.5,1.5V8c1.35-0.85,3.8-1.5,5.5-1.5c1.2,0,2.4,0.15,3.5,0.5V18.5z" />
+                        <path
+                            d="M17.5,10.5c0.88,0,1.73,0.09,2.5,0.26V9.24C19.21,9.09,18.36,9,17.5,9c-1.7,0-3.24,0.29-4.5,0.83v1.66 C14.13,10.85,15.7,10.5,17.5,10.5z" />
+                        <path
+                            d="M13,12.49v1.66c1.13-0.64,2.7-0.99,4.5-0.99c0.88,0,1.73,0.09,2.5,0.26V11.9c-0.79-0.15-1.64-0.24-2.5-0.24 C15.8,11.66,14.26,11.96,13,12.49z" />
+                        <path
+                            d="M17.5,14.33c-1.7,0-3.24,0.29-4.5,0.83v1.66c1.13-0.64,2.7-0.99,4.5-0.99c0.88,0,1.73,0.09,2.5,0.26v-1.52 C19.21,14.41,18.36,14.33,17.5,14.33z" />
+                    </svg>
+                </span>
+                <span class="nav-label" data-i18n="nav.library">Library</span>
+            </button>
+
+            <button class="nav-item" type="button" role="tab" id="tab-ranking" aria-controls="page-ranking"
+                aria-selected="false" data-page="ranking">
+                <span class="nav-icon" aria-hidden="true">
+                    <!-- Google Material Icons: leaderboard -->
+                    <svg viewBox="0 0 24 24" focusable="false">
+                        <path d="M7.5 21H2V9h5.5v12zm7.25-18h-5.5v18h5.5V3zM22 11h-5.5v10H22V11z" />
+                    </svg>
+                </span>
+                <span class="nav-label" data-i18n="nav.ranking">Ranking</span>
+            </button>
+
+            <button class="nav-item" type="button" role="tab" id="tab-profile" aria-controls="page-profile"
+                aria-selected="false" data-page="profile">
+                <span class="nav-icon" aria-hidden="true">
+                    <!-- Google Material Icons: person -->
+                    <svg viewBox="0 0 24 24" focusable="false">
+                        <path
+                            d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+                    </svg>
+                </span>
+                <span class="nav-label" data-i18n="nav.profile">Profile</span>
+            </button>
+        </nav>
+    </div>
+
+    <!-- ==================================================================
+         登录页（强制登录，无跳过）
+         插在应用外壳之上、splash 之下；只在未登录时显示。
+         ================================================================== -->
+    <div class="login" id="login" hidden>
+        <div class="login-body">
+            <div class="login-logo" aria-hidden="true">
+                <svg viewBox="0 0 108 108" focusable="false">
+                    <defs>
+                        <linearGradient id="login-g1" gradientUnits="userSpaceOnUse"
+                            x1="70.665" y1="37.335" x2="37.335" y2="37.335">
+                            <stop offset="0" stop-color="#FFFFFF" />
+                            <stop offset="1" stop-color="#D1D1D1" />
+                        </linearGradient>
+                        <linearGradient id="login-g2" gradientUnits="userSpaceOnUse"
+                            x1="37.335" y1="37.335" x2="54" y2="54">
+                            <stop offset="0" stop-color="#D1D1D1" />
+                            <stop offset="1" stop-color="#B0B0B0" />
+                        </linearGradient>
+                        <linearGradient id="login-g3" gradientUnits="userSpaceOnUse"
+                            x1="54" y1="54" x2="37.335" y2="70.665">
+                            <stop offset="0" stop-color="#B0B0B0" />
+                            <stop offset="1" stop-color="#8F8F8F" />
+                        </linearGradient>
+                        <linearGradient id="login-g4" gradientUnits="userSpaceOnUse"
+                            x1="37.335" y1="70.665" x2="61.325" y2="70.665">
+                            <stop offset="0" stop-color="#8F8F8F" />
+                            <stop offset="1" stop-color="#6E6E6E" />
+                        </linearGradient>
+                    </defs>
+                    <path d="M70.665,37.335 L37.335,37.335" stroke="url(#login-g1)"
+                        stroke-width="4.67" stroke-linecap="round" fill="none" />
+                    <path d="M37.335,37.335 L54,54" stroke="url(#login-g2)"
+                        stroke-width="4.67" stroke-linecap="round" fill="none" />
+                    <path d="M54,54 L37.335,70.665" stroke="url(#login-g3)"
+                        stroke-width="4.67" stroke-linecap="round" fill="none" />
+                    <path d="M37.335,70.665 L61.325,70.665" stroke="url(#login-g4)"
+                        stroke-width="4.67" stroke-linecap="round" fill="none" />
+                    <path d="M70.665,37.335 L70.665,46.000" stroke="#FFFFFF"
+                        stroke-width="4.67" stroke-linecap="round" fill="none" />
+                    <path d="M70.665,70.665 L70.665,62.000" stroke="#6E6E6E"
+                        stroke-width="4.67" stroke-linecap="round" fill="none" />
+                </svg>
+            </div>
+
+            <h1 class="login-title">Scholarius</h1>
+            <p class="login-text" id="login-text" data-i18n="login.intro">
+                Sign in with GitHub to sync your reading data.
+            </p>
+
+            <!-- 设备码：等原生拿到后填进来 -->
+            <div class="login-code-box" id="login-code-box" hidden>
+                <p class="login-code-hint" data-i18n="login.codeHint">
+                    Enter this code on GitHub:
+                </p>
+                <button class="login-code" type="button" id="login-code" aria-describedby="login-code-hint"></button>
+                <p class="login-code-wait" id="login-code-wait"></p>
+            </div>
+
+            <p class="login-error" id="login-error" hidden></p>
+
+            <button class="btn btn-login" type="button" id="login-action"
+                data-i18n="login.action">Sign in with GitHub</button>
+            <button class="btn btn-ghost" type="button" id="login-cancel" hidden
+                data-i18n="action.cancel">Cancel</button>
+        </div>
+    </div>
+
+    <!-- ==================================================================
+         更新弹窗（结构照搬 Livolog）
+         ================================================================== -->
+    <section class="sheet" id="sheet-update" role="dialog" aria-modal="true"
+        aria-labelledby="sheet-update-title" hidden>
+        <h2 class="sheet-title" id="sheet-update-title" data-i18n="update.title">Update available</h2>
+        <p class="sheet-text" id="update-text"></p>
+        <p class="sheet-text" id="update-stalled" hidden></p>
+
+        <div class="update-progress" id="update-progress" hidden>
+            <div class="update-track">
+                <span class="update-fill" id="update-fill"></span>
+            </div>
+            <span class="update-percent" id="update-percent"></span>
+        </div>
+
+        <div class="form-actions">
+            <button class="btn" type="button" id="update-later" data-i18n="update.later">Later</button>
+            <button class="btn btn-action" type="button" id="update-confirm"
+                data-i18n="update.now">Update</button>
+        </div>
+    </section>
+
+    <!-- ==================================================================
+         退出登录二次确认
+         ================================================================== -->
+    <section class="sheet" id="sheet-signout" role="dialog" aria-modal="true"
+        aria-labelledby="sheet-signout-title" hidden>
+        <h2 class="sheet-title" id="sheet-signout-title" data-i18n="account.signOutTitle">
+            Sign out of Scholarius?
+        </h2>
+        <p class="sheet-text" data-i18n="account.signOutConfirm">
+            The saved credentials will be removed from this device.
+            Your reading data stays. You can revoke access any time on GitHub.
+        </p>
+        <div class="form-actions">
+            <button class="btn" type="button" id="signout-cancel" data-i18n="action.cancel">Cancel</button>
+            <button class="btn btn-danger" type="button" id="signout-confirm"
+                data-i18n="account.signOut">Sign out</button>
+        </div>
+    </section>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="i18n.js"></script>
+    <script src="theme.js"></script>
+    <script src="components.js"></script>
+    <script src="login.js"></script>
+    <script src="update.js"></script>
+    <script src="account.js"></script>
+    <script src="app.js"></script>
+</body>
+
+</html>

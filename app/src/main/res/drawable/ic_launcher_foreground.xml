@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Scholarius 应用图标 · 前景层
+  造型：白 → 灰 渐变的希腊字母 Σ，头尾圆头，仅尾部截断，头尾各一条无渐变短线。
+
+  几何（108 × 108 视口，等于 Android VectorDrawable 的坐标空间）
+    外接框          38   → 到 72dp 安全遮罩留白 17、到视口边留白 35
+    线宽            4.67 → 与 Livolog 圆环线宽一致
+    圆头半径        2.335（= 线宽 ÷ 2，由 strokeLineCap="round" 实现）
+    斜线倾角        63.4°
+
+  Σ 主体路径（中心线）
+    (1,1) → (-1,1) → (0,0) → (-1,-1) → (1,-1)
+    映射到视口：view = (54 + x·h, 54 − y·h)，h = 38/2 − 4.67/2 = 16.665
+    截断：末段终点沿 −x 方向回退 2×线宽 = 9.34
+          原 (1,-1) = 70.665 → 截断后 61.325
+    头部不截断，保持在原 (1,1) = 70.665
+
+  端点短线（无渐变，线宽同字形，两端圆头）
+    头部：从 (1,1) 沿 +y 走 0.5h = 8.333  → 70.665,37.335 → 70.665,46.000  白
+    尾部：从 (1,-1) 沿 −y 走 0.5h = 8.333 → 70.665,70.665 → 70.665,62.000  最深的灰
+    圆头使外缘达 54 ± (h + sw/2) = 73.000 / 35.000，正好等于外接框边缘，不撑大
+
+  ══════════════════════════════════════════════════════════════════════════
+  渐变：按「累计弧长」—— 头部最白 #FFFFFF，沿笔画走到底端最灰 #6E6E6E。
+  ══════════════════════════════════════════════════════════════════════════
+
+  ⚠️ 不要退回成「一条对角线线性渐变」(35,35)→(73,73)。
+     那是错的：Σ 会折返，对角线的投影并不单调 ——
+       折点 B(37.335,37.335) 与 D(37.335,70.665) 的投影都 ≈ 0.5，
+       但它们的弧长占比是 0.3191 / 0.7703，相差一倍多。
+     单条线性渐变在数学上表达不了弧长渐变，颜色必然错位。
+
+  ⚠️ 也不要用 <gradient type="sweep">：
+     它从固定方向起、顺时针走一圈，没有起点角度参数，
+     做不到「沿某条折线的弧长」渐变。
+
+  ✅ 正确做法：把 Σ 拆成 4 段，每段挂一条独立的 linear gradient。
+     段内是直线 → 投影与弧长单调一致，渐变精确。
+
+  ⚠️ 折点处**不要**给后段加「段首延长」去补接缝：
+     后段用 round cap，延长会让圆头在折点**外侧**鼓出一块方角
+     （实测折点 B 外侧 (34,34) 出现 #D4D4D4 色块，而定稿那里是背景 #0E0E0E）。
+     正确做法是**相邻两段共享折点、端点色相同**：两段的圆头圆心都落在折点上、
+     半径同为 2.335 → 完全重合，接缝自然消失。
+
+     各段端点色 = lerp(#FFFFFF, #6E6E6E, 累计弧长 / 总弧长)，总弧长 104.4557：
+       段1  A(70.665,37.335) #FFFFFF → B(37.335,37.335) #D1D1D1   弧长比 0.0000→0.3191
+       段2  B                #D1D1D1 → C(54,54)         #B0B0B0   弧长比 0.3191→0.5447
+       段3  C                #B0B0B0 → D(37.335,70.665) #8F8F8F   弧长比 0.5447→0.7703
+       段4  D                #8F8F8F → E(61.325,70.665) #6E6E6E   弧长比 0.7703→1.0000
+
+     与定稿 v8_s_b38_arc_far_seg_seg.png 逐像素比对：
+       平均差 0.34/255；>48 的差异仅 0.026%（全在抗锯齿边缘）。
+     复现脚本 design/tools/gen_svg_arc.py。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- ① Σ 主体 · 段1  A→B（段尾不延长，末端即折点 B） -->
+    <path
+        android:pathData="M70.665,37.335 L37.335,37.335"
+        android:strokeWidth="4.67"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="70.665"
+                android:startY="37.335"
+                android:endX="37.335"
+                android:endY="37.335">
+                <item
+                    android:offset="0"
+                    android:color="#FFFFFFFF" />
+                <item
+                    android:offset="1"
+                    android:color="#FFD1D1D1" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- ② Σ 主体 · 段2  B→C（起点即折点 B，颜色与段1 末端相同 → 圆头重合） -->
+    <path
+        android:pathData="M37.335,37.335 L54,54"
+        android:strokeWidth="4.67"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="37.335"
+                android:startY="37.335"
+                android:endX="54"
+                android:endY="54">
+                <item
+                    android:offset="0"
+                    android:color="#FFD1D1D1" />
+                <item
+                    android:offset="1"
+                    android:color="#FFB0B0B0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- ③ Σ 主体 · 段3  C→D（起点即折点 C，颜色与段2 末端相同） -->
+    <path
+        android:pathData="M54,54 L37.335,70.665"
+        android:strokeWidth="4.67"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="54"
+                android:startY="54"
+                android:endX="37.335"
+                android:endY="70.665">
+                <item
+                    android:offset="0"
+                    android:color="#FFB0B0B0" />
+                <item
+                    android:offset="1"
+                    android:color="#FF8F8F8F" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- ④ Σ 主体 · 段4  D→E 截断后（起点即折点 D，颜色与段3 末端相同） -->
+    <path
+        android:pathData="M37.335,70.665 L61.325,70.665"
+        android:strokeWidth="4.67"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="37.335"
+                android:startY="70.665"
+                android:endX="61.325"
+                android:endY="70.665">
+                <item
+                    android:offset="0"
+                    android:color="#FF8F8F8F" />
+                <item
+                    android:offset="1"
+                    android:color="#FF6E6E6E" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- ⑤ 头部短线：不参与渐变，取该端字形色（起点最白） -->
+    <path
+        android:pathData="M70.665,37.335 L70.665,46.000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4.67"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- ⑥ 尾部短线：不参与渐变，取该端字形色（终点最灰） -->
+    <path
+        android:pathData="M70.665,70.665 L70.665,62.000"
+        android:strokeColor="#FF6E6E6E"
+        android:strokeWidth="4.67"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

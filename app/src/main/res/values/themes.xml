@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <style name="Theme.Scholarius" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/app_background</item>
+        <item name="android:statusBarColor">@color/app_background</item>
+        <item name="android:navigationBarColor">@color/app_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
+        <!-- 深色模式由网页 CSS 的 prefers-color-scheme 处理，关闭系统强制反色 -->
+        <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
+    </style>
+
+    <!--
+      冷启动的第一帧（由 androidx.core:core-splashscreen 接管，API 26+ 行为一致）。
+      Android 12+ 默认会把「应用图标」放大着显示在启动页上，那是系统 splash；
+      这里把它换成全透明图，只剩品牌黑底色，紧接着就交给网页里的启动动画。
+      白天 / 夜间同一套：splash 永远是黑底，不跟随主题。
+    -->
+    <style name="Theme.Scholarius.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/ic_launcher_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_blank</item>
+        <item name="postSplashScreenTheme">@style/Theme.Scholarius</item>
+    </style>
+
+</resources>

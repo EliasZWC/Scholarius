@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider 暴露给系统安装器的目录白名单。
+
+    APK 下载在 cacheDir/update，所以只开这一个子目录，
+    其余缓存一律不外泄（用户数据不在这个目录里）。
+-->
+<paths>
+    <cache-path
+        name="update"
+        path="update/" />
+</paths>

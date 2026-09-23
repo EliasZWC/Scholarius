@@ -1,0 +1,61 @@
+name: Build
+
+# 日常 CI：每次推送到主分支或提交 PR 时构建 Debug APK，验证工程可编译。
+# 这是唯一能在推标签之前发现编译错误的地方 —— 本地开发机没有 Android SDK。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  assemble-debug:
+    name: 构建 Debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: 配置 Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.11.1'
+
+      - name: 读取版本号
+        run: |
+          VERSION_NAME=$(grep -oP 'val appVersionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          echo "Scholarius versionName = $VERSION_NAME"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+
+      - name: 构建 Debug APK
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: 重命名产物
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             "dist/Scholarius-v${VERSION_NAME}-debug.apk"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: scholarius-debug-apk
+          path: dist/*.apk
+          if-no-files-found: error
