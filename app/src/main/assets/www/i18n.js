@@ -15,7 +15,7 @@
             'app.name': 'Scholarius',
             'nav.label': 'Main navigation',
             'nav.library': 'Library',
-            'nav.ranking': 'Ranking',
+            'nav.explore': 'Explore',
             'nav.profile': 'Profile',
 
             'action.cancel': 'Cancel',
@@ -94,7 +94,7 @@
             'app.name': 'Scholarius',
             'nav.label': '主导航',
             'nav.library': '文库',
-            'nav.ranking': '榜单',
+            'nav.explore': '探索',
             'nav.profile': '个人',
 
             'action.cancel': '取消',

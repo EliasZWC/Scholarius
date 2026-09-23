@@ -238,6 +238,47 @@ body {
     fill: currentColor;
 }
 
+/*
+  图标两态：未选中用 outlined（线型），选中用 filled（填充）。
+
+  ⚠️ 两态必须是**两个独立的 SVG 元素**，不能靠 CSS 改变一个 svg 的填充 ——
+     Material Symbols 的 outlined 与 filled 是**两套不同的路径数据**
+     （outlined 多出内圈描边段），不是同一路径换填充规则。
+
+  ⚠️ 用 `aria-selected`（语义属性）而不是 `.is-active`（样式类）判断：
+     tab 的选中状态在无障碍树里就应该是 aria-selected，
+     样式跟随它可避免两个状态不同步。
+
+  两个 svg 用 grid 叠在同一格，靠 display 切换，不产生布局位移。
+*/
+.nav-icon-outline,
+.nav-icon-fill {
+    grid-area: 1 / 1;
+}
+
+/*
+  ⚠️ 必须写成 `.nav-icon svg.nav-icon-fill`（两个类 + 元素），
+     不能只写 `.nav-icon-fill`。
+
+     因为上面有 `.nav-icon svg { display: block }`，它和 `.nav-icon-fill`
+     的选择器权重相同（都是 0,1,0 一类），**后写的赢** ——
+     而 `.nav-icon svg` 在后面，于是 `display: none` 被覆盖，
+     两个图标叠在一起同时显示（实测未选中项 outline 与 fill 都是 block）。
+
+     提高权重到 0,2,1 后规则稳定生效，不再依赖书写顺序。
+*/
+.nav-icon svg.nav-icon-fill {
+    display: none;
+}
+
+.nav-item[aria-selected="true"] .nav-icon svg.nav-icon-outline {
+    display: none;
+}
+
+.nav-item[aria-selected="true"] .nav-icon svg.nav-icon-fill {
+    display: block;
+}
+
 .nav-label {
     max-width: 100%;
     font-size: 12px;
