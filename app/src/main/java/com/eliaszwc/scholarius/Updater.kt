@@ -73,24 +73,24 @@ object Updater {
         onResult: (Release?) -> Unit,
     ) {
         val localVersion = installedVersionName(context)
-        log(onLog, "查询 $releaseApiUrl（当前 $localVersion）")
+        log(onLog, "query $releaseApiUrl (current $localVersion)")
 
         Thread {
             val release = try {
                 fetchLatest(onLog)
             } catch (t: Throwable) {
                 Log.w(TAG, "[update] 检查更新抛异常", t)
-                log(onLog, "检查异常：${t.javaClass.simpleName} ${t.message}")
+                log(onLog, "check failed: ${t.javaClass.simpleName} ${t.message}")
                 null
             }
 
             val newer = release?.takeIf { localVersion != null && isNewer(it.version, localVersion) }
             if (newer != null) {
-                log(onLog, "有新版本 ${newer.version}（当前 $localVersion）")
+                log(onLog, "newer release ${newer.version} (current $localVersion)")
             } else if (release != null) {
-                log(onLog, "最新 ${release.version} 不大于当前 $localVersion")
+                log(onLog, "latest ${release.version} is not newer than $localVersion")
             } else {
-                log(onLog, "Release 解析失败或为空")
+                log(onLog, "release parse failed or empty")
             }
             MainThread.post { onResult(newer) }
         }.start()
@@ -112,7 +112,7 @@ object Updater {
 
         try {
             val code = connection.responseCode
-            log(onLog, "API 返回 HTTP $code")
+            log(onLog, "API returned HTTP $code")
             if (code != HttpURLConnection.HTTP_OK) {
                 Log.w(TAG, "查询 Release 失败：HTTP $code")
                 return null
@@ -125,7 +125,7 @@ object Updater {
             if (tag.isEmpty()) return null
 
             val assets = json.optJSONArray("assets") ?: return null
-            log(onLog, "assets 共 ${assets.length()} 个")
+            log(onLog, "assets: ${assets.length()}")
             for (index in 0 until assets.length()) {
                 val asset = assets.optJSONObject(index) ?: continue
                 val name = asset.optString("name")

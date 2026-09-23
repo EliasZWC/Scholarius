@@ -596,6 +596,24 @@ body {
     color: var(--danger);
 }
 
+/*
+  单条居中项（退出登录）。
+  ⚠️ 必须同时改 .setting-action 的 justify-content 与 .setting-label 的
+     text-align —— 后者默认是 left，只改前者文字仍会靠左。
+  全大写由 text-transform 做，CSS 处理比在 i18n 里写大写更可靠
+     （中文「退出登录」不受影响，符合预期）。
+*/
+.setting-action.setting-center {
+    justify-content: center;
+}
+
+.setting-center .setting-label {
+    flex: 0 1 auto;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
 .setting-note {
     margin: 8px 36px 0;
     font-size: 12px;

@@ -270,7 +270,7 @@ import kotlin.math.roundToInt
                 onThemeMode = { mode -> runOnUiThread { setThemeMode(mode) } },
                 onOpenExternal = { url -> runOnUiThread { openExternally(url) } },
                 onOpenVerification = { url ->
-                    debugLog("[login] 网页请求打开授权页：$url")
+                    debugLog("[login] web requested verification page: $url")
                     runOnUiThread { openDeviceVerification(url) }
                 },
                 onFinishSplash = { runOnUiThread { finishSplash() } },
@@ -453,7 +453,7 @@ import kotlin.math.roundToInt
             }
 
             // 把 user_code 显示给用户；跳转由用户在网页上点按钮触发
-            debugLog("[login] 设备码=${device.userCode} 有效期=${device.expiresInSeconds}s")
+            debugLog("[login] user_code=${device.userCode} expires=${device.expiresInSeconds}s")
 
             evaluateInWeb(
                 "window.ScholariusShell && window.ScholariusShell.onLoginCode(" +
@@ -463,13 +463,13 @@ import kotlin.math.roundToInt
             )
 
             debugLog(
-                "[login] 开始轮询 token（间隔 ${device.intervalSeconds}s、" +
-                    "有效期 ${device.expiresInSeconds}s）"
+                "[login] polling started (interval=${device.intervalSeconds}s, " +
+                    "expires=${device.expiresInSeconds}s)"
             )
             GitHubAuth.pollForToken(
                 deviceCode = device,
                 onUpdated = { waited ->
-                    debugLog("[login] 已等待 ${waited}s，仍未授权")
+                    debugLog("[login] waited ${waited}s, still pending")
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.onLoginWaiting($waited);"
                     )
@@ -548,12 +548,12 @@ import kotlin.math.roundToInt
     /** 进入前台时自动查一次（每次进入只查一次，省 API 限额） */
     private fun maybeCheckUpdate() {
         if (updateChecked || updateFlowActive || !pageReady) {
-            debugLog("[update] 跳过检查：updateChecked=$updateChecked " +
+            debugLog("[update] skipped: updateChecked=$updateChecked " +
                 "updateFlowActive=$updateFlowActive pageReady=$pageReady")
             return
         }
         updateChecked = true
-        debugLog("[update] 开始检查（当前 ${Updater.installedVersionName(this)}）")
+        debugLog("[update] checking (current ${Updater.installedVersionName(this)})")
         runUpdateCheck(notifyWhenUpToDate = false)
     }
 
@@ -563,7 +563,7 @@ import kotlin.math.roundToInt
         Updater.check(this, onLog = { debugLog("[update] $it") }) { release ->
             if (release == null) {
                 // 细节已由 Updater 的 onLog 逐行输出（HTTP 码 / tag_name / assets）
-                debugLog("[update] 结论：没有可用的新版本")
+                debugLog("[update] result: no newer release")
                 if (notifyWhenUpToDate) {
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.onUpdateNone();"
@@ -572,10 +572,10 @@ import kotlin.math.roundToInt
                 return@check
             }
             if (updateFlowActive) {
-                debugLog("[update] 发现 ${release.version} 但流程已在跑，忽略")
+                debugLog("[update] found ${release.version} but flow already active, ignored")
                 return@check
             }
-            debugLog("[update] 发现新版本 ${release.version}，弹窗")
+            debugLog("[update] found ${release.version}, showing sheet")
 
             updateFlowActive = true
             pendingRelease = release
@@ -713,17 +713,17 @@ import kotlin.math.roundToInt
     /** 在网页执行一小段脚本；页面没就绪时直接忽略 */
     private fun evaluateInWeb(script: String) {
         if (!::webView.isInitialized) {
-            Log.w(TAG, "注入被丢弃：webView 未初始化")
+            Log.w(TAG, "inject dropped: webView not initialized")
             return
         }
         if (!pageReady) {
-            Log.w(TAG, "注入被丢弃：pageReady=false")
+            Log.w(TAG, "inject dropped: pageReady=false")
             return
         }
         try {
             webView.evaluateJavascript(script, null)
         } catch (t: Throwable) {
-            Log.w(TAG, "注入脚本失败", t)
+            Log.w(TAG, "inject failed", t)
         }
     }
 
@@ -738,21 +738,21 @@ import kotlin.math.roundToInt
      */
     private fun evaluateInWebChecked(tag: String, script: String) {
         if (!::webView.isInitialized) {
-            Log.w(TAG, "[$tag] 注入被丢弃：webView 未初始化")
+            Log.w(TAG, "[$tag] inject dropped: webView not initialized")
             return
         }
         if (!pageReady) {
-            Log.w(TAG, "[$tag] 注入被丢弃：pageReady=false")
+            Log.w(TAG, "[$tag] inject dropped: pageReady=false")
             return
         }
         val guarded = "(function(){try{return String($script)}catch(e){" +
             "return 'ERR: '+(e&&e.message?e.message:e)}})();"
         try {
             webView.evaluateJavascript(guarded) { result ->
-                Log.i(TAG, "[$tag] 注入结果：$result")
+                Log.i(TAG, "[$tag] inject result: $result")
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "[$tag] 注入失败", t)
+            Log.w(TAG, "[$tag] inject failed", t)
         }
     }
 
@@ -816,9 +816,9 @@ import kotlin.math.roundToInt
      * 浏览器打开后自动填码，用户只需点一次 Authorize。
      */
     private fun openDeviceVerification(verificationUri: String): Boolean {
-        debugLog("[login] 用浏览器打开授权页：$verificationUri")
+        debugLog("[login] opening verification page in browser: $verificationUri")
         val ok = openExternally(verificationUri)
-        debugLog("[login] 浏览器打开结果=$ok")
+        debugLog("[login] browser open result=$ok")
         return ok
     }
 
@@ -913,7 +913,7 @@ import kotlin.math.roundToInt
             return
         }
 
-        debugLog("[life] 回到前台")
+        debugLog("[life] resumed")
 
         /*
           每次回到前台重置「已查过」的标记，然后重查一次。
@@ -939,7 +939,7 @@ import kotlin.math.roundToInt
             */
             val away = SystemClock.elapsedRealtime() - leftForegroundAt
             if (away > UPDATE_FLOW_RESUME_GRACE_MS) {
-                Log.i(TAG, "[update] 离开 ${away}ms 后回到前台，清除残留流程状态")
+                Log.i(TAG, "[update] away ${away}ms, clearing stale flow state")
                 updateFlowActive = false
                 downloading = false
                 updateChecked = false
@@ -967,14 +967,14 @@ import kotlin.math.roundToInt
 
         const val APP_ASSETS_HOST = "appassets.androidplatform.net"
         /**
-         * 入口页。`?diag=1` 会让网页把启动时序显示成屏幕上的浮层 ——
-         * 用户不需要 adb、不需要远程调试，直接截图就能看到原因。
+         * 入口页。
          *
-         * ⚠️ 临时诊断（v0.0.13）。定位完「启动页一闪而过」后，
-         *    把这个参数连同 app.js 的 trace() 一起删掉。
+         * ⚠️ 不再带 `?diag=1`（v0.0.25 改）。调试日志改由设置页的
+         *    「Debug log」开关控制 —— 用户不需要改代码就能开关，
+         *    也不用重装。开关状态存在网页 localStorage 里。
          */
         const val WEB_ENTRY_URL =
-            "https://appassets.androidplatform.net/assets/www/index.html?diag=1"
+            "https://appassets.androidplatform.net/assets/www/index.html"
 
         const val JS_BRIDGE_NAME = "ScholariusNative"
 

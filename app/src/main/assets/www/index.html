@@ -311,6 +311,18 @@
                                 <span class="setting-value" id="setting-theme-value">&mdash;</span>
                             </button>
                         </li>
+                        <!--
+                          诊断日志开关。
+                          ⚠️ 日志文案固定英文（不随语言切换）—— 它是给排查问题看的，
+                             混进中文会让贴到 issue 里更难读。
+                        -->
+                        <li class="setting-item">
+                            <button class="setting-action" type="button" id="setting-debug"
+                                role="switch" aria-checked="false">
+                                <span class="setting-label" data-i18n="setting.debugLog">Log</span>
+                                <span class="setting-value" id="setting-debug-value">Off</span>
+                            </button>
+                        </li>
                     </ul>
                 </section>
 
@@ -333,20 +345,20 @@
                     </ul>
                 </section>
 
-                <!-- 退出登录：破坏性操作，单独一组、红色文字，不与普通设置混排 -->
+                <!--
+                  退出登录：破坏性操作，单独一组、红色、居中全大写。
+                  ⚠️ 不加说明文字 —— 点下去会弹二次确认表单，
+                     那里已经把后果说清楚了，这里再说一遍是重复。
+                -->
                 <section class="setting-group">
                     <ul class="setting-list">
                         <li class="setting-item">
-                            <button class="setting-action setting-danger" type="button" id="setting-signout">
+                            <button class="setting-action setting-danger setting-center"
+                                type="button" id="setting-signout">
                                 <span class="setting-label" data-i18n="account.signOut">Sign out</span>
-                                <span class="setting-value" id="setting-signout-value"></span>
                             </button>
                         </li>
                     </ul>
-                    <p class="setting-note" data-i18n="account.signOutNote">
-                        Signing out only removes the saved credentials on this device.
-                        Reading data stays.
-                    </p>
                 </section>
             </section>
         </main>

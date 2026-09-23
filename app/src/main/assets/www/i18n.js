@@ -59,7 +59,10 @@
             'setting.theme.system': 'Follow system',
             'setting.version': 'Version',
             'setting.contact': 'Contact',
-            'account.signOutNote': 'Signing out only removes the saved credentials on this device. Reading data stays.',
+            'setting.debugLog': 'Log',
+            'setting.debugLog.on': 'On',
+            'setting.debugLog.off': 'Off',
+            'setting.debugLog.restartHint': 'Log on',
 
             // --- 更新 ---
             'update.title': 'Update available',
@@ -126,7 +129,10 @@
             'setting.theme.system': '跟随系统',
             'setting.version': '版本',
             'setting.contact': '联系',
-            'account.signOutNote': '退出登录只删除本设备保存的凭据，阅读数据保留。',
+            'setting.debugLog': '日志',
+            'setting.debugLog.on': '开',
+            'setting.debugLog.off': '关',
+            'setting.debugLog.restartHint': '日志已开启',
 
             'update.title': '发现新版本',
             'update.message': '新版本 {version} 已发布（{size}），当前版本 {current}。',

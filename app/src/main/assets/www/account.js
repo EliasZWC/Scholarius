@@ -25,6 +25,13 @@
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
     }
 
+    /** 调试日志当前是否开启（读取权在 app.js，这里只问它） */
+    function debugLogOn() {
+        return !!(global.ScholariusShell &&
+            typeof global.ScholariusShell.isDebugLogEnabled === 'function' &&
+            global.ScholariusShell.isDebugLogEnabled());
+    }
+
     function init() {
         buildPickers();
         mountActions();
@@ -94,6 +101,42 @@
         var contactValue = document.getElementById('setting-contact-value');
         if (contactValue) {
             contactValue.textContent = CONTACT_EMAIL;
+        }
+
+        /*
+          调试日志开关。
+          用 row picker 而不是 switch —— 与 Language / Theme 的交互一致，
+          用户不用为一个开关记两种手感。
+          ⚠️ 开启后**不立即显示浮层**：浮层要等下一次 trace() 才创建。
+             为避免「开了却什么都没看到」的疑惑，这里切完弹一个 toast 说明。
+        */
+        var debugRow = document.getElementById('setting-debug');
+        var debugValue = document.getElementById('setting-debug-value');
+        if (debugRow && debugValue) {
+            setters.debug = ui.createRowPicker(debugRow, debugValue, {
+                getOptions: function () {
+                    return [
+                        { value: 'on', label: t('setting.debugLog.on') },
+                        { value: 'off', label: t('setting.debugLog.off') }
+                    ];
+                },
+                getValue: function () {
+                    return debugLogOn() ? 'on' : 'off';
+                },
+                onChange: function (value) {
+                    var on = value === 'on';
+                    if (global.ScholariusShell &&
+                        typeof global.ScholariusShell.setDebugLogEnabled === 'function') {
+                        global.ScholariusShell.setDebugLogEnabled(on);
+                    }
+                    if (global.ScholariusUI) {
+                        global.ScholariusUI.toast(
+                            on ? t('setting.debugLog.restartHint') : t('setting.debugLog.off')
+                        );
+                    }
+                    refresh();
+                }
+            });
         }
 
         var contactRow = document.getElementById('setting-contact');

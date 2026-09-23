@@ -188,14 +188,17 @@
         onUpdateReady: onUpdateReady,
         onUpdateFailed: onUpdateFailed,
         /*
-          原生 → 网页的诊断日志入口（临时，v0.0.15）。
+          原生 → 网页的诊断日志入口。
           原生日志只会进 logcat，手机上根本看不到；
           这个接口让原生把关键信息直接画到屏幕上。
-          排查完「GitHub App 没被拉起」之后连同 trace() 一起删。
+          是否显示由设置页的「Debug log」开关决定（见 setDiagEnabled）。
         */
         diag: function (message) {
             trace(String(message));
-        }
+        },
+        /** 设置页用来读/写诊断日志开关 */
+        isDebugLogEnabled: diagEnabled,
+        setDebugLogEnabled: setDiagEnabled
     };
 
     /* ----------------------------------------------------------------------
@@ -314,6 +317,12 @@
 
         setupSplash();
 
+        // 调试日志已开启：立刻把浮层建出来，让用户看到开关生效
+        if (diagEnabled()) {
+            ensureDiagPanel();
+            trace('diag:ready', 'debug log enabled');
+        }
+
         // 禁止双指缩放 / 长按放大镜造成的页面抖动
         document.addEventListener('gesturestart', function (event) {
             event.preventDefault();
@@ -337,25 +346,51 @@
      * 所以两个条件都满足才退场；先到的那个只是记一个标记。
      */
     /*
-      ⚠️ 临时诊断（v0.0.18）：把启动/登录/更新时序显示成**可复制**的浮层。
+      诊断浮层：把启动/登录/更新时序显示成**可复制、可开关**的浮层。
 
-      设计要点（用户 2026-09-23 要求）：
-        · 日志往往很长，直接铺在屏幕上既挡视野又没法完整看到；
-        · 所以做成「**默认折叠成一条细横条**」，点一下才展开；
-        · 展开后**日志区可选中复制**，用户能整段粘贴出来；
-        · 提供「复制」按钮一键全选复制，「清空」按钮重置。
+      设计要点：
+        · 日志往往很长，直接铺在屏幕上既挡视野又没法完整看到，
+          所以做成「默认折叠成一条细横条」，点一下才展开；
+        · 展开后日志区可选中复制，用户能整段粘贴出来；
+        · 提供 Copy / Clear 按钮。
 
-      开启方式：入口 URL 带 ?diag=1（当前 MainActivity.WEB_ENTRY_URL 已带）。
-      定位完连同所有 trace() 调用点一起删。
+      ⚠️ 文案**固定英文**，不随语言切换。
+         它是给排查问题看的，贴到 issue / 聊天里时混中文更难读。
+         设置项名称本身走 i18n（见 setting.debugLog）。
+
+      ⚠️ 开关存在 localStorage，不走原生 —— 原生的 EncryptedSharedPreferences
+         是给 token 用的，一个调试开关没必要过桥。
     */
     var DIAG_HEIGHT_KEY = 'scholarius.diagHeight';
+    var DIAG_ENABLED_KEY = 'scholarius.debugLog';
 
     function diagEnabled() {
         try {
-            return location.search.indexOf('diag=1') !== -1;
+            return localStorage.getItem(DIAG_ENABLED_KEY) === '1';
         } catch (e) {
             return false;
         }
+    }
+
+    /**
+     * 开关诊断日志。返回切换后的状态。
+     *
+     * 关掉时**立刻移除浮层**，不用等下次启动。
+     * 打开时**立刻建出浮层** —— 否则要等下一次 trace() 才出现，
+     * 用户会以为开关没生效。
+     */
+    function setDiagEnabled(on) {
+        try {
+            localStorage.setItem(DIAG_ENABLED_KEY, on ? '1' : '0');
+        } catch (e) { /* 忽略 */ }
+
+        var panel = document.getElementById('__diag');
+        if (on) {
+            ensureDiagPanel();
+        } else if (panel && panel.parentNode) {
+            panel.parentNode.removeChild(panel);
+        }
+        return on;
     }
 
     function ensureDiagPanel() {
@@ -367,12 +402,12 @@
         panel.id = '__diag';
         panel.innerHTML =
             '<div class="diag-bar">' +
-            '  <span class="diag-title">诊断日志</span>' +
+            '  <span class="diag-title">Log</span>' +
             '  <span class="diag-count" id="__diagCount">0</span>' +
             '  <span class="diag-spacer"></span>' +
-            '  <button type="button" class="diag-btn" id="__diagCopy">复制</button>' +
-            '  <button type="button" class="diag-btn" id="__diagClear">清空</button>' +
-            '  <button type="button" class="diag-btn" id="__diagToggle">展开</button>' +
+            '  <button type="button" class="diag-btn" id="__diagCopy">Copy</button>' +
+            '  <button type="button" class="diag-btn" id="__diagClear">Clear</button>' +
+            '  <button type="button" class="diag-btn" id="__diagToggle">Expand</button>' +
             '</div>' +
             '<pre class="diag-log" id="__diagLog" hidden></pre>';
 
@@ -384,7 +419,7 @@
 
         var setExpanded = function (expanded) {
             logEl.hidden = !expanded;
-            toggleEl.textContent = expanded ? '收起' : '展开';
+            toggleEl.textContent = expanded ? 'Collapse' : 'Expand';
             try {
                 localStorage.setItem(DIAG_HEIGHT_KEY, expanded ? '1' : '0');
             } catch (e) { /* 忽略 */ }
@@ -397,8 +432,7 @@
         panel.querySelector('#__diagCopy').addEventListener('click', function () {
             var text = logEl.textContent || '';
             var done = function () {
-                toggleEl.textContent = toggleEl.textContent; // 保持
-                flash(panel, '已复制 ' + text.split('\n').length + ' 行');
+                flash(panel, 'Copied ' + text.split('\n').length + ' lines');
             };
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(text).then(done, function () {
@@ -450,10 +484,9 @@
     function flash(panel, message) {
         var title = panel.querySelector('.diag-title');
         if (!title) return;
-        var original = '诊断日志';
         title.textContent = message;
         window.setTimeout(function () {
-            title.textContent = original;
+            title.textContent = 'Log';
         }, 1400);
     }
 
