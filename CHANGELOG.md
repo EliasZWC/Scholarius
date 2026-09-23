@@ -4,6 +4,25 @@
 
 ---
 
+## [0.0.4] - 2026-09-23
+
+### 修复
+
+- **启动页一闪而过（真正原因）**：`v0.0.3` 里为了「处理动画已结束的情况」
+  引入了 `splash.getAnimations().length === 0` 的判断，却在 `DOMContentLoaded`
+  时机执行 —— 那时 CSS 可能还没应用，`getAnimations()` 返回空数组，
+  于是被误判成「动画已结束」，启动页被立刻跳过。
+  现在只用 `animationend` 事件判断，并把兜底超时从 3000ms 提到 3400ms
+  （必须大于 CSS 里的 2200ms，否则会抢在事件前把启动页收掉）。
+
+  > 这是 v0.0.3 引入的回归。教训：用「探测当前状态」代替「等事件」很危险，
+  > 探测时机的状态未必代表最终状态。
+
+- GitHub App 优先打开授权页：不再写死包名去 `setPackage`，
+  改用 `queryIntentActivities` 列出所有处理者、排除浏览器后挑出 GitHub App。
+
+---
+
 ## [0.0.3] - 2026-09-23
 
 ### 修复
@@ -126,3 +145,4 @@
 [0.0.2]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.2
 [0.0.1]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.1
 [0.0.3]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.3
+[0.0.4]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.4

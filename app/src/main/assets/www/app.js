@@ -16,6 +16,15 @@
     var DEFAULT_TAB = 'library';
     var TAB_ORDER = ['library', 'ranking', 'profile'];
 
+    /**
+     * 启动动画的兜底超时。
+     *
+     * ⚠️ 必须**大于** styles.css 里 .splash 的动画时长（2200ms），
+     *    否则会抢在 animationend 之前把启动页收掉 —— 表现就是「一闪而过」。
+     *    留 1.2s 余量，覆盖低端机首帧延迟。
+     */
+    var SPLASH_FALLBACK_MS = 3400;
+
     var tabs = Array.prototype.slice.call(document.querySelectorAll('.nav-item'));
     var titleEl = document.getElementById('page-title');
     var appEl = document.getElementById('app');
@@ -281,6 +290,21 @@
      *
      * 所以两个条件都满足才退场；先到的那个只是记一个标记。
      */
+    /**
+     * 启动动画的收尾。
+     *
+     * 动画本身完全由 CSS 驱动（见 styles.css 的 .splash），这里只负责：
+     *   1) 等到「动画播完」且「登录状态已知」两个条件都满足；
+     *   2) 把 splash 从文档里摘掉；
+     *   3) 通知原生切回正常主题。
+     *
+     * ⚠️ 判断「播完」只用 animationend 事件，**不要**用 getAnimations() 去查 ——
+     *    DOMContentLoaded 可能在 CSS 应用之前触发，那时 getAnimations() 返回空数组，
+     *    会被误判成「动画已结束」而立刻跳过启动页（实测踩过这个坑）。
+     *
+     * ⚠️ 兜底超时必须**大于** CSS 里的动画时长（2.2s），否则会抢在 animationend
+     *    之前把 splash 收掉。这里取 3.4s 留出余量。
+     */
     function setupSplash() {
         var splash = document.getElementById('splash');
         if (!splash) {
@@ -298,13 +322,13 @@
         };
 
         splash.addEventListener('animationend', function (event) {
+            // 只认 splash 自己的动画；logo / 名称的 animationend 会一起冒泡上来
             if (event.target === splash) {
                 markDone();
             }
         });
 
-        // 兜底：万一动画事件没来（比如系统把动画整个关掉了）
-        window.setTimeout(markDone, 3000);
+        window.setTimeout(markDone, SPLASH_FALLBACK_MS);
     }
 
     /** 动画播完 且 登录状态已知 → 才收起启动页并放行 */

@@ -525,43 +525,79 @@ import kotlin.math.roundToInt
     /**
      * 打开 GitHub 设备授权页：**优先用 GitHub 手机 App，装不上才退回浏览器**。
      *
-     * 为什么要特判：`https://github.com/login/device` 这个链接，系统解析时
-     * 浏览器一定接得住，但 GitHub App 装了的话体验好得多（已登录、直接出授权页）。
+     * 做法分三层，逐层降级：
      *
-     * 判定方式用 `resolveActivity` 而不是「先试着 startActivity 再 catch」：
-     *   · `resolveActivity` 不产生副作用，失败也没有窗口闪现
-     *   · 但要注意：**它返回的可能是浏览器**（浏览器也注册了 github.com 的
-     *     http/https filter），所以必须校验解析到的包名确实是 GitHub App，
-     *     否则「优先 App」等于没做。
+     *   ① 用 `queryIntentActivities` 列出所有能接住这个 https 链接的 App，
+     *      排除浏览器，挑出 GitHub App（按包名/应用名判断）。
+     *      —— 不写死包名去 `setPackage`：包名可能随版本/渠道变化，
+     *         写死会让「优先 App」形同虚设。
      *
-     * ⚠️ 为什么逐个 `setPackage` 试，而不是只查一次：
-     *   同一个 App 可能同时注册了 `https://github.com/...` 与自定义 scheme，
-     *   不同版本/不同渠道的包名也可能不同（`com.github.android` 是官方版）。
-     *   逐个显式指定包名探测最可靠，且探测失败无副作用。
+     *   ② 找不到就退回浏览器。
+     *
+     *   ③ 整个流程 try 住：任何一步异常都不能让登录卡死。
+     *
+     * ⚠️ 为什么 GitHub App 装了却仍走浏览器（之前踩的坑）：
+     *   仅仅 `ACTION_VIEW` 打开 https 链接时，系统会在「已验证的 App Links」
+     *   和浏览器之间选。GitHub App 对 github.com 的 App Links 未必在所有
+     *   机型/版本上都验证通过（`autoVerify` 失败时会退化成普通 deeplink），
+     *   这时系统可能直接给浏览器。所以这里显式把 GitHub App 挑出来优先启动。
      */
     private fun openDeviceVerification(verificationUri: String): Boolean {
         val uri = Uri.parse(verificationUri)
 
-        // GitHub 官方 Android App。装了就优先用它
-        for (pkg in GITHUB_APP_PACKAGES) {
+        // ① 先找 GitHub App
+        val githubApp = findGitHubAppFor(uri)
+        if (githubApp != null) {
             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri).apply {
-                setPackage(pkg)
+                setPackage(githubApp)
                 addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            if (intent.resolveActivity(packageManager) != null) {
-                try {
-                    startActivity(intent)
-                    Log.i(TAG, "用 GitHub App 打开授权页：$pkg")
-                    return true
-                } catch (t: Throwable) {
-                    // 探测到了却起不来（被禁用/权限问题），继续试下一个
-                    Log.w(TAG, "GitHub App ($pkg) 拉起失败，继续尝试", t)
-                }
+            try {
+                startActivity(intent)
+                Log.i(TAG, "用 GitHub App 打开授权页：$githubApp")
+                return true
+            } catch (t: Throwable) {
+                Log.w(TAG, "GitHub App ($githubApp) 拉起失败，退回浏览器", t)
             }
+        } else {
+            Log.i(TAG, "没找到 GitHub App，用浏览器打开")
         }
 
-        Log.i(TAG, "未安装 GitHub App，退回浏览器")
+        // ② 退回浏览器
         return openExternally(verificationUri)
+    }
+
+    /**
+     * 找出能处理该链接的 GitHub App 包名；找不到返回 null。
+     *
+     * 判定方式（不写死单一包名）：
+     *   · 先匹配已知的官方包名（最快最准）
+     *   · 再用「应用名包含 github 且不是浏览器」兜底
+     */
+    private fun findGitHubAppFor(uri: Uri): String? {
+        return try {
+            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+            val handlers = packageManager.queryIntentActivities(intent, 0)
+
+            val candidates = handlers.mapNotNull { it.activityInfo?.packageName }.distinct()
+            Log.i(TAG, "能处理授权链接的 App：$candidates")
+
+            // 优先：已知的官方包名
+            candidates.firstOrNull { it in GITHUB_APP_PACKAGES }
+                ?: candidates.firstOrNull { pkg ->
+                    if (pkg in BROWSER_PACKAGES) return@firstOrNull false
+                    val label = try {
+                        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0))
+                    } catch (t: Throwable) {
+                        ""
+                    }.toString()
+                    // 应用名里带 github，且不是浏览器
+                    label.contains("github", ignoreCase = true)
+                }
+        } catch (t: Throwable) {
+            Log.w(TAG, "枚举处理程序失败", t)
+            null
+        }
     }
 
     private fun toDp(px: Int): Int = (px / resources.displayMetrics.density).roundToInt()
@@ -693,11 +729,35 @@ import kotlin.math.roundToInt
 
         /**
          * GitHub 官方 Android App 的包名。
-         * 授权页优先用它打开（已登录、体验好），装不上才退回浏览器。
-         * 列表形式是为了容错：官方版 / 可能的变体渠道包都能命中。
+         * 已知就优先匹配它；匹配不到再用「应用名含 github」兜底。
          */
         val GITHUB_APP_PACKAGES = listOf(
             "com.github.android",
+        )
+
+        /**
+         * 主流浏览器包名。
+         * 挑 GitHub App 时要排除它们 —— 浏览器几乎一定也注册了
+         * `github.com` 的 http/https filter，不排除就会误判成「找到 GitHub App」。
+         */
+        val BROWSER_PACKAGES = setOf(
+            "com.android.chrome",
+            "com.chrome.beta",
+            "com.chrome.dev",
+            "org.mozilla.firefox",
+            "org.mozilla.firefox_beta",
+            "com.microsoft.emmx",
+            "com.opera.browser",
+            "com.opera.mini.native",
+            "com.brave.browser",
+            "com.duckduckgo.mobile.android",
+            "com.sec.android.app.sbrowser",
+            "com.UCMobile.intl",
+            "com.android.browser",
+            "com.miui.browser",
+            "com.huawei.browser",
+            "com.heytap.browser",
+            "com.vivo.browser",
         )
 
 
