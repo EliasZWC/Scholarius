@@ -4,6 +4,31 @@
 
 ---
 
+## [0.0.7] - 2026-09-23
+
+### 诊断
+
+- 为定位两个真机问题加了全链路日志（**定位完会移除**）：
+
+  | 日志前缀 | 内容 |
+  |---|---|
+  | `[web] splash:setup` | `readyState`、`cssDur`、`animCount`、`prefers-reduced-motion` |
+  | `[web] splash:done` | 退场原因（`animationend` / `delayed` / `fallback`）与耗时 |
+  | `[web] dismiss:blocked` | 退场被阻塞时 `splashDone` / `signedIn` 的值 |
+  | `[update] ...` | 请求 URL、HTTP 状态码、版本比较结果、跳过检查的原因 |
+  | `[native] ...` | splash 兜底超时、`finishSplash` 是否生效 |
+
+  查看方式：`adb logcat -s Scholarius`
+
+### 说明
+
+- **应用内检测不到更新是预期行为**：v0.0.5 及更早版本的更新弹窗关闭链路有缺陷
+  （依赖一个不存在的 `scrim` 元素，`closeUpdateFlow()` 从不被调用），
+  一旦弹过一次窗就再也不会检查。已在 0.0.6 修复。
+  从 0.0.5 升级到 0.0.6 需要**手动安装一次**，之后自动更新才可用。
+
+---
+
 ## [0.0.6] - 2026-09-23
 
 ### 修复
@@ -230,3 +255,4 @@
 [0.0.4]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.4
 [0.0.5]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.5
 [0.0.6]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.6
+[0.0.7]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.7
