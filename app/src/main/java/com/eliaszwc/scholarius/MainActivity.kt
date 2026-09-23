@@ -451,21 +451,20 @@ import kotlin.math.roundToInt
                 return@requestDeviceCode
             }
 
-            /*
-              ⚠️ 这里**故意不自动跳转**授权页（v0.0.21 改）。
+            // 把 user_code 显示给用户；跳转由用户在网页上点按钮触发
+            debugLog(
+                "[login] 设备码=${device.userCode} " +
+                    "verification_uri=${device.verificationUri}"
+            )
+            debugLog(
+                "[login] verification_uri_complete=" +
+                    (device.verificationUriComplete.ifEmpty { "（GitHub 未返回）" })
+            )
 
-              原因：设备码显示在 Scholarius 自己的页面上，一旦自动拉起
-              GitHub App 或浏览器，用户就看不到码了 —— 而 GitHub App
-              盖住我们之后并不会帮他填，用户只能看到「没有任何反应」。
-
-              改成由用户在网页上点「打开授权页」，点击时先弹确认框
-              复述一遍设备码（网页层负责），用户记住了再跳。
-              跳转仍由 [openDeviceVerification] 执行，只是触发点交还给用户。
-            */
             evaluateInWeb(
                 "window.ScholariusShell && window.ScholariusShell.onLoginCode(" +
                     "${quote(device.userCode)}, " +
-                    "${quote(device.verificationUri)}, " +
+                    "${quote(device.bestVerificationUri)}, " +
                     "${device.expiresInSeconds});"
             )
 
@@ -793,257 +792,35 @@ import kotlin.math.roundToInt
     }
 
     /**
-     * 打开 GitHub 设备授权页：**优先用 GitHub 手机 App，装不上才退回浏览器**。
+     * 打开 GitHub 设备授权页。
      *
-     * 逐层降级：
-     *   ① 官方包名（`com.github.android`）已装 → 主动进它的包里去开
-     *      （见 [launchInPackage]：https → github:// → 主 Activity 三种方式）
-     *   ② 按能力找第三方 GitHub 客户端（它可能确实注册了 https filter）
-     *   ③ 退回浏览器
+     * ⚠️ 就一件事：**用浏览器打开**。不再尝试拉起 GitHub App（v0.0.22 删）。
      *
-     * ⚠️ 排查历程（每一步都有实测日志支撑，不是推测）：
+     * 为什么删掉那套「GitHub App 优先」的逻辑 —— 它的前提是错的：
      *
-     *   坑 1｜**包可见性**。Android 11（API 30）起 `queryIntentActivities()` /
-     *        `getApplicationInfo()` 默认只能看到浏览器这类「默认可见」的包。
-     *        → 在 Manifest 的 `<queries>` 里加 `<package android:name="com.github.android"/>`
-     *          直接点名后，`已安装=true` 就能读到了。
+     *   ① **Device Flow 没有 `github://` 深链。**
+     *      `github://` 是 GitHub App 给「打开仓库 / PR / 用户」用的，
+     *      跟设备授权毫无关系。把 `https://github.com/login/device`
+     *      搬到 `github://` 前缀上，只是构造了一个它不认识的地址 ——
+     *      实测表现就是「startActivity 成功但什么都没发生」。
      *
-     *   坑 2｜**GitHub App 没注册 `https` 的 VIEW intent-filter**。
-     *        实测 `ACTION_VIEW(https) + setPackage` 抛 `ActivityNotFoundException`，
-     *        且 `queryIntentActivities` 结果里只有 Chrome。
-     *        → 所以放弃「问系统谁能处理这个 https」，改成主动进包里去开。
+     *   ② **即使它能被拉起，也帮不上忙。**
+     *      Device Flow 的码只能**在授权页上手动输入**，
+     *      GitHub 没有提供任何「把设备码交给 App」的官方入口。
+     *      所以「用 App 完成授权」这条路本身就不存在。
      *
-     *   坑 3｜**`github://` 的 path 不能自己拼**。
-     *        实测 `github://github.com/login/device` 虽然「启动成功」，
-     *        但系统弹的是「选择打开方式」且列表里没有 GitHub —— path 不匹配。
-     *        → 改试裸 `github://`（最保守，能匹配它任何一条规则）。
-     *          具体它认哪种格式，靠 [probeSchemes] 反向探测得出，不靠猜。
+     *   ③ GitHub 官方对无后端应用的预期就是「抄码 + 浏览器」——
+     *      `gh auth login`（官方 CLI）也是这么做的。
+     *
+     * 真正能改善体验的是 [GitHubAuth.DeviceCode.bestVerificationUri]：
+     * 用 GitHub 返回的 `verification_uri_complete`（带了 `?user_code=...`），
+     * 浏览器打开后自动填码，用户只需点一次 Authorize。
      */
     private fun openDeviceVerification(verificationUri: String): Boolean {
-        val uri = Uri.parse(verificationUri)
-        debugLog("要打开的授权页：$verificationUri")
-        debugLog("scheme=${uri.scheme} host=${uri.host} path=${uri.path}")
-
-        // ① 官方包名直接点名（不依赖 queryIntentActivities）
-        for (pkg in GITHUB_APP_PACKAGES) {
-            if (isInstalled(pkg)) {
-                debugLog("$pkg 已安装，尝试用它打开")
-                probeSchemes(pkg)
-                if (launchInPackage(pkg, uri)) {
-                    debugLog("已用 GitHub App 拉起 ✓")
-                    return true
-                }
-                debugLog("$pkg 打开失败，继续尝试其它方式")
-            } else {
-                debugLog("$pkg 未安装")
-            }
-        }
-
-        // ② 按能力找（覆盖第三方 GitHub 客户端）
-        val target = findGitHubAppFor(uri)
-        if (target != null) {
-            debugLog("按能力挑中：$target")
-            if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
-                    .apply { component = target }, "ComponentName")) {
-                return true
-            }
-        } else {
-            debugLog("按能力没挑到合适的 App")
-        }
-
-        // ③ 退回浏览器
-        debugLog("退回浏览器")
+        debugLog("[login] 用浏览器打开授权页：$verificationUri")
         val ok = openExternally(verificationUri)
-        debugLog("浏览器打开结果=$ok")
+        debugLog("[login] 浏览器打开结果=$ok")
         return ok
-    }
-
-    /**
-     * 诊断用：探明 GitHub App 到底接受哪些链接格式。
-     *
-     * ⚠️ **不去读它的 AndroidManifest 声明** —— `ActivityInfo.intentFilters`
-     *    在 Kotlin 里没有可用的 getter（编译不过），而且要 API 33+ 且有系统限制。
-     *
-     *    改用**反向探测**：拿一批候选链接逐个问系统
-     *    「这个链接交给这个包，行不行？」—— 这本来就更接近真实行为。
-     *
-     * ⚠️ 临时（v0.0.19）。定位完删。
-     */
-    private fun probeSchemes(pkg: String) {
-        val candidates = listOf(
-            "github://",
-            "github://github.com",
-            "github://login/device",
-            "github://github.com/login/device",
-            "https://github.com/login/device",
-            "https://github.com",
-            "https://github.com/login",
-        )
-        debugLog("$pkg 的链接接受情况：")
-        for (raw in candidates) {
-            val probe = android.content.Intent(
-                android.content.Intent.ACTION_VIEW, Uri.parse(raw)
-            ).apply { setPackage(pkg) }
-            val count = try {
-                packageManager.queryIntentActivities(probe, 0).size
-            } catch (t: Throwable) {
-                -1
-            }
-            val verdict = when {
-                count < 0 -> "查询异常"
-                count == 0 -> "无匹配"
-                else -> "可处理（$count 个）"
-            }
-            debugLog("  $raw → $verdict")
-        }
-    }
-
-    /**
-     * 在指定包内打开授权链接。逐个尝试，任一成功即返回 true。
-     *
-     * 实测（v0.0.20 真机反向探测，7 个候选逐个问系统）：
-     *
-     *   github://                          → 可处理
-     *   github://github.com                → 可处理
-     *   github://login/device              → 可处理
-     *   github://github.com/login/device   → 可处理
-     *   https://github.com/login/device    → 无匹配
-     *   https://github.com                 → 无匹配
-     *   https://github.com/login           → 无匹配
-     *
-     * 两个结论，都推翻了之前的假设：
-     *
-     *   ① GitHub App **只认 `github://`，完全不管 `https`**。
-     *      所以 `ACTION_VIEW(https) + setPackage` 必然抛
-     *      ActivityNotFoundException —— 它不是「包可见性」问题，
-     *      是它压根没注册 https。`<queries>` 加 `https` 也没用。
-     *
-     *   ② `github://` 后面**可以带 path**（带 host+path 也「可处理」）。
-     *      上一版之所以「弹选择框」，是因为当时**没加 `setPackage`** ——
-     *      没有包名限定，path 不匹配时会退化成「让用户挑 App」。
-     *      加了 setPackage 之后 path 不匹配只会抛异常，不会弹框。
-     *
-     * ⚠️ 因此顺序必须**由具体到笼统**：
-     *    先试「带完整 host+path」（信息最全，GitHub App 能直接定位到设备授权页），
-     *    再退到裸 `github://`。
-     *    反过来先试裸 `github://` 会「成功」但什么都不做 ——
-     *    `startActivity` 返回成功只代表有 activity 接住，不代表它干了有用的事。
-     *    实测裸 scheme 的表现就是：日志写「成功」，用户看到「没有任何反应」。
-     */
-    private fun launchInPackage(pkg: String, uri: Uri): Boolean {
-        // 方式 1：把 https 的 host+path 原样搬到 github:// 上
-        val deep = httpsToGithubDeepLink(uri)
-        if (deep != null) {
-            if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW, deep)
-                    .apply { setPackage(pkg) }, "github:// 带路径深链 $deep")) {
-                return true
-            }
-        } else {
-            debugLog("  跳过带路径深链：无法从 $uri 构造")
-        }
-
-        // 方式 2：裸 scheme。能匹配它任何一条 github:// 规则，但可能「成功却无动作」
-        if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW,
-                Uri.parse("github://")).apply { setPackage(pkg) }, "github:// 裸深链")) {
-            return true
-        }
-
-        // 方式 3：直接启动它的主 Activity（最粗暴，只保证把 App 带到前台）
-        val launch = try {
-            packageManager.getLaunchIntentForPackage(pkg)
-        } catch (t: Throwable) {
-            null
-        }
-        if (launch != null) {
-            if (tryStart(launch, "主 Activity")) {
-                return true
-            }
-        }
-
-        return false
-    }
-
-    /**
-     * `https://github.com/login/device` → `github://github.com/login/device`
-     *
-     * 只搬 host + path + query，丢弃原 scheme。返回 null 表示构造不出来。
-     *
-     * ⚠️ 不做「猜它的 URL 规则」这种推断 ——
-     *    探测已证实带 host+path 的形式它接受，这里只做机械搬运。
-     */
-    private fun httpsToGithubDeepLink(uri: Uri): Uri? {
-        val host = uri.host ?: return null
-        val builder = StringBuilder("github://").append(host)
-        val path = uri.path
-        if (!path.isNullOrEmpty()) {
-            if (!path.startsWith("/")) builder.append('/')
-            builder.append(path)
-        }
-        val query = uri.query
-        if (!query.isNullOrEmpty()) {
-            builder.append('?').append(query)
-        }
-        return try {
-            Uri.parse(builder.toString())
-        } catch (t: Throwable) {
-            null
-        }
-    }
-
-    /** 启动一个 intent；成功返回 true，失败打日志并返回 false */
-    private fun tryStart(intent: android.content.Intent, how: String): Boolean {
-        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-        return try {
-            startActivity(intent)
-            debugLog("  [$how] 成功")
-            true
-        } catch (t: Throwable) {
-            debugLog("  [$how] 失败：${t.javaClass.simpleName} ${t.message}")
-            false
-        }
-    }
-
-    /**
-     * 按**能力**找出能处理该链接的第三方 App 组件；找不到返回 null。
-     *
-     * ⚠️ 官方 GitHub App 不走这里 —— 实测它没注册 `https` 的 VIEW filter，
-     *    所以 `queryIntentActivities` 结果里根本没有它（只有浏览器）。
-     *    官方 App 由调用方用 `<package>` 点名 + [launchInPackage] 处理。
-     *
-     * 这个函数的作用是兜底：用户装的是第三方 GitHub 客户端时，
-     * 它可能确实注册了 https filter，那就交给它。
-     */
-    private fun findGitHubAppFor(uri: Uri): android.content.ComponentName? {
-        return try {
-            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
-            val handlers = packageManager.queryIntentActivities(intent, 0)
-
-            val picked = handlers.firstOrNull { info ->
-                val pkg = info.activityInfo?.packageName ?: return@firstOrNull false
-                if (pkg in BROWSER_PACKAGES) return@firstOrNull false
-                val label = try {
-                    packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0))
-                } catch (t: Throwable) {
-                    ""
-                }.toString()
-                label.contains("github", ignoreCase = true)
-            }
-
-            picked?.activityInfo?.let {
-                android.content.ComponentName(it.packageName, it.name)
-            }
-        } catch (t: Throwable) {
-            Log.w(TAG, "枚举处理程序失败", t)
-            null
-        }
-    }
-
-    /** 该包是否已安装 */
-    private fun isInstalled(pkg: String): Boolean = try {
-        packageManager.getApplicationInfo(pkg, 0)
-        true
-    } catch (t: Throwable) {
-        false
     }
 
     private fun toDp(px: Int): Int = (px / resources.displayMetrics.density).roundToInt()
@@ -1218,40 +995,6 @@ import kotlin.math.roundToInt
 
         /** 下载好的更新包放在 cacheDir/update/<version>/ */
         const val UPDATE_DIR = "update"
-
-        /**
-         * GitHub 官方 Android App 的包名。
-         * 已知就优先匹配它；匹配不到再用「应用名含 github」兜底。
-         */
-        val GITHUB_APP_PACKAGES = listOf(
-            "com.github.android",
-        )
-
-        /**
-         * 主流浏览器包名。
-         * 挑 GitHub App 时要排除它们 —— 浏览器几乎一定也注册了
-         * `github.com` 的 http/https filter，不排除就会误判成「找到 GitHub App」。
-         */
-        val BROWSER_PACKAGES = setOf(
-            "com.android.chrome",
-            "com.chrome.beta",
-            "com.chrome.dev",
-            "org.mozilla.firefox",
-            "org.mozilla.firefox_beta",
-            "com.microsoft.emmx",
-            "com.opera.browser",
-            "com.opera.mini.native",
-            "com.brave.browser",
-            "com.duckduckgo.mobile.android",
-            "com.sec.android.app.sbrowser",
-            "com.UCMobile.intl",
-            "com.android.browser",
-            "com.miui.browser",
-            "com.huawei.browser",
-            "com.heytap.browser",
-            "com.vivo.browser",
-        )
-
 
         /** 上次尝试安装的版本号，用来判断「装完没生效」 */
         const val KEY_PENDING_UPDATE = "pending_update_version"

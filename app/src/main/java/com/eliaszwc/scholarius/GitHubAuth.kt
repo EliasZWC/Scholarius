@@ -67,9 +67,22 @@ object GitHubAuth {
         val deviceCode: String,
         val userCode: String,
         val verificationUri: String,
+        /**
+         * 形如 `https://github.com/login/device?user_code=ABCD-1234`。
+         *
+         * ⚠️ 这个字段**能省掉用户手输码** —— 浏览器打开它就会自动填好。
+         *    当 `verificationUri` 用。后者只是裸地址，用户还得自己拄。
+         *
+         * 它是 GitHub 可选返回的字段，拿不到时[为空]，此时退回 [verificationUri]。
+         */
+        val verificationUriComplete: String,
         val intervalSeconds: Int,
         val expiresInSeconds: Int,
-    )
+    ) {
+        /** 优先用带码的那个地址 */
+        val bestVerificationUri: String
+            get() = verificationUriComplete.ifEmpty { verificationUri }
+    }
 
     /** 登录成功后拿到的账号信息 */
     data class Account(
@@ -124,6 +137,15 @@ object GitHubAuth {
                         deviceCode = deviceCode,
                         userCode = userCode,
                         verificationUri = uri,
+                        /*
+                          GitHub 在响应里额外给一个带 user_code 的完整地址
+                          （`...?user_code=XXXX-XXXX`），打开它浏览器会自动填码。
+                          这是官方推荐给这类应用的用法，能直接免掉手输。
+
+                          用 optString 而非必填：某些 OAuth App / 旧响应里没有它，
+                          此时bestVerificationUri 会自动退回裸地址。
+                        */
+                        verificationUriComplete = json.optString("verification_uri_complete"),
                         intervalSeconds = json.optInt("interval", DEFAULT_INTERVAL_SECONDS)
                             .coerceAtLeast(1),
                         expiresInSeconds = json.optInt("expires_in", EXPIRES_IN_SECONDS),

@@ -12,41 +12,23 @@
     <!--
         ⚠️ 包可见性（Android 11 / API 30 起）。
 
-        登录时要「优先用 GitHub App 打开授权页」，靠的是
-        `packageManager.queryIntentActivities()` 与 `getApplicationInfo()`。
-        API 30 起，除非显式声明可见性，否则这两个 API
-        **只能看到系统浏览器这类默认可见的包** —— GitHub App 会被直接过滤掉。
+        ⚠️ 这里现在**只为浏览器保留**（v0.0.22 精简）。
 
-        实测证据（v0.0.15 真机日志）：
-            com.github.android 已安装=false        ← getApplicationInfo 查不到
-            能处理该链接的 App 共 1 个：
-              · com.android.chrome/...             ← 只剩浏览器
-            没找到 GitHub App → 退回浏览器
+        历史：v0.0.15~v0.0.21 曾试图「优先用 GitHub App 打开授权页」，
+        因此点名了 `com.github.android`。那条路已证实走不通并删除：
 
-        两种声明方式都要用，它们覆盖不同情况：
+          · Device Flow **没有** `github://` 深链 —— 那是 App 给
+            「打开仓库/PR/用户」用的，与设备授权无关
+          · 即使拉起 GitHub App，设备码也只能在授权页上**手动输入**，
+            GitHub 没提供任何「把码交给 App」的官方入口
 
-          ① `<package>` —— 直接点名。最可靠，且不依赖对方注册了什么 intent filter。
-             用于「我知道要这个包，就是要查它装没装」。
-          ② `<intent>` —— 按能力查询。用于「谁都能接住 github.com 我就认谁」，
-             覆盖用户装了第三方 GitHub 客户端的情况。
-
-        不用 QUERY_ALL_PACKAGES —— 那是敏感权限，上架要额外说明，且没必要。
+        所以现在打开授权页就是普通浏览器跳转，只需声明 https 能力。
+        没有这段声明，`queryIntentActivities` 在 API 30+ 会漏掉部分浏览器。
     -->
     <queries>
-        <!-- ① 点名：GitHub 官方 App -->
-        <package android:name="com.github.android" />
-        <package android:name="com.github.android.beta" />
-
-        <!-- ② 按能力：能浏览 https 的 App -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />
-        </intent>
-
-        <!-- ③ 按能力：GitHub App 自定义 scheme（部分版本用它做深链） -->
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="github" />
         </intent>
     </queries>
 
