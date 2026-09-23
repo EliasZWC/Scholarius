@@ -33,6 +33,53 @@
 
 ---
 
+## [0.0.18] - 2026-09-23
+
+### 修复
+
+- **GitHub App 仍然只走浏览器（v0.0.17 真机日志已定位）。**
+
+  日志：
+
+  ```
+  com.github.android 存在，名称='GitHub' enabled=true   ← <package> 点名生效
+  com.github.android getLaunchIntent=ComponentInfo{...}
+  能处理该链接的 App 共 1 个
+    · com.android.chrome/...                            ← 仍然只有浏览器
+  没找到 GitHub App
+  ```
+
+  **根因：GitHub App 没有注册 `https` 的 VIEW intent-filter。**
+  所以 `queryIntentActivities` 里永远没有它 —— 这条路本身就走不通，
+  不是可见性问题（它已经能被看见了）。
+
+  改为**主动进它的包里去开**，逐个尝试三种方式：
+
+  | 方式 | 做法 |
+  |---|---|
+  | 1 | `ACTION_VIEW` + `setPackage` |
+  | 2 | `github://` 自定义深链 + `setPackage` |
+  | 3 | `getLaunchIntentForPackage` 拉起主 Activity |
+
+  任一成功即停；全失败才退回浏览器。
+  `queryIntentActivities` 降级为仅用于掳第三方 GitHub 客户端。
+
+### 诊断改进
+
+- 诊断浮层改为**可折叠 + 可复制**（用户要求）：
+  - 默认折叠成一条 37px 横条，不挡视野；
+  - 点「展开」显示日志，**可长按选中复制**；
+  - 「复制」按钮一键全选复制、「清空」重置；
+  - 折叠状态跳启动记忆。
+
+- `debugLog()` 内部**自行切主线程**。
+  `WebView.evaluateJavascript()` 必须在主线程调用，
+  而更新检查在后台线程、其日志回调也在后台线程 ——
+  不切线程时这些日志被静默丢弃（上一版就是这样：浮层上只看得到主线程打的
+  「开始检查」与「无新版本」，中间的 HTTP 状态码、`tag_name`、`assets` 全不见）。
+
+---
+
 ## [0.0.17] - 2026-09-23
 
 ### 诊断（临时）
@@ -578,3 +625,4 @@ com.github.android 已安装=false        ← getApplicationInfo 查不到
 [0.0.15]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.15
 [0.0.16]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.16
 [0.0.17]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.17
+[0.0.18]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.18

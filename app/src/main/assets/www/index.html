@@ -69,6 +69,76 @@
             text-transform: uppercase;
             color: #ECECEA;
         }
+
+        /*
+          诊断浮层（临时，v0.0.18）。
+          做成可折叠 + 可复制：默认只有一条细横条，点「展开」才显示日志。
+          日志区 user-select: text 且 -webkit-user-select: text，
+          否则移动端长按选不中、复制不了。
+        */
+        #__diag {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 9999;
+            background: rgba(0, 0, 0, .92);
+            color: #7EE2A8;
+            font: 11px/1.45 monospace;
+            border-top: 1px solid #2E5A3E;
+        }
+
+        #__diag .diag-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            background: rgba(16, 40, 26, .96);
+            color: #B9F0CE;
+            font-size: 12px;
+        }
+
+        #__diag .diag-title {
+            font-weight: 700;
+        }
+
+        #__diag .diag-count {
+            padding: 0 6px;
+            border-radius: 8px;
+            background: rgba(126, 226, 168, .18);
+            font-size: 11px;
+        }
+
+        #__diag .diag-spacer {
+            flex: 1 1 auto;
+        }
+
+        #__diag .diag-btn {
+            padding: 3px 10px;
+            border: 1px solid #2E5A3E;
+            border-radius: 8px;
+            background: transparent;
+            color: #B9F0CE;
+            font: inherit;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        #__diag .diag-btn:active {
+            background: rgba(126, 226, 168, .22);
+        }
+
+        #__diag .diag-log {
+            margin: 0;
+            padding: 8px 10px;
+            max-height: 46vh;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            /* 移动端要能长按选中、复制 */
+            -webkit-user-select: text;
+            user-select: text;
+        }
     </style>
 
     <link rel="stylesheet" href="styles.css" />

@@ -325,15 +325,126 @@
      * 所以两个条件都满足才退场；先到的那个只是记一个标记。
      */
     /*
-      ⚠️ 临时诊断（v0.0.13）：把启动时序同时送到三处，定位「启动页一闪而过」。
+      ⚠️ 临时诊断（v0.0.18）：把启动/登录/更新时序显示成**可复制**的浮层。
 
-      三处的理由：
-        · logcat —— 最完整，但要用电脑连 USB 跑 adb；
-        · 屏幕浮层 —— 不需要任何工具，肉眼/截图即可（URL 加 ?diag=1 开启）；
-        · window.__bootLog —— Chrome 远程调试直接读。
+      设计要点（用户 2026-09-23 要求）：
+        · 日志往往很长，直接铺在屏幕上既挡视野又没法完整看到；
+        · 所以做成「**默认折叠成一条细横条**」，点一下才展开；
+        · 展开后**日志区可选中复制**，用户能整段粘贴出来；
+        · 提供「复制」按钮一键全选复制，「清空」按钮重置。
 
-      定位完成后，这段连同所有 trace() 调用点一起删。
+      开启方式：入口 URL 带 ?diag=1（当前 MainActivity.WEB_ENTRY_URL 已带）。
+      定位完连同所有 trace() 调用点一起删。
     */
+    var DIAG_HEIGHT_KEY = 'scholarius.diagHeight';
+
+    function diagEnabled() {
+        try {
+            return location.search.indexOf('diag=1') !== -1;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function ensureDiagPanel() {
+        if (!diagEnabled()) return null;
+        var panel = document.getElementById('__diag');
+        if (panel) return panel;
+
+        panel = document.createElement('div');
+        panel.id = '__diag';
+        panel.innerHTML =
+            '<div class="diag-bar">' +
+            '  <span class="diag-title">诊断日志</span>' +
+            '  <span class="diag-count" id="__diagCount">0</span>' +
+            '  <span class="diag-spacer"></span>' +
+            '  <button type="button" class="diag-btn" id="__diagCopy">复制</button>' +
+            '  <button type="button" class="diag-btn" id="__diagClear">清空</button>' +
+            '  <button type="button" class="diag-btn" id="__diagToggle">展开</button>' +
+            '</div>' +
+            '<pre class="diag-log" id="__diagLog" hidden></pre>';
+
+        document.body.appendChild(panel);
+
+        var logEl = panel.querySelector('#__diagLog');
+        var countEl = panel.querySelector('#__diagCount');
+        var toggleEl = panel.querySelector('#__diagToggle');
+
+        var setExpanded = function (expanded) {
+            logEl.hidden = !expanded;
+            toggleEl.textContent = expanded ? '收起' : '展开';
+            try {
+                localStorage.setItem(DIAG_HEIGHT_KEY, expanded ? '1' : '0');
+            } catch (e) { /* 忽略 */ }
+        };
+
+        toggleEl.addEventListener('click', function () {
+            setExpanded(logEl.hidden);
+        });
+
+        panel.querySelector('#__diagCopy').addEventListener('click', function () {
+            var text = logEl.textContent || '';
+            var done = function () {
+                toggleEl.textContent = toggleEl.textContent; // 保持
+                flash(panel, '已复制 ' + text.split('\n').length + ' 行');
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(done, function () {
+                    selectAndCopy(logEl, done);
+                });
+            } else {
+                selectAndCopy(logEl, done);
+            }
+        });
+
+        panel.querySelector('#__diagClear').addEventListener('click', function () {
+            logEl.textContent = '';
+            window.__bootLog = [];
+            updateCount();
+        });
+
+        function updateCount() {
+            var n = (logEl.textContent || '').split('\n').filter(Boolean).length;
+            countEl.textContent = String(n);
+        }
+        panel.__updateCount = updateCount;
+
+        // 折叠状态跨启动记忆：正在排查的人希望一直是展开的
+        var remembered = '0';
+        try {
+            remembered = localStorage.getItem(DIAG_HEIGHT_KEY) || '0';
+        } catch (e) { /* 忽略 */ }
+        setExpanded(remembered === '1');
+
+        return panel;
+    }
+
+    /** 把 <pre> 里的内容全选并复制（clipboard API 不可用时的兜底） */
+    function selectAndCopy(el, done) {
+        try {
+            var range = document.createRange();
+            range.selectNodeContents(el);
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            document.execCommand('copy');
+            done();
+        } catch (e) {
+            /* 让用户手动长按选中 */
+        }
+    }
+
+    /** 在标题上闪一条简短反馈 */
+    function flash(panel, message) {
+        var title = panel.querySelector('.diag-title');
+        if (!title) return;
+        var original = '诊断日志';
+        title.textContent = message;
+        window.setTimeout(function () {
+            title.textContent = original;
+        }, 1400);
+    }
+
     function trace(stage, detail) {
         var line = stage + (detail === undefined ? '' : ' | ' + detail);
         var stamp = Math.round(performance.now()) + 'ms ';
@@ -350,20 +461,11 @@
         } catch (e) { /* 忽略 */ }
 
         try {
-            if (location.search.indexOf('diag=1') === -1) return;
-            var box = document.getElementById('__diag');
-            if (!box) {
-                box = document.createElement('pre');
-                box.id = '__diag';
-                box.style.cssText =
-                    'position:fixed;left:0;right:0;bottom:0;z-index:9999;' +
-                    'margin:0;padding:8px;max-height:46vh;overflow:auto;' +
-                    'background:rgba(0,0,0,.86);color:#7EE2A8;' +
-                    'font:11px/1.45 monospace;white-space:pre-wrap;';
-                document.body.appendChild(box);
-            }
-            box.textContent += stamp + line + '\n';
-            box.scrollTop = box.scrollHeight;
+            var panel = ensureDiagPanel();
+            if (!panel) return;
+            var logEl = panel.querySelector('#__diagLog');
+            logEl.textContent += stamp + line + '\n';
+            if (panel.__updateCount) panel.__updateCount();
         } catch (e) { /* 忽略 */ }
     }
 

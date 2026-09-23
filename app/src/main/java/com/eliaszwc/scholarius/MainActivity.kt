@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
@@ -551,7 +552,8 @@ import kotlin.math.roundToInt
 
         Updater.check(this, onLog = { debugLog("[update] $it") }) { release ->
             if (release == null) {
-                debugLog("[update] 无新版本（或查询失败）")
+                // 细节已由 Updater 的 onLog 逐行输出（HTTP 码 / tag_name / assets）
+                debugLog("[update] 结论：没有可用的新版本")
                 if (notifyWhenUpToDate) {
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.onUpdateNone();"
@@ -710,16 +712,26 @@ import kotlin.math.roundToInt
     /**
      * 原生日志 → logcat + 网页诊断浮层。
      *
-     * ⚠️ 临时诊断（v0.0.15）。为排查「GitHub App 没被拉起」，
-     *    需要把原生侧看到的信息（候选包、校验结果、异常）直接显示到屏幕上，
-     *    而不是让用户去跑 adb。定位完删掉。
+     * ⚠️ 临时诊断（v0.0.18）。
+     *
+     * ⚠️⚠️ 内部会**自行切到主线程**再注入网页。
+     *    `WebView.evaluateJavascript()` 必须在主线程调用，
+     *    而更新检查在后台线程跑、它的日志回调也在后台线程 ——
+     *    不切线程的话这些日志会被静默丢掉（上一版就是这样，
+     *    浮层上只看得到主线程打的「开始检查」和「无新版本」，
+     *    中间的 HTTP 状态码、tag_name 全都不见了）。
      */
     private fun debugLog(message: String) {
-        Log.i(TAG, "[auth] $message")
-        evaluateInWeb(
+        Log.i(TAG, message)
+        val script =
             "window.ScholariusShell && window.ScholariusShell.diag(" +
                 "${quote("native | " + message)});"
-        )
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            evaluateInWeb(script)
+        } else {
+            runOnUiThread { evaluateInWeb(script) }
+        }
     }
 
     /** 用系统浏览器打开外部链接（站内导航不走这里） */
@@ -766,44 +778,33 @@ import kotlin.math.roundToInt
         debugLog("要打开的授权页：$verificationUri")
         debugLog("scheme=${uri.scheme} host=${uri.host} path=${uri.path}")
 
-        // ① 先查 GitHub App 是否安装（这一步能立刻区分「没装」与「装了但挑不到」）
+        // ① 官方包名直接点名（不依赖 queryIntentActivities）
         for (pkg in GITHUB_APP_PACKAGES) {
-            probePackage(pkg)
-        }
-
-        // ② 枚举所有能处理该链接的 App
-        try {
-            val probe = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
-            val handlers = packageManager.queryIntentActivities(probe, 0)
-            debugLog("能处理该链接的 App 共 ${handlers.size} 个：")
-            handlers.forEach { info ->
-                val ai = info.activityInfo
-                debugLog("  · ${ai?.packageName}/${ai?.name}")
+            if (isInstalled(pkg)) {
+                debugLog("$pkg 已安装，尝试用它打开")
+                if (launchInPackage(pkg, uri)) {
+                    debugLog("已用 GitHub App 拉起 ✓")
+                    return true
+                }
+                debugLog("$pkg 打开失败，继续尝试其它方式")
+            } else {
+                debugLog("$pkg 未安装")
             }
-        } catch (t: Throwable) {
-            debugLog("枚举处理程序失败：$t")
         }
 
-        // ③ 挑 GitHub App（直接拿 ComponentName，不用 setPackage）
+        // ② 按能力找（覆盖第三方 GitHub 客户端）
         val target = findGitHubAppFor(uri)
         if (target != null) {
-            debugLog("挑中：$target")
-            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri).apply {
-                component = target
-                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            try {
-                startActivity(intent)
-                debugLog("已用 GitHub App 拉起 ✓")
+            debugLog("按能力挑中：$target")
+            if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                    .apply { component = target }, "ComponentName")) {
                 return true
-            } catch (t: Throwable) {
-                debugLog("GitHub App 拉起失败：${t.javaClass.simpleName} ${t.message}")
             }
         } else {
-            debugLog("没找到 GitHub App")
+            debugLog("按能力没挑到合适的 App")
         }
 
-        // ④ 退回浏览器
+        // ③ 退回浏览器
         debugLog("退回浏览器")
         val ok = openExternally(verificationUri)
         debugLog("浏览器打开结果=$ok")
@@ -811,35 +812,88 @@ import kotlin.math.roundToInt
     }
 
     /**
-     * 找出能处理该链接的 GitHub App 组件；找不到返回 null。
+     * 在指定包内打开授权链接。逐个尝试三种方式，任一成功即返回 true。
      *
-     * 返回 `ComponentName` 而不是包名 —— 这样才能精确启动
-     * 系统认定的那个 activity，绕开 `setPackage` 与 App Links 的冲突。
+     * 实测（v0.0.17 真机日志）证实了 GitHub App 的行为：
+     *   · `getApplicationInfo` 能查到它（`<package>` 点名生效，名称 'GitHub'）
+     *   · 但 `queryIntentActivities` 结果里**没有它** —— 说明它没注册
+     *     `https` 的 VIEW intent-filter，`queryIntentActivities` 这条路走不通
+     *   · 而 `getLaunchIntentForPackage` 能拿到它的启动 Activity
      *
-     * 分三层判定：
-     *   ① 官方包名出现在 `queryIntentActivities` 结果里 → 用系统给的 ComponentName
-     *   ② 应用名含 github 且不是浏览器 → 用系统给的 ComponentName
-     *   ③ 都没有 → null，调用方退回浏览器
+     * 所以这里不再依赖「谁声明了能处理这个链接」，而是**主动进它的包里去开**。
      *
-     * 日志由调用方 [openDeviceVerification] 负责（它已经枚举过一次，
-     * 这里不重复打印，免得浮层被刷屏）。
+     * ⚠️ 必须用 `setPackage` + `ACTION_VIEW`（而不是 `component`）：
+     *    授权页是 https 链接，GitHub App 内部用 App Links/Custom Tabs 处理它，
+     *    只要 intent 落在它的包内，系统就会交给它。
+     */
+    private fun launchInPackage(pkg: String, uri: Uri): Boolean {
+        // 方式 1：ACTION_VIEW + setPackage —— 让系统在包内挑能接住这个 url 的 activity
+        if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                .apply { setPackage(pkg) }, "VIEW+setPackage")) {
+            return true
+        }
+
+        // 方式 2：github:// 自定义深链 —— 部分版本用它做深链入口
+        val deep = Uri.parse("github://" + (uri.host ?: "github.com") + (uri.path ?: ""))
+        if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW, deep)
+                .apply { setPackage(pkg) }, "github:// 深链")) {
+            return true
+        }
+
+        // 方式 3：直接启动它的主 Activity（最粗暴，但能保证把 App 带到前台）
+        val launch = try {
+            packageManager.getLaunchIntentForPackage(pkg)
+        } catch (t: Throwable) {
+            null
+        }
+        if (launch != null) {
+            launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (tryStart(launch, "主 Activity")) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /** 启动一个 intent；成功返回 true，失败打日志并返回 false */
+    private fun tryStart(intent: android.content.Intent, how: String): Boolean {
+        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            startActivity(intent)
+            debugLog("  [$how] 成功")
+            true
+        } catch (t: Throwable) {
+            debugLog("  [$how] 失败：${t.javaClass.simpleName} ${t.message}")
+            false
+        }
+    }
+
+    /**
+     * 按**能力**找出能处理该链接的第三方 App 组件；找不到返回 null。
+     *
+     * ⚠️ 官方 GitHub App 不走这里 —— 实测它没注册 `https` 的 VIEW filter，
+     *    所以 `queryIntentActivities` 结果里根本没有它（只有浏览器）。
+     *    官方 App 由调用方用 `<package>` 点名 + [launchInPackage] 处理。
+     *
+     * 这个函数的作用是兜底：用户装的是第三方 GitHub 客户端时，
+     * 它可能确实注册了 https filter，那就交给它。
      */
     private fun findGitHubAppFor(uri: Uri): android.content.ComponentName? {
         return try {
             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
             val handlers = packageManager.queryIntentActivities(intent, 0)
 
-            val picked = handlers.firstOrNull { it.activityInfo?.packageName in GITHUB_APP_PACKAGES }
-                ?: handlers.firstOrNull { info ->
-                    val pkg = info.activityInfo?.packageName ?: return@firstOrNull false
-                    if (pkg in BROWSER_PACKAGES) return@firstOrNull false
-                    val label = try {
-                        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0))
-                    } catch (t: Throwable) {
-                        ""
-                    }.toString()
-                    label.contains("github", ignoreCase = true)
-                }
+            val picked = handlers.firstOrNull { info ->
+                val pkg = info.activityInfo?.packageName ?: return@firstOrNull false
+                if (pkg in BROWSER_PACKAGES) return@firstOrNull false
+                val label = try {
+                    packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0))
+                } catch (t: Throwable) {
+                    ""
+                }.toString()
+                label.contains("github", ignoreCase = true)
+            }
 
             picked?.activityInfo?.let {
                 android.content.ComponentName(it.packageName, it.name)
@@ -856,33 +910,6 @@ import kotlin.math.roundToInt
         true
     } catch (t: Throwable) {
         false
-    }
-
-    /**
-     * 诊断用：打印查询某个包时的详细信息。
-     *
-     * 区分两种「查不到」：
-     *   · NameNotFoundException —— 真的没装
-     *   · 其它异常（SecurityException 等）—— 包存在但被包可见性挡住
-     *
-     * ⚠️ 临时（v0.0.16）。定位完删。
-     */
-    private fun probePackage(pkg: String) {
-        try {
-            val info = packageManager.getApplicationInfo(pkg, 0)
-            val label = packageManager.getApplicationLabel(info).toString()
-            debugLog("$pkg 存在，名称='$label' enabled=${info.enabled}")
-        } catch (t: Throwable) {
-            debugLog("$pkg 查询失败：${t.javaClass.simpleName} ${t.message}")
-        }
-
-        // 再试一次「用 launch intent 反查」——这条路绕过 getApplicationInfo 的可见性
-        try {
-            val launch = packageManager.getLaunchIntentForPackage(pkg)
-            debugLog("$pkg getLaunchIntent=${if (launch == null) "null" else launch.component}")
-        } catch (t: Throwable) {
-            debugLog("$pkg getLaunchIntent 抛异常：${t.javaClass.simpleName}")
-        }
     }
 
     private fun toDp(px: Int): Int = (px / resources.displayMetrics.density).roundToInt()
