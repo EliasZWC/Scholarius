@@ -927,15 +927,6 @@ import kotlin.math.roundToInt
          */
         const val UPDATE_FLOW_RESUME_GRACE_MS = 2_000L
 
-        /**
-         * 从后台回来时，离开超过这个时长就认为「更新流程已中断」，清掉残留状态。
-         *
-         * 取值考虑：拉起系统安装器 / 跳「安装未知应用」设置页，用户操作通常
-         * 几十秒到几分钟。2 秒的宽容度足以区分「只是切出去看一眼又马上回来」
-         * （不该清，清了会重复弹窗）与「用户去别处办事了」（该清）。
-         */
-        const val UPDATE_FLOW_RESUME_GRACE_MS = 2_000L
-
         const val PREFS_NAME = "scholarius"
         const val KEY_THEME_MODE = "theme_mode"
 
