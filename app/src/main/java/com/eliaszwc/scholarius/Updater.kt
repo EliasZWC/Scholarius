@@ -404,4 +404,3 @@ object Updater {
     /** 安装包 MIME，与 FileProvider 暴露的路径配套 */
     const val APK_MIME = "application/vnd.android.package-archive"
 }
-}
