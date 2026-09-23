@@ -33,6 +33,51 @@
 
 ---
 
+## [0.0.19] - 2026-09-23
+
+### 结论：应用内更新**没有 bug**
+
+v0.0.18 真机日志显示更新检测完全正常：
+
+```
+[update] 查询 https://api.github.com/repos/...（当前 0.0.18）
+[update] API 返回 HTTP 200
+[update] tag_name='v0.0.18'
+[update] assets 共 1 个
+[update]   asset: Scholarius-v0.0.18.apk
+[update] 最新 0.0.18 不大于当前 0.0.18
+[update] 结论：没有可用的新版本
+```
+
+得到的都是最新版，所以「无可用新版本」是**正确行为**。
+
+之前看到的「无新版本（或查询失败）」把两种情况混在一起，是因为
+`WebView.evaluateJavascript()` 必须在主线程调，而更新检查在后台线程、
+其日志回调也在后台线程 —— 细节会被静默丢弃。v0.0.18 已修（`debugLog` 自行切线程）。
+
+### GitHub App：有进展，但深链路径不对
+
+v0.0.18 日志：
+
+```
+[VIEW+setPackage] 失败：ActivityNotFoundException
+  （证实它不接受 https 链接）
+[github:// 深链] 成功
+已用 GitHub App 拉起 ✓
+```
+
+**能弹出「选择打开方式」了（之前完全做不到）**，但列表里没有 GitHub ——
+说明 `github://github.com/login/device` 这个 path 不匹配它的规则。
+
+本轮修正与加诊断：
+
+1. 深链改为**裸 `github://`**（不带自己拼的 path），这是最保守、
+   能匹配它任何一条 github:// 规则的写法。
+2. 新增 `dumpIntentFilters()` —— **把 GitHub App 自己声明的深链规则打出来**，
+   照着它的格式构造，而不是猜。
+
+---
+
 ## [0.0.18] - 2026-09-23
 
 ### 修复
@@ -626,3 +671,4 @@ com.github.android 已安装=false        ← getApplicationInfo 查不到
 [0.0.16]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.16
 [0.0.17]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.17
 [0.0.18]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.18
+[0.0.19]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.19

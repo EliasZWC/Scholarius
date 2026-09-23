@@ -782,6 +782,7 @@ import kotlin.math.roundToInt
         for (pkg in GITHUB_APP_PACKAGES) {
             if (isInstalled(pkg)) {
                 debugLog("$pkg 已安装，尝试用它打开")
+                dumpIntentFilters(pkg)
                 if (launchInPackage(pkg, uri)) {
                     debugLog("已用 GitHub App 拉起 ✓")
                     return true
@@ -812,6 +813,64 @@ import kotlin.math.roundToInt
     }
 
     /**
+     * 诊断用：列出某个包声明的所有 intent-filter（activity + action + scheme + host + path）。
+     *
+     * 目的：`github://login/device` 到底对不对，不能猜 ——
+     * 直接把 GitHub App 自己声明的深链规则打出来，照着它的格式构造。
+     *
+     * ⚠️ 临时（v0.0.19）。定位完删。
+     */
+    private fun dumpIntentFilters(pkg: String) {
+        try {
+            val info = packageManager.getPackageInfo(
+                pkg,
+                android.content.pm.PackageManager.GET_ACTIVITIES
+            )
+            val activities = info.activities
+            if (activities == null) {
+                debugLog("$pkg 没读到 activity 列表")
+                return
+            }
+            debugLog("$pkg 共 ${activities.size} 个 activity")
+
+            var shown = 0
+            for (act in activities) {
+                val filters = act.intentFilters ?: continue
+                for (f in filters) {
+                    val schemes = mutableListOf<String>()
+                    for (i in 0 until f.countDataSchemes()) {
+                        val scheme = f.getDataScheme(i) ?: continue
+                        var one = scheme
+                        for (j in 0 until f.countDataAuthorities()) {
+                            val auth = f.getDataAuthority(j) ?: continue
+                            if (auth.scheme != scheme) continue
+                            one += "://" + (auth.host ?: "?")
+                            for (k in 0 until f.countDataPaths()) {
+                                val p = f.getDataPath(k) ?: continue
+                                one += p.path
+                            }
+                        }
+                        schemes.add(one)
+                    }
+                    if (schemes.isEmpty()) continue
+
+                    shown++
+                    if (shown > 25) return
+                    val actions = f.actions?.joinToString(",") ?: ""
+                    debugLog("  · ${act.name}")
+                    debugLog("      action=[$actions]")
+                    debugLog("      data=${schemes.joinToString("  ")}")
+                }
+            }
+            if (shown == 0) {
+                debugLog("$pkg 没有任何带 scheme 的 intent-filter")
+            }
+        } catch (t: Throwable) {
+            debugLog("枚举 $pkg 的 intent-filter 失败：${t.javaClass.simpleName} ${t.message}")
+        }
+    }
+
+    /**
      * 在指定包内打开授权链接。逐个尝试三种方式，任一成功即返回 true。
      *
      * 实测（v0.0.17 真机日志）证实了 GitHub App 的行为：
@@ -833,10 +892,15 @@ import kotlin.math.roundToInt
             return true
         }
 
-        // 方式 2：github:// 自定义深链 —— 部分版本用它做深链入口
-        val deep = Uri.parse("github://" + (uri.host ?: "github.com") + (uri.path ?: ""))
-        if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW, deep)
-                .apply { setPackage(pkg) }, "github:// 深链")) {
+        /*
+          方式 2：自定义深链。
+          ⚠️ 只试**裸 scheme**（github://），不带我们自己拼的 path ——
+             上一版拼了 `github://github.com/login/device` 并「成功」，
+             但系统弹的是「选择打开方式」，说明这个 path 不匹配它的规则。
+             裸 scheme 是最保守的写法，能匹配它任何一个 github:// 规则。
+        */
+        if (tryStart(android.content.Intent(android.content.Intent.ACTION_VIEW,
+                Uri.parse("github://")).apply { setPackage(pkg) }, "github:// 裸深链")) {
             return true
         }
 
@@ -847,7 +911,6 @@ import kotlin.math.roundToInt
             null
         }
         if (launch != null) {
-            launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             if (tryStart(launch, "主 Activity")) {
                 return true
             }
