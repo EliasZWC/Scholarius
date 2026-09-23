@@ -270,6 +270,7 @@ import kotlin.math.roundToInt
                 onThemeMode = { mode -> runOnUiThread { setThemeMode(mode) } },
                 onOpenExternal = { url -> runOnUiThread { openExternally(url) } },
                 onOpenVerification = { url ->
+                    debugLog("[login] 网页请求打开授权页：$url")
                     runOnUiThread { openDeviceVerification(url) }
                 },
                 onFinishSplash = { runOnUiThread { finishSplash() } },
@@ -452,25 +453,23 @@ import kotlin.math.roundToInt
             }
 
             // 把 user_code 显示给用户；跳转由用户在网页上点按钮触发
-            debugLog(
-                "[login] 设备码=${device.userCode} " +
-                    "verification_uri=${device.verificationUri}"
-            )
-            debugLog(
-                "[login] verification_uri_complete=" +
-                    (device.verificationUriComplete.ifEmpty { "（GitHub 未返回）" })
-            )
+            debugLog("[login] 设备码=${device.userCode} 有效期=${device.expiresInSeconds}s")
 
             evaluateInWeb(
                 "window.ScholariusShell && window.ScholariusShell.onLoginCode(" +
                     "${quote(device.userCode)}, " +
-                    "${quote(device.bestVerificationUri)}, " +
+                    "${quote(device.verificationUri)}, " +
                     "${device.expiresInSeconds});"
             )
 
+            debugLog(
+                "[login] 开始轮询 token（间隔 ${device.intervalSeconds}s、" +
+                    "有效期 ${device.expiresInSeconds}s）"
+            )
             GitHubAuth.pollForToken(
                 deviceCode = device,
                 onUpdated = { waited ->
+                    debugLog("[login] 已等待 ${waited}s，仍未授权")
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.onLoginWaiting($waited);"
                     )
@@ -909,6 +908,12 @@ import kotlin.math.roundToInt
 
     override fun onResume() {
         super.onResume()
+
+        if (!::webView.isInitialized) {
+            return
+        }
+
+        debugLog("[life] 回到前台")
 
         /*
           每次回到前台重置「已查过」的标记，然后重查一次。
