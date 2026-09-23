@@ -35,7 +35,8 @@
         .splash {
             position: fixed;
             inset: 0;
-            z-index: 40;
+            /* 必须高于 .login(50) / .row-menu(71) / .toast(80)，见 styles.css 的说明 */
+            z-index: 100;
             display: flex;
             flex-direction: column;
             align-items: center;

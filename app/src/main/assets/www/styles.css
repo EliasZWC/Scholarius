@@ -265,7 +265,23 @@ body {
 .splash {
     position: fixed;
     inset: 0;
-    z-index: 40;
+    /*
+      ⚠️⚠️ 必须是全站最高层，至少高于：
+            .login        → 50
+            .row-menu     → 71（行内下拉菜单）
+            .toast        → 80
+          .sheet 是 11、弹层遮罩在 .login 里也是 50。
+
+          曾经的 bug：splash 是 40，而 .login 是 50 ——
+          原生在 427ms 就把 signedIn=false 推过来，
+          setAccount() 立刻 show() 登录页，**直接把启动页盖住**。
+          启动页之后还在屏幕上挂了 2.5 秒，但用户完全看不见，
+          表现为「Σ 一闪而过」——而日志里 splash 却「完整显示了 2.6 秒」，
+          两边都对，只是一个在下面、一个在上面。
+
+          所以这里给到 100，凌驾于所有业务层之上。
+    */
+    z-index: 100;
     display: flex;
     flex-direction: column;
     align-items: center;

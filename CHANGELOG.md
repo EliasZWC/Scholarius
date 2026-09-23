@@ -4,6 +4,40 @@
 
 ---
 
+## [0.0.14] - 2026-09-23
+
+### 修复
+
+- **启动页「一闪而过」的真正原因：被登录页盖住了。**
+
+  层级写反了：
+
+  | 元素 | 修正前 | 修正后 |
+  |---|---|---|
+  | `.splash` | `z-index: 40` | **`z-index: 100`** |
+  | `.login` | `z-index: 50` | 50 |
+
+  实机日志（v0.0.13）：
+
+  ```
+   272ms  splash:timer   | 将在 2600ms 后退场
+   427ms  account        | signedIn=false splashDone=false
+   431ms  dismiss:blocked| splashDone=false
+  2896ms  splash:done    | timer @2624ms
+  2897ms  splash:hidden  | @2897ms
+  ```
+
+  原生在 **427ms** 就把 `signedIn=false` 推过来，`setAccount()` 立刻
+  `show()` 登录页，而那之后 splash 才被收起 ——
+  **splash 明明完整显示了 2.6 秒，但 427ms 后就被登录页盖住，用户完全看不见。**
+
+  所以「日志正常」与「用户看到一闪而过」两边都是对的，只是一个在下面、一个在上面。
+
+  现在 `z-index: 100` 凌驾于所有业务层（`.login` 50 / `.row-menu` 71 /
+  `.toast` 80）之上。实测：登录页在 597ms 已显示，但 splash 一直盖在上面到 2642ms。
+
+---
+
 ## [0.0.13] - 2026-09-23
 
 ### 诊断（临时）
@@ -435,3 +469,4 @@
 [0.0.11]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.11
 [0.0.12]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.12
 [0.0.13]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.13
+[0.0.14]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.14
