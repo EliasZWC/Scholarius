@@ -1003,30 +1003,43 @@ body {
      （字号档位、字体、颜色、主题都只会越来越多），
      而行式 + 可滚动的表单能容纳任意项数，形态也和设置页一致。
 
-     直接复用 .setting-action / .setting-label / .setting-value，
-     这里只把尺度调成面板大小，别让它在窄面板里显得过大。
+     直接复用 .setting-action / .setting-label / .setting-value。
 */
-.reader-setting-row {
-    padding: 11px 12px;
+/*
+  ⚠️ 选择器必须写成 .setting-action.reader-setting-row（两个类）。
+
+     .setting-action 定义在文件**后面**（约 1746 行）且有 padding: 0，
+     与单个 .reader-setting-row 优先级相同（都是 0,1,0），
+     后出现的赢 —— 实测行高被压成 20px、行距只有 2px，挤成一团。
+     提高一级优先级才能真正生效。
+
+     设置页那边靠外层 <li class="setting-item"> 提供间距，
+     阅读面板里没有 li，padding 必须由这一行自己出。
+*/
+.setting-action.reader-setting-row {
+    padding: 12px 12px;
     border-radius: 10px;
+    /* 行与行之间拉开一点，否则四行挤在一起没有分组感 */
+    margin-bottom: 2px;
 }
 
-.reader-setting-row + .reader-setting-row {
-    margin-top: 2px;
+/* 按下的反馈：设置页是外层 li 变色，这里没有 li，自己给底色 */
+.setting-action.reader-setting-row:active {
+    background: var(--surface-raised);
 }
 
-.reader-setting-row .setting-label {
+.setting-action.reader-setting-row .setting-label {
     font-size: 14px;
 }
 
-.reader-setting-row .setting-value {
+.setting-action.reader-setting-row .setting-value {
     font-size: 14px;
     color: var(--on-surface-variant);
 }
 
-/* 面板里不要额外分隔线 —— 行式本身已经够清楚 */
-.reader-setting-group + .reader-setting-group {
-    margin-top: 6px;
+/* 最后一行不留外边距（面板自身有 padding） */
+.reader-panel .setting-action.reader-setting-row:last-child {
+    margin-bottom: 0;
 }
 
 /* --------------------------------------------------------------------------
