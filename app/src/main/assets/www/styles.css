@@ -1911,10 +1911,24 @@ body {
 
   三个类都由 JS 在 [syncBottomBar] / [mountAnnotateLayer] 里切换。
 
-  ⚠️ `touch-action: none` 是**必须的**（只在②成立时给）：
-     不写的话手指拖拽会被浏览器解释成"滚动页面"，
-     `pointermove` 收不到几个点，画出来的框只有一小段。
-     但它一旦给了，滚动就**彻底没了** —— 所以绝不能无条件下发。
+  ══ ⚠️⚠️ `touch-action` 不能用 `none`（2026-09-25 事故） ══
+
+     用户实测：「无法删除框，无法拖拽建立新框，基本这个功能没用」——
+     **连拖拽都建不了框**，说明 pointer 事件根本没到达监听器。
+
+     根因：Android WebView 上给元素加 `touch-action: none` 之后，
+     部分版本会**同时不再派发 pointerdown/pointermove** ——
+     不只是阻止滚动，是把整条 pointer 链都吞了。
+     而桌面浏览器（Playwright 用的 Chromium）没有这个行为，
+     所以本地测全绿、真机全废。这是最典型的"桌面能跑手机不能"。
+
+     ✅ 正确做法：touch-action 用 `manipulation`（只禁双击缩放，
+        不禁滚动），真正的"别滚动"由 **JS 在 pointerdown 里
+        preventDefault()** 来做 —— 那是我们自己的代码，
+        不会被 WebView 的 touch-action 实现差异影响。
+
+     ⚠️ `manipulation` 而不是 `auto`：
+        为了顺手干掉双击放大（300ms 内的两次轻点）。
 */
 .anno-layer {
     pointer-events: none;
@@ -1924,7 +1938,7 @@ body {
 /* 只有"画矩形"的模式才接管手势 */
 .reader.is-annotating .anno-layer.is-drawing {
     pointer-events: auto;
-    touch-action: none;
+    touch-action: manipulation;
 }
 
 /*

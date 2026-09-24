@@ -1720,6 +1720,9 @@
 
             if (isDrawing) {
                 bindLayerDrawing(layer, page);
+                trace('anno:bind', 'page=' + page +
+                      ' ta=' + getComputedStyle(layer).touchAction +
+                      ' pe=' + getComputedStyle(layer).pointerEvents);
             }
         }
     }
@@ -2933,6 +2936,53 @@
                 onBox: !!hit
             };
             dragging = false;
+
+            /*
+              ══ ⚠️⚠️ 在这里阻止滚动，而不是靠 CSS 的 touch-action: none ══
+
+                 用户 2026-09-25 实测「连拖拽都建不了框」——
+                 pointer 事件根本没到达监听器（能到达的话日志里会有 anno:down）。
+
+                 根因：Android WebView 给元素加 `touch-action: none` 后，
+                 部分版本**连 pointer 事件一起不派发**了。
+                 而桌面 Chromium 没这个行为 → 本地测全绿、真机全废。
+
+                 ✅ 改成 CSS 用 `manipulation`（不禁滚动），
+                    真正的"别滚动"在**我们自己的代码**里做 ——
+                    不受 WebView 的 touch-action 实现差异影响。
+
+                 ⚠️ 必须**无条件** preventDefault（不管 onBox 与否）：
+                    · onBox —— 手指微动不该让页面滚走，否则松手时
+                      位置已变，命中测试的框可能已经移出视野；
+                    · 空白处 —— 不阻止的话手指拖拽会被当成滚动手势，
+                      pointermove 收不到几个点，框只画出一小段。
+
+                 ⚠️ 代价：编辑模式 + 画矩形模式下**页面不能滚动**了。
+                    这是**设计如此**（见上方 CSS 注释里用户那句
+                    「编辑模式哪个选项都没点，就不需要画框啊，
+                      比如滚动页面啥的」—— 反过来，选了画矩形就该锁住滚动）。
+                    要滚动就先取消选项。
+            */
+            if (ev.cancelable) {
+                ev.preventDefault();
+            }
+
+            /*
+              ⚠️ 诊断日志（排查"真机上完全没反应"用）。
+
+                 用户 2026-09-25：「无法删除框，无法拖拽建立新框，
+                                  基本这个功能没用」。
+                 连拖拽都建不了框 —— 说明 pointer 事件**根本没进来**，
+                 不是某个判据写错。所以先把"进来没有"这件事记下来。
+
+                 日志里带上 pe/ta 的实际计算值 ——
+                 这两项能直接区分"事件没来"和"来了但判据不对"。
+            */
+            trace('anno:down',
+                  'hit=' + (hit ? 'box' : 'none') +
+                  ' page=' + page +
+                  ' pe=' + getComputedStyle(layer).pointerEvents +
+                  ' ta=' + getComputedStyle(layer).touchAction);
         });
 
         layer.addEventListener('pointermove', function (ev) {
@@ -2967,6 +3017,8 @@
                 */
                 var moved = Math.sqrt(dx * dx + dy * dy);
                 if (moved < DRAG_SLOP) return;
+
+                trace('anno:drag', 'moved=' + Math.round(moved) + ' slop=' + Math.round(DRAG_SLOP));
 
                 /*
                   确认是拖拽了 —— 现在才真正开始：
@@ -3005,6 +3057,8 @@
          *    否则下一次按下会带着旧的 pending 状态。
          */
         function endGesture(ev, cancelled) {
+            trace('anno:up', 'cancelled=' + !!cancelled + ' pending=' + !!pending +
+                  ' dragging=' + dragging);
             if (!pending) return;
 
             var pend = pending;
@@ -3031,6 +3085,7 @@
             */
             if (pend.onBox || !dragging) {
                 dragging = false;
+                trace('anno:delete-try', 'onBox=' + !!pend.onBox + ' hitBox=' + !!pend.hitBox);
                 if (pend.hitBox) {
                     var idx = parseInt(pend.hitBox.getAttribute('data-index'), 10);
                     if (!isNaN(idx) && idx >= 0 && idx < regionMarks.length) {
@@ -3115,7 +3170,10 @@
             var MIN = 0.012;
             var w = box.x1 - box.x0;
             var h = box.y1 - box.y0;
-            if (Math.max(w, h) < MIN) return;
+            if (Math.max(w, h) < MIN) {
+                trace('anno:reject', 'too-small w=' + w.toFixed(4) + ' h=' + h.toFixed(4));
+                return;
+            }
 
             /*
               ⚠️⚠️ 给退化边一个**最小值**，否则存了也白存。
@@ -3149,6 +3207,9 @@
                 type: annotateMode
             });
             annotateDirty = true;
+            trace('anno:added', 'page=' + page + ' type=' + annotateMode +
+                  ' rect=' + box.x0.toFixed(3) + ',' + box.y0.toFixed(3) + ' ' +
+                  box.x1.toFixed(3) + ',' + box.y1.toFixed(3) + ' total=' + regionMarks.length);
             refreshAnnotateLayer(page);
         }
 

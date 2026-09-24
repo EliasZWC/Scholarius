@@ -851,11 +851,28 @@
         return false;
     }
 
+    /*
+      ⚠️⚠️ `trace` 必须挂成 **window.trace**，不能只放在 window.Scholarius 里。
+
+         2026-09-25 事故：我在 reader.js 里加了十几条 `trace('anno:xxx', ...)`
+         想排查"真机上画框完全没反应"，结果日志里**一条都没有**。
+
+         原因：reader.js 写的是 `if (global.trace) global.trace(...)`，
+         而 app.js 只把 trace 挂在 `window.Scholarius` 上 ——
+         `window.trace` 是 undefined，于是所有诊断调用**静默跳过**。
+         排查代码自己不出声，比 bug 本身更难发现。
+
+         ⚠️ 教训：**跨模块调用的函数，名字要对得上**。
+            加完诊断后要**亲眼确认日志出现了**，不能假设它会输出。
+    */
+    window.trace = trace;
+
     // 暴露给后续功能扩展使用
     window.Scholarius = {
         selectTab: selectTab,
         TAB_ORDER: TAB_ORDER,
         handleBack: handleBack,
+        trace: trace,
         isSignedIn: function () {
             return signedIn === true;
         }

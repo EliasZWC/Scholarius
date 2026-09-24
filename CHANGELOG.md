@@ -4,6 +4,90 @@
 
 ---
 
+## [0.1.26] - 2026-09-25
+
+### 画框完全不能用：`touch-action: none` 吃掉了整个 pointer 链
+
+用户实测（0.1.25）：「无法删除框，**无法拖拽建立新框**，
+基本这个功能没用」。
+
+#### 关键线索：连拖拽都建不了框
+
+上一版（0.1.25）我只解决了「点框不删」，本地测全绿。
+但用户说**拖拽也建不了框** —— 说明 pointer 事件根本
+没到达监听器，不是某个判据写错。
+
+#### 真因：`touch-action: none` 在 Android WebView 上会吞掉 pointer 事件
+
+```css
+.reader.is-annotating .anno-layer.is-drawing {
+    touch-action: none;    /* ← 凶手 */
+}
+```
+
+它本来是为了一件事：不给的话手指拖拽会被浏览器当成
+"滚动页面"，`pointermove` 收不到几个点，框只画出一小段。
+
+但在 Android WebView 上，部分版本**连 pointerdown/pointermove
+一起不派发了** —— 不只是阻止滚动，是把整条 pointer 链都吞了。
+而桌面 Chromium 没这个行为 → **本地测全绿、真机全废**。
+
+✅ 修法：
+
+- CSS 改成 `touch-action: manipulation`（只禁双击缩放，**不禁滚动**）
+- 真正的"别滚动"由 **JS 在 pointerdown 里 `preventDefault()`** 完成 ——
+  那是我们自己的代码，不受 WebView 的 touch-action 实现差异影响
+
+#### ⚠️ 附带事故：诊断日志自己不出声
+
+排查时我在 reader.js 里加了十几条 `trace('anno:xxx', ...)`，
+结果日志里**一条都没有**。
+
+原因：reader.js 写的是 `if (global.trace) global.trace(...)`，
+而 app.js 只把 trace 挂在 `window.Scholarius` 上 ——
+`window.trace` 是 undefined，于是所有诊断调用**静默跳过**。
+
+✅ 把 `trace` 同时挂成 `window.trace`。
+
+⚠️ 教训：**跨模块调用的函数，名字要对得上；
+加完诊断后要亲眼确认日志出现了**，不能假设它会输出。
+
+#### 新增诊断日志（供真机排查）
+
+本次在画框链路埋了 6 个断点，每一条都能直接定位
+「事件到没到」与「判据对不对」：
+
+| 日志 | 含义 |
+|---|---|
+| `anno:bind` | 每页绑定成功，带实际的 `ta` / `pe` 值 |
+| `anno:down` | pointerdown 到了，带 `hit=box/none` |
+| `anno:drag` | 位移超阀，确认拖拽 |
+| `anno:up` | pointerup 到了，带 `pending` / `dragging` |
+| `anno:delete-try` | 走删除分支，带 `onBox` / `hitBox` |
+| `anno:reject` | 框太小被丢弃（带实际 w/h） |
+| `anno:added` | 框已存入 regionMarks |
+
+**打开方式：设置 → 通用 → Logger 打开 → 浮层里展开 → Copy。**
+
+判读：
+
+- 没有 `anno:bind` → 选项/挂载时机有问题
+- 有 `anno:bind` 但按下去没 `anno:down` → **事件被 WebView 吞了**
+- 有 `anno:down` 但没 `anno:added` → 看 `anno:reject` 的 w/h
+
+本地实测（日志已确认输出）：
+
+```
+anno:bind | page=1 ta=manipulation pe=auto
+anno:down | hit=box page=1 pe=auto ta=manipulation
+anno:up   | cancelled=false pending=true dragging=false
+anno:delete-try | onBox=true hitBox=true
+```
+
+功能：画框 1、点框 0 ✓
+
+---
+
 ## [0.1.25] - 2026-09-25
 
 ### 「框依旧无法删除」—— 第二次才找对尺子 + 简称页返回键
