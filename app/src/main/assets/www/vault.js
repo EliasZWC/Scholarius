@@ -816,6 +816,24 @@
         onImportFailed: onImportFailed,
         onDocUpdated: onDocUpdated,
         onLeave: onLeave,
+        /**
+         * 重绘卡片列表。
+         *
+         * ⚠️ 为什么必须对外暴露（用户 2026-09-25 报的 bug）：
+         *    「我修改了简称，结果文库页列表卡片的简称依然是修改前的简称」
+         *
+         *    卡片上的载体名是 `venueNameOf(doc)` 查 `ScholariusShortcut.lookup()`
+         *    得来的 —— 而简称表存在 localStorage 里，**卡片不知道自己依赖它**。
+         *    于是改完简称，卡片仍显示上次渲染的结果，除非切走再切回。
+         *
+         *    简称页（shortcut.js）改完读的是自己的列表，看不到卡片，
+         *    所以必须由它主动来叫一声。
+         *
+         * ⚠️ 不要把这件事做成"每次 render 都重读 localStorage" ——
+         *    卡片渲染是高频路径（搜索每敲一个字都走一次），
+         *    每次都读存储会白费性能。改成**事件驱动**：谁改了谁来叫。
+         */
+        render: render,
         /** 系统返回键用：是否处于多选模式 */
         isSelecting: function () {
             return !!selection;

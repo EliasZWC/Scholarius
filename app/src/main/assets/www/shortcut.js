@@ -213,6 +213,25 @@
         });
     }
 
+    /**
+     * 简称表变了 → 通知文库页重绘卡片。
+     *
+     * ⚠️⚠️ 这个通知**必须**有（用户 2026-09-25 报的 bug）：
+     *    「我修改了简称，结果文库页列表卡片的简称依然是修改前的简称」
+     *
+     *    卡片上的载体名是 `venueNameOf(doc)` 查本模块的 `lookup()` 得来的。
+     *    但卡片**不知道自己依赖这张表** —— 它的渲染早就完成了。
+     *    改完简称如果不叫一声，卡片就一直显示旧的，直到用户切走再切回。
+     *
+     * ⚠️ 增、删、改三处都要调（包括删除 —— 删掉之后卡片要退回显示全名）。
+     */
+    function notifyVault() {
+        var v = global.ScholariusVault;
+        if (v && typeof v.render === 'function') {
+            v.render();
+        }
+    }
+
     // --- 增删改 -------------------------------------------------------------
 
     /*
@@ -276,6 +295,8 @@
             save();
             render();
             syncSettingRow();
+            // ⚠️ 删掉之后卡片要**退回显示全名**，所以也要通知重绘
+            notifyVault();
             closeEditForm();
             toast(t('shortcut.deleted'));
         });
@@ -407,6 +428,7 @@
         save();
         render();
         syncSettingRow();
+        notifyVault();
         closeEditForm();
     }
 
@@ -472,6 +494,7 @@
         save();
         render();
         syncSettingRow();
+        notifyVault();
 
         // 清空输入框，方便连着录入多条
         fullInput.value = '';

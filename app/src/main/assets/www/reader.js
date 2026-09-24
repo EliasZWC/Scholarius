@@ -2720,15 +2720,23 @@
         box.appendChild(tag);
 
         /*
-          ⚠️ 点已有的框 = **删除它**（编辑模式下的常见意图是"我刚才画错了"）。
-             不弹确认 —— 弹窗打断连续修正的节奏。删错了重画很快。
+          ⚠️⚠️ 这里**没有** click 监听 —— 删除不靠 click。
+
+             原来是有的（`box.addEventListener('click', ...)` 直接 splice），
+             但用户 2026-09-25 反馈「框无法删除」。原因：
+
+             `.anno-layer` 上必须有 `touch-action: none`
+             （否则手指拖拽被浏览器解释成滚动，画不出框），
+             而它在真机上让整块**不再派发 click** ——
+             鼠标调试正常、手机永远不触发，典型的"桌面能跑手机不能"。
+
+             ✅ 删除改由 `bindLayerDrawing` 的 `endGesture` 用坐标做命中测试。
+                见那里 `boxAt()` 与 `pend.hitBox` 的说明。
+
+          ⚠️ 不要再把它加回来。加回来会变成"删除执行两次"
+             （pointerup 一次 + click 一次）—— 真机上 click 不来所以看不出，
+             鼠标调试时却会一次删掉两个框，很难查。
         */
-        box.addEventListener('click', function (ev) {
-            ev.stopPropagation();
-            regionMarks.splice(index, 1);
-            annotateDirty = true;
-            refreshAnnotateLayer(mark.page);
-        });
 
         return box;
     }
@@ -2788,13 +2796,63 @@
         var dragging = false;
 
         /*
-          位移阈值（屏幕像素）。
+          ══ ⚠️⚠️ 位移阈值：必须够宽，不能写死 8 个 CSS 像素 ══
 
-          ⚠️ 太大学生想画小框时会先被当成点击；太小则手指的天然抖动
-             会被当成拖拽。8px 是触摸屏的常用值（与 Android 的
-             ViewConfiguration.getScaledTouchSlop 同一量级）。
+             2026-09-25 用户实测：「我没有拖拽，点击了一下直接生成了一个框」。
+
+             —— 写死的 8px 太小了。真机手指"点一下"的天然抖动
+             轻易就有 10~15 个 CSS 像素（高 DPI 屏上更明显），
+             于是每一次轻点都被判成拖拽，既画出莫名其妙的框，
+             又吞掉了本该用来删除已有框的那一次点击。
+
+          ⚠️ 用**物理尺寸**定阈值：3 毫米，再按 CSS 基准密度换算。
+             96 CSS px = 1 英寸 = 25.4mm，所以 1mm ≈ 3.78 CSS px。
+
+             · 比 Android 的 ViewConfiguration.getScaledTouchSlop()
+               （8dp ≈ 1.4mm）宽一倍多 —— 那个是给"滚动"用的，
+               我们要区分的是"点击"与"有意的拖拽"，该更宽松；
+             · 又远小于"想画一个框"的必要位移（通常 > 5mm）。
         */
-        var DRAG_SLOP = 8;
+        var DRAG_SLOP_MM = 3;
+        var DRAG_SLOP = DRAG_SLOP_MM * 96 / 25.4;   // ≈ 11.3 CSS px
+
+        /**
+         * 命中测试：屏幕上这个点下面有没有已有的框？
+         *
+         * ⚠️⚠️ 为什么**不能**靠框自己的 click 事件来删除。
+         *
+         *    用户 2026-09-25 反馈「框无法删除」。根因在 CSS：
+         *
+         *        .reader.is-annotating .anno-layer.is-drawing {
+         *            touch-action: none;      ← 这个
+         *        }
+         *
+         *    `touch-action: none` 是**必须**的（不给的话手指拖拽会被
+         *    浏览器解释成滚动页面，pointermove 收不到几个点，框只画一小段）。
+         *    但它在真机上会让这一整块**不再派发 click** ——
+         *    浏览器认为这里是"拖拽区"，不会补发 click。
+         *    于是 `.anno-box` 上那个 click 监听形同虚设：
+         *    鼠标调试时一切正常（鼠标没有 touch-action 的概念），
+         *    真机上永远不触发 —— 典型的"桌面能跑、手机不能"。
+         *
+         *    ✅ 所以删除改在 **pointerup** 里用坐标自己做命中测试，
+         *       与"画新框"共用同一套 pointer 事件，不再依赖 click。
+         */
+        function boxAt(clientX, clientY) {
+            /*
+              ⚠️ 从后往前找 —— 后 append 的画在上层，
+                 与视觉层级一致（重叠时点到的是用户看到的那个）。
+            */
+            var boxes = layer.querySelectorAll('.anno-box:not(.is-ghost)');
+            for (var i = boxes.length - 1; i >= 0; i--) {
+                var r = boxes[i].getBoundingClientRect();
+                if (clientX >= r.left && clientX <= r.right &&
+                    clientY >= r.top && clientY <= r.bottom) {
+                    return boxes[i];
+                }
+            }
+            return null;
+        }
 
         function normalised(ev, rect) {
             var x = (ev.clientX - rect.left) / rect.width;
@@ -2819,21 +2877,30 @@
         }
 
         layer.addEventListener('pointerdown', function (ev) {
-            // 点在已有框上时交给框自己处理（那是删除）
-            if (ev.target && ev.target.classList.contains('anno-box')) return;
-
             var rect = layer.getBoundingClientRect();
             if (!rect.width || !rect.height) return;
 
             /*
-              ⚠️ 这里**不** preventDefault()，也**不**建鬼框。
-                 只记下起点，等 pointermove 超了阈值再真正开始。
+              ⚠️ 按在**已有的框**上时，记下"这一下可能是删除"，
+                 但**不立刻删** —— 要等 pointerup 确认这是一次点击
+                 （而不是用户想从这个框的位置起笔拖一个新框）。
+
+              ⚠️⚠️ 这里**不能**像以前那样直接 `return`。
+
+                 以前写的是「点在已有框上时交给框自己处理」，
+                 但框自己**收不到事件**（touch-action: none 之下
+                 整块不派发 click，见 boxAt 的说明）。
+                 于是那个 return 等于把这一下彻底吞了 ——
+                 既没删掉框，也没让框收到点击。这就是"框无法删除"。
+
+                 所以判定必须**全部在 layer 里做**。
             */
             pending = {
                 pointerId: ev.pointerId,
                 clientX: ev.clientX,
                 clientY: ev.clientY,
-                startNorm: normalised(ev, rect)
+                startNorm: normalised(ev, rect),
+                hitBox: boxAt(ev.clientX, ev.clientY)
             };
             dragging = false;
         });
@@ -2848,7 +2915,29 @@
             if (!dragging) {
                 var dx = Math.abs(ev.clientX - pending.clientX);
                 var dy = Math.abs(ev.clientY - pending.clientY);
-                if (Math.max(dx, dy) < DRAG_SLOP) return;
+
+                /*
+                  ⚠️ 用**欧氏距离**而不是 max(|dx|,|dy|)。
+
+                     用 max 会把"两个方向各移 8px"（实际位移 11.3px）
+                     判成没动 —— 斜向的轻抖因此漏判。
+                     欧氏距离才是"手指移动了多远"的真实度量。
+                */
+                var moved = Math.sqrt(dx * dx + dy * dy);
+                if (moved < DRAG_SLOP) return;
+
+                /*
+                  ⚠️⚠️ 起点在已有框上、且移动不大时，**不当作画新框**。
+
+                     场景：用户想删掉一个框，按下去时手指抖了一下。
+                     如果他"按在框上 + 没走远"，意图几乎肯定是删除，
+                     而不是"在框正上方画一个几乎重合的新框"——
+                     后者没有任何使用价值。
+
+                     ⚠️ 判据用 DRAG_SLOP 的 2 倍：再多就说明用户的确是
+                        想从这儿拖出去画新框（比如想把框改大）。
+                */
+                if (pending.hitBox && moved < DRAG_SLOP * 2) return;
 
                 /*
                   确认是拖拽了 —— 现在才真正开始：
@@ -2879,20 +2968,50 @@
             place(ghost, start, normalised(ev, rect));
         });
 
-        layer.addEventListener('pointerup', function (ev) {
-            /*
-              ⚠️ 没超过阈值 = 一次普通点击。
-                 不画框、不消费 click，让它正常冒泡去切菜单。
-                 （这样顶部/底部的文字终于能选中了。）
-            */
-            if (!dragging) {
-                pending = null;
+        /**
+         * 结束手势。**画新框和删除已有框都在这里收口**。
+         *
+         * ⚠️ pointercancel 也走这里：真机上系统手势（下拉通知栏、来电）
+         *    会中断 pointer 序列，此时必须把 pending 清干净，
+         *    否则下一次按下会带着旧的 pending 状态。
+         */
+        function endGesture(ev, cancelled) {
+            if (!pending) return;
+
+            var pend = pending;
+            pending = null;
+
+            /* 被系统打断 —— 什么都别做，把半成品鬼框收掉 */
+            if (cancelled) {
+                if (ghost && ghost.parentNode) ghost.parentNode.removeChild(ghost);
+                ghost = null;
+                start = null;
+                dragging = false;
                 return;
             }
 
-            pending = null;
-            dragging = false;
+            /*
+              ══ 情况一：没到拖拽阈值 = 一次点击 ══
 
+                 按在已有框上 → 删除它（这就是"点击删除"的实现，
+                 不再依赖被 touch-action 掐掉的 click 事件）。
+                 没按在框上 → 什么都不做，让 click 冒泡去切菜单
+                              （顶部/底部的文字因此可以正常选中）。
+            */
+            if (!dragging) {
+                dragging = false;
+                if (pend.hitBox) {
+                    var idx = parseInt(pend.hitBox.getAttribute('data-index'), 10);
+                    if (!isNaN(idx) && idx >= 0 && idx < regionMarks.length) {
+                        regionMarks.splice(idx, 1);
+                        annotateDirty = true;
+                        refreshAnnotateLayer(page);
+                    }
+                }
+                return;
+            }
+
+            dragging = false;
             if (!start) return;
 
             var rect = layer.getBoundingClientRect();
@@ -2972,6 +3091,15 @@
             });
             annotateDirty = true;
             refreshAnnotateLayer(page);
+        }
+
+        layer.addEventListener('pointerup', function (ev) {
+            endGesture(ev, false);
+        });
+
+        /* 系统手势打断（下拉通知栏、来电等）—— 收干净，别留半成品 */
+        layer.addEventListener('pointercancel', function (ev) {
+            endGesture(ev, true);
         });
 
         layer.addEventListener('pointercancel', function () {
