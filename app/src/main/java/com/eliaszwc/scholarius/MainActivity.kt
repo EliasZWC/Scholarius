@@ -434,12 +434,9 @@ class MainActivity : AppCompatActivity() {
 
                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
-                    /*
-                      只接受 PDF。
-                      ⚠️ 用 `application/pdf` 而不是 `*/*` ——
-                         前者让系统只列出 PDF，用户不会选错；
-                         后者要靠应用自己判断，体验差。
-                    */
+                    // 只接受 PDF：
+                    // 用 application/pdf 而不是通配类型，前者让系统只列出 PDF，
+                    // 用户不会选错；后者要靠应用自己判断，体验差。
                     type = "application/pdf"
                     putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/pdf"))
                 }
