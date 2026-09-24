@@ -36,10 +36,10 @@
             'reader.extractFailed': 'Could Not Extract Text From This PDF.',
 
             // 底部选项栏
-            'reader.toc': 'Contents',
-            'reader.tocLabel': 'Contents',
-            'reader.settings': 'Reader Settings',
-            'reader.settingsLabel': 'Settings',
+            'reader.toc': 'Content',
+            'reader.tocLabel': 'Content',
+            'reader.settings': 'Reader Setting',
+            'reader.settingsLabel': 'Setting',
             'reader.tocEmpty': 'No Headings Found In This Document.',
             'reader.abstract': 'Abstract',
 
