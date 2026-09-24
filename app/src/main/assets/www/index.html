@@ -266,15 +266,80 @@
     </div>
 
     <div id="app">
+        <!--
+          标题栏。
+          ⚠️ 在文库页时右侧有一个「+」导入按钮，其它页面没有 ——
+             所以标题栏用「左占位 / 中标题 / 右按钮」三格结构，
+             标题才能始终真正居中（与账户详情页同一套做法）。
+
+             ⚠️ 左侧占位必须**与右侧按钮等宽**，否则标题会偏。
+                文库页右侧是 40px 按钮，所以左侧也是 40px；
+                其它页面右侧为空，左侧仍然保留占位以维持布局稳定。
+        -->
         <header class="page-header">
+            <span class="page-header-slot" aria-hidden="true"></span>
             <h1 class="page-title" id="page-title" data-i18n="nav.vault">Vault</h1>
+            <!-- 导入按钮：只在文库页显示（由 app.js 按当前 tab 切换 hidden） -->
+            <button class="icon-button" type="button" id="vault-import"
+                aria-label="Import PDF" data-i18n-aria-label="vault.import">
+                <!-- Google Material Icons: add -->
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+                </svg>
+            </button>
         </header>
 
         <main id="content">
             <section class="page" id="page-vault" role="tabpanel" aria-labelledby="tab-vault">
-                <!-- 文库：用户自己导入的文献（存在应用私有目录，不上传） -->
-            </section>
-                <!-- 文库：导入与管理文献、阅读、标注、笔记 -->
+                <!--
+                  文库 = 搜索栏 + 文献列表。
+
+                  标题栏的「+」导入按钮在 page-header 里（见下），
+                  只用 aria-hidden 的纯装饰图标（没有任何文字）。
+                -->
+                <div class="vault-toolbar">
+                    <div class="search-field">
+                        <!-- Google Material Icons: search -->
+                        <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                        </svg>
+                        <input class="search-input" id="vault-search" type="search"
+                            autocomplete="off" autocorrect="off" spellcheck="false"
+                            data-i18n-placeholder="vault.searchPlaceholder"
+                            placeholder="Search title, author, venue" />
+                        <button class="search-clear" id="vault-search-clear" type="button"
+                            aria-label="Clear" data-i18n-aria-label="action.clear" hidden>
+                            <!-- Google Material Icons: close -->
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 文献列表 -->
+                <ul class="doc-list" id="doc-list"></ul>
+
+                <!-- 空状态：没有文献、或搜索无结果 -->
+                <div class="empty-state" id="vault-empty" hidden>
+                    <svg class="empty-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z" />
+                    </svg>
+                    <p class="empty-text" id="vault-empty-text"
+                        data-i18n="vault.empty">No documents yet</p>
+                    <p class="empty-hint" id="vault-empty-hint"
+                        data-i18n="vault.emptyHint">Tap + to import a PDF</p>
+                </div>
+
+                <!-- 批量操作条：进入多选模式时从底部升起 -->
+                <div class="bulk-bar" id="bulk-bar" hidden>
+                    <span class="bulk-count" id="bulk-count">0</span>
+                    <span class="bulk-spacer"></span>
+                    <button class="btn" type="button" id="bulk-cancel"
+                        data-i18n="action.cancel">Cancel</button>
+                    <button class="btn btn-danger" type="button" id="bulk-delete"
+                        data-i18n="action.delete">Delete</button>
+                </div>
             </section>
 
             <section class="page" id="page-explore" role="tabpanel" aria-labelledby="tab-explore" hidden>
@@ -662,11 +727,22 @@
         </div>
     </section>
 
+    <!--
+      隐藏的文件输入。点「+」时用 JS 触发它的 click，
+      从而走到原生的 WebChromeClient.onShowFileChooser 弹出系统文件选择器。
+
+      ⚠️ 必须真的在 DOM 里且可点（不能用 display:none 之外的怪招），
+         否则某些 WebView 版本不会触发 onShowFileChooser。
+         用 position:absolute + opacity:0 + 移出视口 是可靠做法。
+    -->
+    <input type="file" id="vault-file-input" accept="application/pdf,.pdf" hidden />
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <script src="i18n.js"></script>
     <script src="theme.js"></script>
     <script src="components.js"></script>
+    <script src="vault.js"></script>
     <script src="login.js"></script>
     <script src="update.js"></script>
     <script src="account.js"></script>

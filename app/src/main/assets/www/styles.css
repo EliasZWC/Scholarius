@@ -150,12 +150,19 @@ body {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    justify-content: center;
+    /*
+      ⚠️ 用 space-between + 标题 flex:1 居中，**不能**用 justify-content: center。
+         center 会让三个子元素挤在中间，标题不再相对整栏居中。
+         三格布局下正确做法：两侧固定宽（40px），中间吃掉剩余并居中文字。
+    */
+    justify-content: space-between;
+    gap: 8px;
     height: 56px;
-    padding: 0 16px;
+    padding: 0 8px;
 }
 
 .page-title {
+    flex: 1 1 auto;
     margin: 0;
     font-size: 17px;
     /* 标题统一：深色 + 全大写 + 粗体（中文没有大小写，uppercase 对中文无效，不影响） */
@@ -164,6 +171,7 @@ body {
     letter-spacing: 0.5px;
     color: var(--on-surface);
     text-transform: uppercase;
+    text-align: center;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -176,12 +184,313 @@ body {
 .page {
     position: absolute;
     inset: 0;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
+    /*
+      ⚠️ 用 flex 列而不是 overflow-y: auto。
+
+      文库页的结构是「搜索栏固定在顶 + 列表内部滚动」。
+      如果整页滚动，搜索栏会跟着滚出去，用户想搜索还得先滚回顶部。
+      所以外层不滚（overflow: hidden），由 .doc-list 自己滚。
+
+      其它页面（探索/账户）内容区各自控制滚动。
+    */
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .page[hidden] {
     display: none;
+}
+
+/* --------------------------------------------------------------------------
+   文库页
+   -------------------------------------------------------------------------- */
+
+/*
+  标题栏改成三格后，左右两个「槽」必须等宽，标题才真正居中。
+  左槽在文库页与右侧「+」按钮等宽（40px）；
+  其它页面右槽没有按钮，但左槽仍保留，避免切页时标题横跳。
+*/
+.page-header-slot {
+    flex: 0 0 auto;
+    width: 40px;
+    height: 40px;
+}
+
+/*
+  ⚠️ 导入按钮在非文库页要隐藏。用 visibility 而不是 display:none ——
+     那样右槽会塌掉、标题会平移。保持占位、只隐藏内容，标题位置稳定。
+*/
+#vault-import.is-hidden {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* 搜索栏所在的一行 */
+.vault-toolbar {
+    flex: 0 0 auto;
+    padding: 0 16px 8px;
+}
+
+.search-field {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.search-icon {
+    position: absolute;
+    left: 12px;
+    width: 18px;
+    height: 18px;
+    fill: var(--on-surface-variant);
+    pointer-events: none;
+}
+
+.search-input {
+    width: 100%;
+    height: 40px;
+    padding: 0 40px 0 38px;
+    border: 1px solid var(--outline);
+    border-radius: 20px;
+    background: var(--surface);
+    color: var(--on-surface);
+    font: inherit;
+    font-size: 14px;
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.search-input::placeholder {
+    color: var(--on-surface-variant);
+}
+
+/*
+  清空按钮。放右侧绝对定位，与搜索图标对称。
+  input[type=search] 在 Safari/WebKit 上有自带的清除按钮，要关掉，
+  否则会出现两个叉。
+*/
+.search-input::-webkit-search-cancel-button,
+.search-input::-webkit-search-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.search-clear {
+    position: absolute;
+    right: 6px;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--on-surface-variant);
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.search-clear[hidden] {
+    display: none;
+}
+
+.search-clear svg {
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+}
+
+/* 文献列表 */
+.doc-list {
+    list-style: none;
+    flex: 1 1 auto;
+    min-height: 0;
+    margin: 0;
+    padding: 0 16px 16px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+
+.doc-list:empty {
+    display: none;
+}
+
+/* 一张文献卡片：左缩略图 / 右信息 */
+.doc-card {
+    display: flex;
+    align-items: stretch;
+    gap: 12px;
+    margin-bottom: 10px;
+    padding: 10px;
+    border: 1px solid var(--outline);
+    border-radius: 14px;
+    background: var(--surface);
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 120ms ease, opacity 120ms ease, background-color 160ms ease;
+}
+
+.doc-card:active {
+    transform: scale(0.99);
+    opacity: 0.75;
+}
+
+/* 多选模式下被选中的卡片 */
+.doc-card.is-selected {
+    border-color: var(--nav-active);
+    background: var(--surface-raised);
+}
+
+/*
+  缩略图容器。
+  ⚠️ 固定宽高比（A4 竖版约 1:1.414），并用 object-fit: cover ——
+     不同尺寸的 PDF 页面都能整齐排列，不会因为长宽比差异让卡片高低不齐。
+*/
+.doc-thumb {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 56px;
+    height: 78px;
+    border-radius: 6px;
+    background: var(--surface-raised);
+    color: var(--on-surface-variant);
+    overflow: hidden;
+}
+
+.doc-thumb img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    /* cover 而不是 contain：留白会让列表看起来不齐 */
+    object-fit: cover;
+    object-position: top center;
+}
+
+.doc-thumb svg {
+    width: 26px;
+    height: 26px;
+    fill: currentColor;
+    opacity: 0.5;
+}
+
+.doc-info {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+}
+
+/*
+  标题最多两行。
+  ⚠️ 用 -webkit-line-clamp 而不是单行省略号 ——
+     学术文献标题普遍很长，只显示一行会砍掉大半信息。
+*/
+.doc-title {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.35;
+    color: var(--on-surface);
+}
+
+.doc-meta {
+    display: block;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--on-surface-variant);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 元数据缺失时留空 —— 空行会让卡片看起来残缺 */
+.doc-meta:empty {
+    display: none;
+}
+
+/* 空状态 */
+.empty-state {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 32px 64px;
+    text-align: center;
+}
+
+.empty-state[hidden] {
+    display: none;
+}
+
+.empty-icon {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 6px;
+    fill: var(--on-surface-variant);
+    opacity: 0.4;
+}
+
+.empty-text {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--on-surface);
+}
+
+.empty-hint {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--on-surface-variant);
+}
+
+/*
+  批量操作条：固定在底部导航之上。
+  z-index 5 —— 高于内容、低于弹层（11+），
+  这样批量删除的确认框能盖住它。
+*/
+.bulk-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px calc(12px + var(--safe-bottom));
+    background: var(--nav-bg);
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.18);
+}
+
+.bulk-bar[hidden] {
+    display: none;
+}
+
+.bulk-count {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--on-surface);
+    font-variant-numeric: tabular-nums;
+}
+
+.bulk-spacer {
+    flex: 1 1 auto;
 }
 
 /* --------------------------------------------------------------------------
@@ -476,6 +785,19 @@ body {
 /* --------------------------------------------------------------------------
    个人页 · 账户信息卡片
    -------------------------------------------------------------------------- */
+
+/*
+  ⚠️ 账户页需要自己滚动。
+     `.page` 改成 overflow: hidden 是为了文库页（搜索栏固定 + 列表内部滚），
+     但账户页内容是长列表，必须能滚 —— 所以这里补回来。
+     用 :has() 精确命中「包含 account-card 的那个 page」，
+     避免给 .page 加类名改动 HTML。
+*/
+#page-profile {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
 
 .account-card {
     display: flex;

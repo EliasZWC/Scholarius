@@ -27,6 +27,15 @@ class WebAppBridge(
     private val onDownloadUpdate: () -> Unit,
     private val onInstallUpdate: () -> Unit,
     private val onCloseUpdate: () -> Unit,
+    // --- 文献库 ---
+    /** 取某篇文献的缩略图（base64 data URL）。**同步返回**，网页需要立即渲染 */
+    private val onGetThumbnail: (String) -> String,
+    /** 删除文献（支持批量） */
+    private val onDeleteDocs: (List<String>) -> Unit,
+    /** 改文献元数据（null 表示不改该字段） */
+    private val onUpdateDoc: (String, String?, String?, String?) -> Unit,
+    /** 刷新文献列表（网页主动拉一次） */
+    private val onRequestLibrary: () -> Unit,
     // --- 临时诊断（v0.0.6，定位完删）---
     private val onTrace: (String) -> Unit,
 ) {
@@ -70,6 +79,50 @@ class WebAppBridge(
     @JavascriptInterface
     fun finishSplash() {
         onFinishSplash()
+    }
+
+    // -----------------------------------------------------------------------
+    // 文献库
+    // -----------------------------------------------------------------------
+
+    /**
+     * 取某篇文献的缩略图，返回 `data:image/png;base64,...`。
+     *
+     * ⚠️ 这是**同步返回**的：网页 `img.src = ... ` 需要立即拿到值，
+     *    走异步回调（原生推过去）会导致图片先空后闪，也会让代码变复杂。
+     *    缩略图只有几十 KB，同步读一次可接受。
+     *    没有缩略图时返回空串，网页显示占位图。
+     */
+    @JavascriptInterface
+    fun getThumbnail(id: String): String = onGetThumbnail(id)
+
+    /** 删除若干文献（长按菜单 / 批量删除用） */
+    @JavascriptInterface
+    fun deleteDocs(idsJson: String) {
+        onDeleteDocs(parseIdArray(idsJson))
+    }
+
+    /**
+     * 改文献的标题 / 作者 / 发表物。
+     * 字段传 null 表示不改；传空串表示清空。
+     */
+    @JavascriptInterface
+    fun updateDoc(id: String, title: String?, author: String?, venue: String?) {
+        onUpdateDoc(id, title, author, venue)
+    }
+
+    /** 网页主动拉一次文献列表（比如从别的页面回到文库时） */
+    @JavascriptInterface
+    fun requestLibrary() {
+        onRequestLibrary()
+    }
+
+    /** 把 JSON 数组字符串解成 id 列表；解析失败返回空列表 */
+    private fun parseIdArray(json: String): List<String> = try {
+        val array = org.json.JSONArray(json)
+        (0 until array.length()).mapNotNull { array.optString(it).takeIf { s -> s.isNotEmpty() } }
+    } catch (t: Throwable) {
+        emptyList()
     }
 
     // -----------------------------------------------------------------------

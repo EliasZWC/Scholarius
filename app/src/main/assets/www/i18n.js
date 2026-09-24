@@ -18,9 +18,24 @@
             'nav.explore': 'Explore',
             'nav.profile': 'Profile',
 
+            // --- 文库页 ---
+            'vault.searchPlaceholder': 'Search title, author, venue',
+            'vault.import': 'Import PDF',
+            'vault.empty': 'No documents yet',
+            'vault.emptyHint': 'Tap + to import a PDF',
+            'vault.noResult': 'Nothing matches your search',
+            'vault.pages': '{n} pages',
+            'vault.deleteTitle': 'Delete?',
+            'vault.deleteMessage': '{n} document(s) will be removed from this device. This cannot be undone.',
+            'vault.deleteOneMessage': '"{title}" will be removed from this device. This cannot be undone.',
+            'vault.importFailed': 'Could not import this file. Is it a valid PDF?',
+            'vault.readerSoon': 'Reader coming soon',
+
             'action.cancel': 'Cancel',
             'action.confirm': 'Confirm',
             'action.copy': 'Copy',
+            'action.delete': 'Delete',
+            'action.clear': 'Clear',
 
             // --- 登录页 ---
             'login.intro': 'Sign in with GitHub to Continue',
@@ -97,9 +112,24 @@
             'nav.explore': '探索',
             'nav.profile': '个人',
 
+            // --- 文库页 ---
+            'vault.searchPlaceholder': '搜索标题、作者、发表物',
+            'vault.import': '导入 PDF',
+            'vault.empty': '还没有文献',
+            'vault.emptyHint': '点右上角 + 导入 PDF',
+            'vault.noResult': '没有匹配的文献',
+            'vault.pages': '{n} 页',
+            'vault.deleteTitle': '删除？',
+            'vault.deleteMessage': '将从本机移除 {n} 篇文献，此操作不可撤销。',
+            'vault.deleteOneMessage': '将从本机移除《{title}》，此操作不可撤销。',
+            'vault.importFailed': '无法导入该文件，请确认是有效的 PDF。',
+            'vault.readerSoon': '阅读页即将推出',
+
             'action.cancel': '取消',
             'action.confirm': '确定',
             'action.copy': '复制',
+            'action.delete': '删除',
+            'action.clear': '清空',
 
             'login.intro': '用 GitHub 登录以继续',
             'login.action': '用 GitHub 登录',

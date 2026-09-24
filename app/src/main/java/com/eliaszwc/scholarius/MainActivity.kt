@@ -1,6 +1,8 @@
 package com.eliaszwc.scholarius
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -8,16 +10,20 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.OpenableColumns
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.addCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -27,6 +33,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewAssetLoader
 import java.io.File
+import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 
 /**
@@ -37,7 +44,8 @@ import kotlin.math.roundToInt
  * 等 Web API 可以正常工作（直接用 `file://` 会有诸多限制）。
  *
  * 与 Livolog 的差异（v0.0.1）：暂不含 CSV 落盘、应用内更新、崩溃诊断 —— 这些在后续版本按需补。
- */class MainActivity : AppCompatActivity() {
+ */
+class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
 
@@ -60,6 +68,41 @@ import kotlin.math.roundToInt
      * 见 [passThroughBack] 对「一次置 false 就永久失效」的说明。
      */
     private var backCallback: OnBackPressedCallback? = null
+
+    /**
+     * 网页里 file input 的回调。必须持有到用户选完文件再交还，
+     * 否则系统会因为回调被回收而不返回结果（表现为选完文件没反应）。
+     */
+    private var pendingFileCallback: ValueCallback<Array<Uri>>? = null
+
+    /**
+     * 文件选择器。用 Activity Result API 而不是 `onActivityResult` ——
+     * 后者需要自己管理 requestCode，且在新版本已被废弃。
+     */
+    private val filePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val callback = pendingFileCallback
+        pendingFileCallback = null
+
+        if (callback == null) {
+            // 没有待处理的回调（理论上不该发生），忽略即可
+            return@registerForActivityResult
+        }
+
+        val uri = result.data?.data
+        if (result.resultCode != RESULT_OK || uri == null) {
+            /*
+              ⚠️ 用户取消时必须回调一个**空数组**，不能什么都不传也不回调 null。
+                 `onReceiveValue(null)` 才能让网页的 change 事件正常收尾；
+                 不回调会让网页永远等在那里（下次再选文件就失效了）。
+            */
+            callback.onReceiveValue(null)
+            return@registerForActivityResult
+        }
+
+        importPdf(uri, callback)
+    }
 
     /**
      * 网页的启动动画还在演（或还没结束）时为 true。
@@ -336,6 +379,19 @@ import kotlin.math.roundToInt
                 onDownloadUpdate = { runOnUiThread { startUpdateDownload() } },
                 onInstallUpdate = { runOnUiThread { installDownloaded() } },
                 onCloseUpdate = { runOnUiThread { closeUpdateFlow() } },
+                // --- 文献库 ---
+                /*
+                  ⚠️ getThumbnail 必须**同步**返回（网页 img.src 要立即拿到值），
+                     所以不能包 runOnUiThread —— 它只是读一个文件，
+                     而且 JavascriptInterface 的调用本身就在 WebView 的
+                     JavaBridge 线程上，不阻塞主线程。
+                */
+                onGetThumbnail = { id -> thumbnailFor(id) },
+                onDeleteDocs = { ids -> runOnUiThread { deleteDocs(ids) } },
+                onUpdateDoc = { id, title, author, venue ->
+                    runOnUiThread { updateDoc(id, title, author, venue) }
+                },
+                onRequestLibrary = { runOnUiThread { pushLibraryToWeb() } },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,
@@ -353,6 +409,54 @@ import kotlin.math.roundToInt
             mediaPlaybackRequiresUserGesture = true
             textZoom = 100
             cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+        }
+
+        /*
+          文件选择器：`<input type="file">` 的点击会走这里。
+
+          ⚠️ 不设置 WebChromeClient 时，网页里点 file input **毫无反应**
+             （不报错、不弹窗），这是 WebView 的默认行为。
+             导入 PDF 依赖它，所以必须补上。
+
+          ⚠️ 用 `ACTION_OPEN_DOCUMENT`（SAF）而不是 `ACTION_GET_CONTENT`：
+             SAF 是文档选择器、支持任意来源目录、给的是可持久化的 URI，
+             且**不需要任何存储权限**。
+        */
+        webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                view: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?,
+            ): Boolean {
+                // 上一次的请求还没结束就先取消，避免回调悬挂
+                pendingFileCallback?.onReceiveValue(null)
+                pendingFileCallback = filePathCallback
+
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    /*
+                      只接受 PDF。
+                      ⚠️ 用 `application/pdf` 而不是 `*/*` ——
+                         前者让系统只列出 PDF，用户不会选错；
+                         后者要靠应用自己判断，体验差。
+                    */
+                    type = "application/pdf"
+                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/pdf"))
+                }
+
+                return try {
+                    filePickerLauncher.launch(intent)
+                    true
+                } catch (t: ActivityNotFoundException) {
+                    Log.w(TAG, "系统没有文件选择器", t)
+                    pendingFileCallback = null
+                    false
+                } catch (t: Throwable) {
+                    Log.w(TAG, "打开文件选择器失败", t)
+                    pendingFileCallback = null
+                    false
+                }
+            }
         }
 
         webViewClient = object : WebViewClient() {
@@ -415,6 +519,8 @@ import kotlin.math.roundToInt
                 */
                 safely("推送版本号") { pushVersionToWeb() }
                 safely("推送账号") { pushAccountToWeb() }
+                // 文献列表：本地数据，不依赖网络，但读文件可能失败，同样要隔离
+                safely("推送文献库") { pushLibraryToWeb() }
                 if (::layoutRoot.isInitialized) {
                     ViewCompat.requestApplyInsets(layoutRoot)
                 }
@@ -838,6 +944,159 @@ import kotlin.math.roundToInt
             evaluateInWeb(script)
         } else {
             runOnUiThread { evaluateInWeb(script) }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 文献库
+    // -----------------------------------------------------------------------
+
+    /**
+     * 导入一个选中的 PDF。
+     *
+     * 流程：取文件名 → 后台复制+渲染缩略图+提取元数据 → 把结果推给网页。
+     *
+     * ⚠️ 复制与渲染**必须在后台线程**：一个 20MB 的 PDF 复制加渲染首页
+     *    在主线程会冻住界面好几秒，用户会以为卡死了。
+     *
+     * ⚠️ 无论成功失败都要 `callback.onReceiveValue(...)`，
+     *    否则网页的 file input 会永远处于等待状态。
+     */
+    private fun importPdf(uri: Uri, callback: ValueCallback<Array<Uri>>) {
+        val displayName = queryDisplayName(uri)
+        debugLog("[library] importing: $displayName")
+
+        thread {
+            val doc = LibraryStore.import(
+                context = this,
+                displayName = displayName,
+                openStream = {
+                    try {
+                        contentResolver.openInputStream(uri)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "打开选中文件失败", t)
+                        null
+                    }
+                },
+            )
+
+            runOnUiThread {
+                /*
+                  把 URI 交还给网页。
+                  ⚠️ 同时推一份文献列表给网页 —— 网页拿不到 content:// URI 的
+                     实际内容（那是原生侧的私有授权），由原生负责读、只把
+                     展示所需的数据推过去。
+                */
+                callback.onReceiveValue(arrayOf(uri))
+
+                if (doc == null) {
+                    debugLog("[library] import failed: $displayName")
+                    evaluateInWeb(
+                        "window.ScholariusShell && window.ScholariusShell.onImportFailed();"
+                    )
+                } else {
+                    debugLog(
+                        "[library] imported '${doc.title}' pages=${doc.pages} " +
+                            "size=${doc.size}"
+                    )
+                    pushLibraryToWeb()
+                }
+            }
+        }
+    }
+
+    /** 取选中文件的显示名（SAF 的 URI 没有文件名，要从 ContentResolver 查） */
+    private fun queryDisplayName(uri: Uri): String {
+        try {
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0 && cursor.moveToFirst()) {
+                    return cursor.getString(index) ?: "document.pdf"
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "查询文件名失败", t)
+        }
+        return uri.lastPathSegment ?: "document.pdf"
+    }
+
+    /**
+     * 把文献列表推给网页。
+     *
+     * ⚠️ **缩略图不在这里推**。缩略图是 base64 的 PNG（每张几十 KB），
+     *    几十篇就是几百 KB，一次性塞进 evaluateJavascript 的字符串里
+     *    在部分机型会有问题，也拖慢首屏。
+     *    改为：列表只推元数据（很小），缩略图由网页按需调用
+     *    [thumbnailFor] 单独取。
+     *
+     * ⚠️ **PDF 文件路径也不推**。网页拿不到应用私有目录（WebView 的
+     *    `allowFileAccess = false`），阅读页需要的是一条受控通道 ——
+     *    那部分下个版本设计时再定。
+     */
+    private fun pushLibraryToWeb() {
+        if (!::webView.isInitialized || !pageReady) return
+
+        val docs = LibraryStore.list(this)
+        val array = org.json.JSONArray()
+        docs.forEach { doc ->
+            array.put(org.json.JSONObject().apply {
+                put("id", doc.id)
+                put("title", doc.title)
+                put("author", doc.author)
+                put("venue", doc.venue)
+                put("addedAt", doc.addedAt)
+                put("pages", doc.pages)
+                put("size", doc.size)
+                put("sourceName", doc.sourceName)
+                // 有缩略图才标 true，网页据此决定要不要来取
+                put(
+                    "hasThumb",
+                    LibraryStore.thumbFile(this@MainActivity, doc.id).exists()
+                )
+            })
+        }
+
+        evaluateInWeb(
+            "window.ScholariusShell && window.ScholariusShell.setLibrary(${array});"
+        )
+    }
+
+    /**
+     * 取某篇文献的缩略图（base64）。
+     * 网页按需请求 —— 列表里可见的那几张才取，避免一次推几百 KB。
+     */
+    private fun thumbnailFor(id: String): String {
+        val file = LibraryStore.thumbFile(this, id)
+        if (!file.exists()) return ""
+        return try {
+            "data:image/png;base64," + android.util.Base64.encodeToString(
+                file.readBytes(), android.util.Base64.NO_WRAP
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "读取缩略图失败：$id", t)
+            ""
+        }
+    }
+
+    /** 删除文献（支持批量）。删完重新推列表。 */
+    private fun deleteDocs(ids: List<String>) {
+        if (ids.isEmpty()) return
+        thread {
+            val removed = LibraryStore.delete(this, ids)
+            runOnUiThread {
+                debugLog("[library] deleted $removed doc(s)")
+                pushLibraryToWeb()
+            }
+        }
+    }
+
+    /** 改文献元数据。改完重新推列表。 */
+    private fun updateDoc(id: String, title: String?, author: String?, venue: String?) {
+        thread {
+            val ok = LibraryStore.update(this, id, title, author, venue)
+            runOnUiThread {
+                if (ok) pushLibraryToWeb()
+            }
         }
     }
 

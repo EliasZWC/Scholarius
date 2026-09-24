@@ -43,6 +43,9 @@
     });
 
     var currentTab = null;
+
+    /** 上一个 tab。用于检测「从文库页切走」，好让文库收尾（退多选） */
+    var previousTab = null;
     /** 原生推过来的登录状态；null 表示还没收到 */
     var signedIn = null;
     /** 启动动画是否已播完 */
@@ -188,6 +191,23 @@
         onUpdateReady: onUpdateReady,
         onUpdateFailed: onUpdateFailed,
         /*
+          文献库：原生推列表过来。
+          ⚠️ 与「更新」那一组一样，转发**必须 return** 下层结果，
+             否则 evaluateInWebChecked 的注入回报永远是 undefined。
+        */
+        setLibrary: function (docs) {
+            if (window.ScholariusVault) {
+                return window.ScholariusVault.setLibrary(docs);
+            }
+            return 'no-vault-module';
+        },
+        onImportFailed: function () {
+            if (window.ScholariusVault) {
+                return window.ScholariusVault.onImportFailed();
+            }
+            return 'no-vault-module';
+        },
+        /*
           原生 → 网页的诊断日志入口。
           原生日志只会进 logcat，手机上根本看不到；
           这个接口让原生把关键信息直接画到屏幕上。
@@ -230,7 +250,27 @@
                 : name;
         }
 
+        /*
+          导入按钮只在文库页显示。
+          用 class 切 visibility（不是 display）—— 保留占位宽度，
+          否则标题会因为右侧变空而横移。
+        */
+        var importBtn = document.getElementById('vault-import');
+        if (importBtn) {
+            importBtn.classList.toggle('is-hidden', name !== 'vault');
+        }
+
+        /*
+          离开文库页时通知它收尾（退出多选模式）。
+          否则切到别的页再回来，批量操作条还在，但选中项已经不显示在屏幕上。
+        */
+        if (previousTab === 'vault' && name !== 'vault' &&
+            window.ScholariusVault && window.ScholariusVault.onLeave) {
+            window.ScholariusVault.onLeave();
+        }
+
         currentTab = name;
+        previousTab = name;
 
         try {
             localStorage.setItem(STORAGE_KEY, name);
@@ -293,6 +333,9 @@
         }
         if (window.ScholariusLogin) {
             window.ScholariusLogin.init();
+        }
+        if (window.ScholariusVault) {
+            window.ScholariusVault.init();
         }
         if (window.ScholariusUpdate) {
             window.ScholariusUpdate.init();
