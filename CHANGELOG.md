@@ -4,6 +4,109 @@
 
 ---
 
+## [0.1.5] - 2026-09-24
+
+### 新增：文献详情页（元数据编辑）
+
+点阅读页右上角的「详情」按钮进入。**所有字段都可留空** ——
+PDF 抓不到的值留空即可，不设必填、不阻止保存。
+
+| 类别 | 专属字段 |
+|---|---|
+| 期刊 | 期刊名 / 卷 / 期 / 起始页 / 终止页 / DOI |
+| 会议 | 会议名 / 简称 / 地点 / 页码 / DOI |
+| 预印本 | 平台 / 编号 / DOI |
+| 专著 | 出版社 / ISBN / 版次 |
+| 学位论文 | 机构 / 学位类型（下拉） |
+| 报告 | 机构 / 报告编号 |
+| 未判定 | 仅通用字段 |
+
+通用字段：标题 / 作者 / 日期 / 短标题。**发表物类别是第一项** ——
+选定后下面的字段表跟着变（Zotero 的逻辑）。
+
+### 新增：短标题（Short Title）
+
+填了之后**顶替列表卡片①行的标题**。与「发表物简称」**不是一回事**：
+
+- **短标题** = 这一篇文献标题的短形式，一篇一个值，存在 `doc.venueShort`；
+- **发表物简称** = 会议/期刊名字的缩写（NIPS、CVPR），
+  是「设置 → 发表物简称」里的全局映射表，作用在卡片③行。
+
+英文标签用 `Short Title` 而非空泛的 `Short Name`
+（`shorttitle` 是 BibTeX / Zotero 的标准字段名）。
+
+### 新增：DOI 结构化输入
+
+DOI 有固定语法（ISO 26324）：`10.<注册机构号>/<后缀>`。
+输入框据此拆成两段，`10.` 作为不可编辑的装饰前缀：
+
+```
+10. [ 1038 ] / [ nature14539 ]
+```
+
+存储值仍是完整串（`10.1038/nature14539`），**老数据无需迁移**。
+
+> ⚠️ 粘贴完整 DOI（含 `https://doi.org/...` 或 `doi:` 前缀）到任一格时，
+> 会先解析再**分发到两格**。早期只做「剥掉非数字」会把斜杠删除，
+> 静默损坏成 `10.10103814539`。
+
+### 新增：`PdfMeta` 深度元数据提取
+
+- **年份**：从 XMP `xmp:CreateDate` 与 `Subject`/`Keywords` 提取，
+  1900–当前年之间才算合法（防把卷号、页码当年份）。
+- **发表物类别**：按关键词判定 journal / conference / preprint / book /
+  thesis / report，判不出归 `unknown`。
+- **载体名清洗**：剥掉 ACL 分类串（`[en.us]` 之类）、URL、超长噪声。
+
+### 修复：卡片载体名永远不显示用户配的简称
+
+`vault.js` 读的是 `doc.venueShort`（那是**短标题**），
+而设置里的映射表由 `ScholariusShortcut.lookup()` 提供 ——
+**这个函数定义了却从没被调用过**，用户在设置里配的简称永远不生效。
+已改为调 `lookup()`。
+
+### 修复：搜索不到短标题
+
+短标题顶替卡片标题后，屏幕上显示的是它，但 `matches()` 只搜 `doc.title` ——
+**看得到的字搜不出来**。已把 `doc.venueShort` 加入搜索范围。
+
+### 修复：详情页各项间距不一致
+
+用户反馈「类型文字与短标题文字的距离，和短标题与标题文字之间的间隔不一样」。
+实测 **31px vs 20px**（差 11px）。根因是**间距有多个来源互相叠加**：
+
+- Type 行与 Short Title 行各带 `padding: 12px`，在交界处叠成 26px；
+- Short Title 行与字段表交界处只有 4px；
+
+且 Short Title 行的输入框带 `padding: 6px 0`（行高 30px vs 23px），
+`align-items: center` 把多出的 7px 摊到标签上下，让标签位置随行高漂移。
+
+**改法：相邻两项的距离只能有一个来源。**
+行不再自带纵向 padding / min-height；输入框纵向 padding 归零；
+间距统一由容器 `gap: 16px` 提供。结果 **16px vs 16px**。
+
+### 修改：排列细节
+
+- 日期输入：**8 个单字圆角框占满一行**（`YYYYMMDD` 逐位提示）。
+  连打 8 位、退格回退、粘贴 `2015-06-24` 全部支持。
+- 页码拆成「起始页 / 终止页」两个独立输入框（原为单个自由文本框）。
+- 短标题输入框**去掉下划线**，改为「左标签 + 右对齐值 + 空值时占位提示」。
+- 所有空输入框都有**带真实示例值**的占位提示（`e.g. 521` 而非「卷号」）。
+- 「文件页数」改为**单行**（标签左、值右），与其余项等高。
+
+> ⚠️ 「文件页数」原本因 `min-height: 48px` 而虚高 25px ——
+> 该值对只占 23px 的单行项是纯空气，正是"有的项松、有的项挤"的观感来源。
+
+### 修复：切语言后占位提示不刷新
+
+标签走 `data-i18n` 属性由 DOM 扫描更新，而 placeholder 是 JS 按当前语言写入的
+（不能写死在 HTML，否则切语言不更新）——它不在扫描范围内。
+语言切换的监听器漏调了 `syncShortName()`，于是同一行里中英混排。
+
+> 这个 bug 一直存在，只是早期中英的提示串相同（都是 `e.g. NIPS`）看不出来。
+
+---
+
 ## 关于 0.0.4 – 0.0.13 的无效迭代（记录在案，勿重犯）
 
 启动页「一闪而过」**真正的唯一原因**是：
@@ -672,3 +775,23 @@ com.github.android 已安装=false        ← getApplicationInfo 查不到
 [0.0.17]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.17
 [0.0.18]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.18
 [0.0.19]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.0.19
+
+<!--
+  ⚠️ 0.1.0 – 0.1.4 这五个版本**没有在本文件里留下条目**。
+
+     它们确实发布了（tag 都在），但改动只写进了 commit message。
+     补写不划算 —— 那些改动的内容已经沉在 v0.1.5 之前的状态里，
+     回头凭 commit 反推一份"看起来完整"的日志只会写进推测，
+     反而降低这份文件的可信度。
+
+     所以这里**只补链接**，不补内容 —— 有 tag 就能查 commit 历史。
+     若日后有人问「0.1.3 改了什么」，答案在 git log 里，不在本文件。
+
+     ⚠️ 从这里开始，发版必须同步写条目（release.yml 的说明里也要求）。
+-->
+[0.1.0]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.1.0
+[0.1.1]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.1.1
+[0.1.2]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.1.2
+[0.1.3]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.1.3
+[0.1.4]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.1.4
+[0.1.5]: https://github.com/EliasZWC/Scholarius/releases/tag/v0.1.5

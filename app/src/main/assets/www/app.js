@@ -210,15 +210,36 @@
         /*
           阅读页正文。text 为 null 表示提取失败或无文本。
           ⚠️ 必须 return，理由同上面几个转发函数。
+
+          v0.1.5 新增两个参数：
+           outline  PDF 自带大纲 [{level,title,page}]，可能为 null
+           meta     行排版元数据 {fonts:[名], lines:[[字体下标,字号x10,页]]}
+                    靠它识别标题（Nature/NIPS 这类标题只靠字体区分）
         */
-        readerText: function (id, text) {
+        readerText: function (id, text, outline, meta) {
             if (!window.ScholariusReader) {
                 return 'no-reader-module';
             }
             if (text === null || text === undefined) {
                 return window.ScholariusReader.onExtractFailed(id);
             }
-            return window.ScholariusReader.setText(id, text);
+            return window.ScholariusReader.setText(id, text, outline, meta);
+        },
+        /*
+          原生 → 网页：某篇文献的元数据保存完了。
+          详情页据此收起面板并提示「已保存」。
+
+          ⚠️ 为什么不让网页「点保存后就当成功」：
+             保存要写索引文件，可能失败（磁盘满、文件被占用）。
+             前端自己宣布成功会撒谎 —— 列表里显示新标题、
+             重启后又变回旧的，用户会以为数据丢了。
+             所以以原生回报为准。
+        */
+        docUpdated: function (id, ok) {
+            if (window.ScholariusVault) {
+                return window.ScholariusVault.onDocUpdated(id, ok);
+            }
+            return 'no-vault-module';
         },
         /*
           原生 → 网页的诊断日志入口。
@@ -349,6 +370,24 @@
         }
         if (window.ScholariusVault) {
             window.ScholariusVault.init();
+        }
+        /*
+          ⚠️ 简称模块必须在 vault.js **之后**初始化 ——
+             vault 的卡片渲染会调 ScholariusShortcut.lookup()，
+             虽然它自带空表兜底（查不到返回空串），
+             但先就位能让首屏卡片一次就带上简称，不用重绘。
+        */
+        if (window.ScholariusShortcut) {
+            window.ScholariusShortcut.init();
+        }
+        /*
+          ⚠️ detail.js 要在 reader.js **之前**初始化。
+             reader 的详情按钮回调会调 ScholariusDetail.open() ——
+             虽然那是事件触发、晚于两者初始化，
+             但 reader.init() 里若做一次性绑定，先就位更稳。
+        */
+        if (window.ScholariusDetail) {
+            window.ScholariusDetail.init();
         }
         if (window.ScholariusReader) {
             window.ScholariusReader.init();
@@ -704,7 +743,23 @@
      */
     function handleBack() {
         /*
-          ① 阅读页最先处理。
+          ⓪ 文献详情页最先处理 —— **它盖在阅读页之上**。
+
+             ⚠️ 顺序很容易搞错：详情页是从阅读页里点开的，
+                若把阅读页排在前面，按返回键会先收起阅读页的菜单，
+                而详情页（视觉上在最上面）纹丝不动 ——
+                用户看到的是「返回键没反应，但底下的东西变了」。
+
+             判据：**按视觉层级从上往下排**，不是按谁先打开。
+        */
+        if (window.ScholariusDetail && window.ScholariusDetail.isOpen &&
+            window.ScholariusDetail.isOpen()) {
+            window.ScholariusDetail.close();
+            trace('back', 'closed detail page');
+            return true;
+        }
+
+        /* ① 阅读页最先处理。
              它的逻辑是「菜单开着就先关菜单，否则关阅读页」，
              即返回键要按两次才退出阅读页 —— 与主流阅读器一致。
         */

@@ -394,6 +394,15 @@
             reapplyAccountName();
         }
 
+        /*
+          ⚠️ 简称行的计数不在 data-i18n 词条里（它是动态值），
+             i18n.apply() 不会碰它 —— 切语言后要单独刷新，
+             否则中文用户切到英文后那行还写着「已保存 3 条」。
+        */
+        if (global.ScholariusShortcut) {
+            global.ScholariusShortcut.refresh();
+        }
+
         // 详情页里的值不在 data-i18n 词条里，i18n.apply() 不会碰它们；
         // 但名字/ID 是运行时数据，这里重绘一次保证与 currentXxx 一致
         renderDetail();

@@ -32,12 +32,18 @@ class WebAppBridge(
     private val onGetThumbnail: (String) -> String,
     /** 删除文献（支持批量） */
     private val onDeleteDocs: (List<String>) -> Unit,
-    /** 改文献元数据（null 表示不改该字段） */
-    private val onUpdateDoc: (String, String?, String?, String?) -> Unit,
     /** 刷新文献列表（网页主动拉一次） */
     private val onRequestLibrary: () -> Unit,
     /** 请求某篇文献的正文文本（阅读页用） */
     private val onRequestDocText: (String) -> Unit,
+    /**
+     * 改文献元数据。
+     *
+     * ⚠️ 第二个参数是 **JSON 对象字符串**（形如 `{"year":"2015"}`），
+     *    不是若干个具名参数 —— 字段集合会随版本增长，
+     *    固定参数签名意味着每加一个字段都要改桥。
+     */
+    private val onUpdateDoc: (String, String) -> Unit,
     // --- 临时诊断（v0.0.6，定位完删）---
     private val onTrace: (String) -> Unit,
 ) {
@@ -105,12 +111,25 @@ class WebAppBridge(
     }
 
     /**
-     * 改文献的标题 / 作者 / 发表物。
-     * 字段传 null 表示不改；传空串表示清空。
+     * 改文献的元数据。
+     *
+     * ⚠️ 用 **JSON 对象字符串**而不是固定参数。
+     *
+     *    原签名是 `(id, title, author, venue)` —— 只够改三样。
+     *    详情页要编辑二十多个字段（卷/期/页码/DOI/ISBN/学位类型…），
+     *    每加一个就改一次桥签名，前后端很容易错位。
+     *
+     *    现在语义与 `LibraryStore.update` 的 Map 一致：
+     *      · 出现的键 → 写成该值
+     *      · 值为空串 → 清空
+     *      · 没出现的键 → 保持原值
+     *    所以**加字段不用动原生代码**。
+     *
+     * @param patchJson 如 `{"title":"…","year":"2015","doi":"…"}`
      */
     @JavascriptInterface
-    fun updateDoc(id: String, title: String?, author: String?, venue: String?) {
-        onUpdateDoc(id, title, author, venue)
+    fun updateDoc(id: String, patchJson: String) {
+        onUpdateDoc(id, patchJson)
     }
 
     /** 网页主动拉一次文献列表（比如从别的页面回到文库时） */

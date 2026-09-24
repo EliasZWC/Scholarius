@@ -118,6 +118,7 @@
     var contentEl = null;
     var topEl = null;
     var backBtn = null;
+    var detailBtn = null;
     var bottomEl = null;
     var tocBtn = null;
     var settingsBtn = null;
@@ -176,6 +177,7 @@
         contentEl = document.getElementById('reader-content');
         topEl = document.getElementById('reader-top');
         backBtn = document.getElementById('reader-back');
+        detailBtn = document.getElementById('reader-detail');
         bottomEl = document.getElementById('reader-bottom');
         tocBtn = document.getElementById('reader-toc-btn');
         settingsBtn = document.getElementById('reader-settings-btn');
@@ -236,6 +238,28 @@
     function mountBack() {
         if (backBtn) {
             backBtn.addEventListener('click', close);
+        }
+
+        /*
+          详情按钮。
+
+          ⚠️ 打开详情页时**不关闭阅读页** ——
+             详情是盖在阅读页之上的一层，关掉详情又回到阅读页。
+             若先关阅读页，关完详情就回到文库了，用户得重新点进来。
+
+          ⚠️ 图标用 ScholariusUI.icon() 填，不写在 HTML 里 ——
+             图标路径只有 components.js 一处定义，避免两处不同步。
+        */
+        if (detailBtn) {
+            if (global.ScholariusUI) {
+                detailBtn.innerHTML = global.ScholariusUI.icon('moreHoriz');
+            }
+            detailBtn.addEventListener('click', function () {
+                if (global.ScholariusDetail && currentDoc) {
+                    detailBtn.setAttribute('aria-expanded', 'true');
+                    global.ScholariusDetail.open(currentDoc);
+                }
+            });
         }
     }
 
@@ -399,15 +423,30 @@
         contentEl.appendChild(hint);
     }
 
-    function showError() {
+    /**
+     * 显示一条错误提示。
+     *
+     * ⚠️ 必须区分**桥不可用**和**提取失败**，不能都报「无法提取文本」。
+     *
+     *    实测踩过：浏览器预览里没有原生桥，点卡片后显示
+     *    "Could Not Extract Text From This PDF." ——
+     *    于是排查方向全被带到 PDF 解析上，而真因是桥没注入。
+     *    两者的责任方、排查路径完全不同，报同一条文案就是误导。
+     *
+     * @param {string} reason 'no-bridge' | 'extract-failed'
+     */
+    function showError(reason) {
         if (!contentEl) {
             return;
         }
         contentEl.textContent = '';
         var hint = document.createElement('div');
         hint.className = 'reader-hint';
-        hint.textContent = t('reader.extractFailed');
+        hint.textContent = (reason === 'no-bridge')
+            ? t('reader.noBridge')
+            : t('reader.extractFailed');
         contentEl.appendChild(hint);
+        trace('reader:error', reason || 'extract-failed');
     }
 
     /** 请原生提取文本 */
@@ -426,8 +465,12 @@
      * ⚠️ 只接收**当前打开的那篇** —— 用户可能很快点开另一篇，
      *    上一篇的提取结果这时才回来。用 id 比对丢弃过期结果，
      *    否则会出现「打开了 B，显示的却是 A 的正文」。
+     *
+     * @param {string|null} text    正文纯文本
+     * @param {Array|null}  outline PDF 自带大纲 [{level,title,page}]；没有则为 null
+     * @param {Object|null} meta    行排版元数据 {fonts:[名], lines:[[字体下标,字号x10,页]]}
      */
-    function setText(id, text) {
+    function setText(id, text, outline, meta) {
         if (!currentDoc || currentDoc.id !== id) {
             trace('reader:text-stale', 'ignored ' + id);
             return;
@@ -452,17 +495,452 @@
             bodyEl.scrollTop = 0;
         }
 
-        // 正文到位后才解析目录（解析要看全文）
         textLines = text.split('\n');
+
+        /*
+          ══ 目录来源优先级（v0.1.5）══
+
+          ① PDF 自带大纲   —— 出版方标注的真实结构，最准
+          ② 字体识别        —— 靠字号/字体与正文的差异找标题
+          ③ 文本启发式      —— 看 "1 Introduction" 这种形状
+
+          实测（LeCun/Bengio/Hinton, Nature 2015）：
+              ① 0 条（HAL 版没做书签）
+              ② 7 条，全部正确
+              ③ 0 条  ← 用户看到的「没有提取到任何目录」
+
+          所以 ② 是解决该问题的关键，不是可选优化。
+        */
+        var fromOutline = tocFromOutline(outline, textLines);
+        if (fromOutline && fromOutline.length) {
+            toc = fromOutline;
+            trace('reader:toc', toc.length + ' entries (outline)');
+            return;
+        }
+
+        var fromFont = tocFromFonts(meta, textLines);
+        if (fromFont && fromFont.length) {
+            toc = fromFont;
+            trace('reader:toc', toc.length + ' entries (font)');
+            return;
+        }
+
         toc = buildToc(textLines);
-        trace('reader:toc', toc.length + ' entries');
+        trace('reader:toc', toc.length + ' entries (heuristic)');
     }
+
+    /**
+     * 按**字体/字号**识别标题。
+     *
+     * ══ 原理 ══
+     *
+     * 论文排版里，章节标题与正文的区别几乎总是体现在字体上：
+     *   · 更大字号（本书类、报告）
+     *   · 粗体（Nature / 多数期刊）
+     *   · 不同字族（LaTeX 的 \section 用 sans 或 bold）
+     *
+     * 而**正文行永远是那个出现次数最多的字号 + 字族**。
+     * 所以：先统计出「正文基线」，再把显著偏离基线的行当标题。
+     *
+     * 实测（Nature 2015, LeCun et al.）：
+     *   正文 = MinionPro-Regular 9.3pt（19958 字符）
+     *   标题 = GlosaMath-Bold   10.0pt（7 个小节标题，全部命中，无噪声）
+     *
+     * @param {Object|null} meta  {fonts:[名], lines:[[fontIdx, sizeX10, page]]}
+     * @param {string[]}    lines 正文行（与 meta.lines 下标一一对应）
+     * @returns {Array|null} 目录条目；无法判断时返回 null 让调用方退回启发式
+     */
+    function tocFromFonts(meta, lines) {
+        if (!meta || !meta.lines || !meta.lines.length) return null;
+        if (!lines || !lines.length) return null;
+
+        var fonts = meta.fonts || [];
+        var rows = meta.lines;
+
+        /*
+          ① 统计基线：哪个字号出现最多（按**字符数**加权，不是行数）。
+
+          ⚠️ 必须按字符数加权。
+             正文的行数虽多，但短行（标题、图注、表格）也会拉高计数；
+             按字符数统计才能真实反映「正文用的多大字号」。
+        */
+        var sizeChars = {};
+        for (var i = 0; i < rows.length && i < lines.length; i++) {
+            var sz = rows[i][1];
+            if (!sz) continue;
+            var n = (lines[i] || '').length;
+            if (!n) continue;
+            sizeChars[sz] = (sizeChars[sz] || 0) + n;
+        }
+
+        var bodySize = 0;
+        var best = -1;
+        for (var k in sizeChars) {
+            if (sizeChars[k] > best) {
+                best = sizeChars[k];
+                bodySize = parseFloat(k);
+            }
+        }
+        if (!bodySize) return null;
+
+        /*
+          ② 找「粗体族」。
+             粗体是期刊排版最主要的标题信号，而且它与正文字号**相同**
+             （Nature: 两者都约 10pt），所以只靠字号判不出来。
+
+          ⚠️ **不能只匹配 "bold"**。实测踩过的坑：
+             · LaTeX 的粗体是 `CMBX10`（Computer Modern Bold eXtended）——
+               字体名里根本没有 "bold" 这个词。
+             · `NimbusRomNo9L-Medi` 的 "Medi" 是 Medium，即 Nimbus 的粗体档；
+               对应的常规体是 `NimbusRomNo9L-Regu`。
+             · LaTeX 数学字体 `CMMI10` / `CMSY10` 也必须排除 ——
+               它们是符号字体，会命中大量公式碎片。
+
+             所以判据写成两组：
+               ① 名字里含粗体语义（bold/black/heavy/semibold/medi）
+               ② LaTeX 的 CMBX（含 CMBX 前缀）
+             并**显式排除**已知的符号/斜体/常规字体。
+        */
+        var BOLD_RE = /bold|black|heavy|semibold|demibold|-medi\b|medi$/i;
+        var LATEX_BOLD_RE = /^CMBX/i;
+        /*
+          ⚠️ 排除清单里**不能写裸 `math`**。
+             实测踩过：Nature 的标题字体是 `GlosaMath-Bold`，
+             含 "Math" 但它是货真价实的粗体标题字体；
+             一刀切排除会把这篇 7 个标题全部漏掉。
+             数学符号字体用 `^CM(SY|MI|EX)` 精确匹配即可 ——
+             LaTeX 的符号字体就是这几个前缀，不需要泛化到 "math" 这个词。
+        */
+        var NEVER_BOLD_RE = /italic|oblique|^CMSY|^CMMI|^CMEX|^CMTI|^CMSSI|^CMR\d|symbol|dingbat|^TT\d|^TT[0-9A-F]/i;
+
+        var boldFamilies = {};
+        for (var f = 0; f < fonts.length; f++) {
+            var name = String(fonts[f] || '');
+            if (!name) continue;
+            if (NEVER_BOLD_RE.test(name)) continue;
+            if (BOLD_RE.test(name) || LATEX_BOLD_RE.test(name)) {
+                boldFamilies[f] = true;
+            }
+        }
+        if (!Object.keys(boldFamilies).length) return null;
+
+        /*
+          ③ 逐行判定。
+             ⚠️ 尺寸容差取 0.6pt：PDF 里同一字号常见 ±0.2 的浮点抖动，
+                但 Nature 的 9.3 → 10.0 只差 0.7，所以容差不能超过 0.6，
+                否则真标题会被当成正文。
+        */
+        var SIZE_TOLERANCE = 0.6;
+        var MAX_LEN = 90;
+        var out = [];
+
+        for (var j = 0; j < rows.length && j < lines.length; j++) {
+            var row = rows[j];
+            var txt = (lines[j] || '').trim();
+            if (!txt) continue;
+
+            /*
+              ⚠️ 标题必须**短**。
+                 长行必然是正文段落 —— 即使它整段是粗体
+                 （如 Nature 里跨栏的图注、加粗的关键句）。
+            */
+            if (txt.length > MAX_LEN) continue;
+            /*
+              ⚠️ URL / 邮箱 / DOI 不是标题。
+                 实测（Nature 的 HAL 封面）：`https://hal.science/hal-04206682v1`
+                 是 14.3pt 粗体，比正文大得多，会被字号判据收进来。
+            */
+            if (NOT_HEAD_RE.test(txt)) continue;
+            // 单字符/极短行多半是公式碎片（实测 'z' / 'y' / '=' 大量出现）
+            var letters = txt.replace(/[^A-Za-z0-9\u4e00-\u9fff]/g, '');
+            if (letters.length < 4) continue;
+            /*
+              ⚠️ 纯数字/数字占绝对多数 → 表格单元格（实测 "25.03" / "21.43" /
+                 "41.29" / "3.3 · 1018" 大量出现在结果表里）。
+                 真标题必然以**字母为主**。
+            */
+            var alphaOnly = txt.replace(/[^A-Za-z\u4e00-\u9fff]/g, '');
+            if (alphaOnly.length < letters.length * 0.6) continue;
+
+            /*
+              ⚠️ 拦掉「段首小标题 + 正文」被合并成的整句。
+
+              实测（ResNet / CVPR）：
+                  "Identity vs. Projection Shortcuts. We have shown that"
+                  "Deeper Bottleneck Architectures. Next we describe our"
+                  "Analysis of Layer Responses. Fig. 7 shows the standard"
+
+              这些是论文里的**段内小标题**，PDFBox 把标题与其后的正文
+              合并成了一行。它们的共同形状是：
+                  <小标题>.<空格><大写字母开头的句子>
+              也就是**句中出现了「句号 + 空格 + 大写」**。
+
+              ⚠️ 判据用「句号后跟空格再跟大写」，不是简单地看行尾 ——
+                 因为这类行往往以断词结尾（"…describe our"），
+                 行尾根本没有标点，靠行尾判是拦不住的。
+
+              ⚠️ 要排除缩写（vs. / Fig. / et al. / Eq. / No.）。
+                 白名单方式：句号前的词长度 ≥ 4 才算真句末。
+                 "vs" / "Fig" 都是 ≤ 3 个字母，会被放过。
+            */
+            if (DOT_SENTENCE_RE.test(txt)) continue;
+
+            /*
+              ⚠️ 行尾是句末标点 → 是句子而不是标题；
+                 但**单词标题要放行**（"Abstract." / "References." 这种）。
+                 ≤ 2 个词视为标题，> 2 个词视为句子。
+            */
+            if (/[.;:,!?]$/.test(txt) && txt.split(/\s+/).length > 2) continue;
+
+            var fontIdx = row[0];
+            var size = row[1] / 10;
+            var isBold = !!boldFamilies[fontIdx];
+            var isBigger = size >= bodySize + SIZE_TOLERANCE;
+
+            // 两个信号至少命中一个
+            if (!isBold && !isBigger) continue;
+
+            out.push({
+                // 靠字体判不出层级，统一按顶层；有编号的下一轮再细分
+                level: levelFromNumber(txt),
+                title: txt,
+                line: j
+            });
+        }
+
+        /*
+          ④ 去掉「首页作者区」的误报。
+
+          ⚠️ 实测（Transformer / CoT / 多篇 NIPS）：标题用粗体，
+             而**作者名也是粗体或更大字号**，于是
+             Ashish Vaswani / Noam Shazeer / Niki Parmar… 全被收进来。
+
+          判据：这些误报**集中在正文开始之前的首页顶部**，
+          且都在 Abstract 之前。做法是找到第一条 Abstract 行，
+          丢掉它之前的全部条目 —— 真正的论文不会在摘要前有章节。
+        */
+        var abstractAt = -1;
+        for (var a = 0; a < lines.length; a++) {
+            if (/^\s*(abstract|摘\s*要)\s*$/i.test(lines[a] || '')) {
+                abstractAt = a;
+                break;
+            }
+        }
+        if (abstractAt > 0) {
+            out = out.filter(function (e) { return e.line >= abstractAt; });
+        }
+
+        /*
+          ④ 条目太少说明这个判据不适用（例如全文都用一个字体）。
+             实测阈值：少于 2 条就让调用方退回启发式。
+        */
+        if (out.length < 2) return null;
+
+        /*
+          ⚠️ 粗体判据在「正文里大量加粗」的论文上会误报。
+             加一道上限：标题数超过总行数的 15% 显然不合理，
+             此时宁可退回启发式，也不要给出一个满是噪声的目录。
+        */
+        if (out.length > lines.length * 0.15) return null;
+
+        return out;
+    }
+
+    /** 从标题文本里读层级（"3.1 xxx" → 2）；读不出按 1 */
+    function levelFromNumber(s) {
+        var m = /^\s*(\d+(?:\.\d+)*)/.exec(s);
+        if (!m) return 1;
+        return Math.min(3, m[1].split('.').length);
+    }
+
+    /**
+     * 「句中句号」判据：句号后跟空格、再跟大写字母。
+     *
+     * ⚠️ 要求句号前的单词长度 ≥ 4，以排除常见缩写：
+     *    vs. / Fig. / Eq. / No. / et al. / Sec.
+     *    这些都是标题里合法的部分（"Encoder vs. Decoder"、
+     *    "Fig. 7 shows…"），不能因为有句号就判成句子。
+     */
+    var DOT_SENTENCE_RE = /[A-Za-z]{4,}[.]\s+[A-Z\u4e00-\u9fff]/;
+
+    /**
+     * 明显的非标题：URL、邮箱、纯符号串。
+     * 实测（Nature 的 HAL 封面）这些会因字号大而被当成标题。
+     */
+    var NOT_HEAD_RE = /^(https?:\/\/|www\.|doi:|mailto:)|@[A-Za-z0-9.-]+[.][A-Za-z]{2,}$/i;
 
     function onExtractFailed(id) {
         if (!currentDoc || currentDoc.id !== id) {
             return;
         }
-        showError();
+        // 走到这里说明桥是通的、原生确实去提取了 —— 那是真的提取失败
+        showError('extract-failed');
+    }
+
+    // --- 目录：自带大纲 -----------------------------------------------------
+
+    /**
+     * 把 PDF 自带大纲转成目录条目（与 buildToc 输出同构）。
+     *
+     * ══ 难点：大纲给的是**页码**，但正文是连续文本流 ══
+     *
+     * 正文里没有「第几页开始」的标记（我没有插页边界），
+     * 所以页码无法直接换成行号。做法是**按标题文本回正文里找**：
+     * 找到标题所在行 → 那就是跳转目标。
+     *
+     * ⚠️ 找不到的条目**直接丢弃**，不做「按页码估算行号」的兜底。
+     *    估出来的行号会偏到别的节里去，用户点「结果」跳到「方法」，
+     *    比列表里少一条更糟。
+     *
+     * @param {Array|null} outline
+     * @param {string[]}   lines   正文行
+     * @returns {Array|null} 条目数组；大纲不可用时返回 null 让调用方退回启发式
+     */
+    function tocFromOutline(outline, lines) {
+        if (!outline || !outline.length || !lines || !lines.length) {
+            return null;
+        }
+
+        /*
+          建一张「规范化标题 → 行号」索引，避免对每条大纲都全量扫正文
+          （大纲可能上百条，正文可能上万行 → O(n·m) 会明显卡）。
+
+          ⚠️ 只索引**较短的行**：标题一般不长，长行必然是正文段落，
+             不可能命中。这一步把索引规模压到一个数量级以下。
+        */
+        var index = {};
+        for (var i = 0; i < lines.length; i++) {
+            var raw = lines[i];
+            if (!raw) continue;
+            var s = raw.trim();
+            if (!s || s.length > MAX_TITLE_CHARS) continue;
+            var key = normaliseTitle(s);
+            if (!key) continue;
+            // 只记第一处出现：重复标题（如多个 "References"）取最早的
+            if (index[key] === undefined) index[key] = i;
+        }
+
+        var out = [];
+        for (var j = 0; j < outline.length; j++) {
+            var e = outline[j];
+            if (!e || !e.title) continue;
+            var want = normaliseTitle(String(e.title));
+            if (!want) continue;
+
+            var at = index[want];
+
+            /*
+              ⚠️ 精确匹配失败时做**前缀匹配**。
+                 原因：大纲标题常带页码/编号，而正文行常被 PDFBox
+                 拆开或带前后缀，例如
+                     大纲: "3 Gradient-Based Learning"   正文: "Gradient-Based Learning"
+                     大纲: "References"                  正文: "References 1."
+                 精确匹配会丢掉大量本来能用的条目。
+                 前缀匹配要求长度 ≥ 8，太短的（如 "A"）会误撞。
+            */
+            if (at === undefined && want.length >= 8) {
+                for (var k = 0; k < lines.length; k++) {
+                    var cand = normaliseTitle(lines[k] || '');
+                    if (!cand || cand.length > MAX_TITLE_CHARS) continue;
+                    if (cand.indexOf(want) === 0 || want.indexOf(cand) === 0) {
+                        at = k;
+                        break;
+                    }
+                }
+            }
+
+            if (at === undefined) continue;
+            out.push({
+                level: Math.max(1, Math.min(3, e.level || 1)),
+                title: String(e.title).trim(),
+                line: at,
+                /*
+                  ⚠️ 带上原始页码（0 表示读不到）。
+                     下一步要用它做「单调性校正」，见下方。
+                */
+                page: e.page || 0
+            });
+        }
+
+        /*
+          ══ 单调性校正（v0.1.5）══
+
+          ⚠️ 实测反例（Wei et al., Chain-of-Thought Prompting, NIPS 2022）：
+             大纲顺序（文档顺序）:
+               Introduction / Chain-of-Thought Prompting / Arithmetic Reasoning / ...
+             匹配到的行号:
+               45          / 20                        / 106 / ...
+
+             `Chain-of-Thought Prompting` 被匹配到 line 20 ——
+             那是**图 1 的图注**（示意图上的标签），
+             而真正的小节标题在 line 96。
+             结果目录里第 2 项的行号比第 1 项还小，点它会**往回跳**。
+
+          根因：标题文本在正文里出现多次（图注、引用句、真标题），
+                而索引只取**第一次出现**。
+
+          修法：用大纲**自带的页码**做单调性校正。
+                大纲页号必然单调不减（这是书签的定义），
+                所以当某条匹配到的行**早于**前一条时，说明匹配错了，
+                应当往后找**下一处**出现。
+        */
+        var prevLine = out.length ? out[0].line : -1;
+        for (var q = 1; q < out.length; q++) {
+            if (out[q].line >= prevLine) {
+                prevLine = out[q].line;
+                continue;
+            }
+            // 倒挂了 → 从当前位置往后重新找
+            var want2 = normaliseTitle(out[q].title);
+            if (!want2) continue;
+            var next = -1;
+            for (var r = prevLine; r < lines.length; r++) {
+                var cand2 = normaliseTitle(lines[r] || '');
+                if (!cand2 || cand2.length > MAX_TITLE_CHARS) continue;
+                if (cand2 === want2 || (want2.length >= 8 &&
+                    (cand2.indexOf(want2) === 0 || want2.indexOf(cand2) === 0))) {
+                    next = r;
+                    break;
+                }
+            }
+            if (next >= 0) {
+                out[q].line = next;
+                prevLine = next;
+            }
+        }
+
+        /*
+          ⚠️ 必须按行号排序。
+
+          前缀匹配对短标题不设防：正文里先出现「…we use chain-of-thought
+          prompting…」这样的引用句，会被当成标题匹配上。
+          排序不能解决「匹配到了错的那一行」，但至少保证**目录顺序与正文一致**，
+          不会出现上下乱跳。这是这里能做的最低成本、最高收益的修正。
+        */
+        out.sort(function (a, b) { return a.line - b.line; });
+
+        // 至少要 2 条才算「大纲有用」；1 条不值得顶掉启发式
+        return out.length >= 2 ? out : null;
+    }
+
+    /**
+     * 规范化标题用于匹配：去空白、去首尾编号与页码、转小写。
+     *
+     * ⚠️ 必须去掉行首编号，否则大纲的 "3 Gradient-Based Learning"
+     *    与正文的 "Gradient-Based Learning" 匹配不上。
+     */
+    function normaliseTitle(s) {
+        if (!s) return '';
+        var t = String(s)
+            // 行首编号：1 / 1. / 1.2 / 1.2.3 / IV. / 一、
+            .replace(/^\s*(?:\d+(?:\.\d+)*|[IVXLC]+)\s*[.、)]?\s+/i, '')
+            // 行尾页码：如 "References 12"
+            .replace(/\s+\d{1,4}\s*$/, '')
+            // 折叠空白、统一小写
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+        return t;
     }
 
     // --- 目录：解析 ---------------------------------------------------------

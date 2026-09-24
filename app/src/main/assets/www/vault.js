@@ -40,6 +40,28 @@
     /** 多选模式：null 表示未进入；否则是选中 id 的集合 */
     var selection = null;
 
+    /**
+     * 文献类型 → 图标名。
+     *
+     * ⚠️ 这是一张**白名单表**，同时承担两个职责：
+     *    ① 把类型映射到图标
+     *    ② 校验传进来的 type 是否合法 —— 查不到就是 undefined，
+     *       不会进 innerHTML，所以用户数据无法注入 DOM
+     *
+     * ⚠️ 路径由 components.js 的 ICON_PATHS 提供（Material Symbols 官方）。
+     *
+     * ⚠️ unknown 故意**不在表里** —— 未知类型不显示任何图标，
+     *    这与「猜错比不显示更糟」的取舍一致。
+     */
+    var VENUE_TYPE_ICON = {
+        conference: 'venueConference',
+        journal: 'venueJournal',
+        preprint: 'venuePreprint',
+        book: 'venueBook',
+        thesis: 'venueThesis',
+        report: 'venueReport'
+    };
+
     function t(key) {
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
     }
@@ -136,7 +158,14 @@
         }
         // 标题 / 作者 / 发表物 / 原文件名都参与匹配 ——
         // 用户可能记得的是文件名而不是标题
+        //
+        // ⚠️ doc.venueShort（文章简称）**必须也在内**。
+        //    卡片上显示的标题就是它（见 renderCard）——
+        //    用户在列表里看到 "BERT paper" 然后去搜 "BERT"，
+        //    搜不到是最让人恼火的一类 bug：
+        //    屏幕上明明写着，却搜不出来。
         var haystack = [
+            doc.venueShort || '',
             doc.title || '',
             doc.author || '',
             doc.venue || '',
@@ -384,33 +413,199 @@
         var info = document.createElement('div');
         info.className = 'doc-info';
 
+        /*
+          ══ 卡片固定四行（v0.1.5，用户明确要求）══
+
+              ① 标题
+              ② 作者
+              ③ 发表物
+              ④ 页数 · 大小
+
+          ⚠️ 原来是「标题 / 作者·发表物 / 页数·大小」三行 ——
+             作者与发表物挤在一行。实测真实论文时这一行会长到
+             变成两三行（如 HAL 的分类串、NIPS 带 URL 的会议名），
+             卡片高度参差不齐，很难扫读。
+
+          ⚠️ 缺字段时**要占位**（留一个空行），不能直接省略元素。
+             否则缺作者的卡片三行、齐全的四行，高度对不齐 ——
+             这正是用户要「固定四行」的原因。
+             用 &nbsp; 之类会引入不可见的字符，所以用 CSS 撑高
+             （见 .doc-line 的 min-height），元素照常创建但内容为空。
+        */
+        /*
+          ① 标题。
+
+          ⚠️⚠️ **文章简称一旦填了，就顶替标题显示**（用户 2026-09-24：
+             「short name 一旦确定，列表卡片的文章标题就用
+               short name 代替」）。
+
+             语义：文章简称是**用户自己给这篇文献起的短名** ——
+             他既然专门起了名，就是为了在列表里一眼认出来。
+             这时候还显示那一长串正式标题（常常被截断成
+             "Attention is All you N…"）反而更难认。
+
+             ⚠️ 注意这只影响**卡片显示**，不改 doc.title 本身 ——
+                详情页里的「Title」字段、搜索、删除确认弹窗
+                全部仍用完整标题。简称是「显示别名」，不是「改名」。
+                否则用户改简称就会把真实标题冲掉，不可逆。
+
+          ⚠️ 兜底链：文章简称 → 标题 → 原文件名。
+             第三层是必需的：标题可能被用户清空
+             （LibraryStore.update 里清了标题会落回文件名，
+              但那是**保存时**才发生，本地 draft 里可能还是空），
+             此时卡片不能是空白。
+
+          ⚠️ 空串要 fall through 到下一层，不能当成"有值"。
+             doc.venueShort 可能存着 '' 或 '   '（用户填了又删），
+             所以必须 trim 后判空。
+        */
+        var shortName = (doc.venueShort || '').trim();
         var title = document.createElement('span');
         title.className = 'doc-title';
-        title.textContent = doc.title || doc.sourceName || '';
+        if (shortName) {
+            title.textContent = shortName;
+            /*
+              ⚠️ 标记出来是**简称**而不是标题。
+
+                 为什么需要这个标记：简称顶替标题后，卡片上再没有
+                 任何线索说明"这行字是用户自己起的短名"。
+                 用户过一段时间回来看，可能会以为自己当初
+                 把标题填错了 —— 然后把标题改得乱七八糟。
+
+                 加了属性之后，将来可以做悬停/长按显示完整标题。
+
+              ⚠️ 用 data-* 而不是 class：这是**语义信息**不是样式钩子。
+                 样式若需要，用 [data-doc-short] 选择器即可。
+            */
+            title.setAttribute('data-doc-short', '1');
+        } else {
+            title.textContent = doc.title || doc.sourceName || '';
+        }
         info.appendChild(title);
 
+        // ② 作者
+        info.appendChild(buildMetaLine('doc-author', doc.author));
+
         /*
-          作者与发表物可能缺失，缺失就不加这个元素 ——
-          空元素占位会让卡片看起来偏高、也不整齐。
+          ③ 发表载体（venue）。
+
+          ⚠️ 术语：venue 可能是会议 / 预印本 / 专著 / 学位论文，
+             不一定是期刊。
+
+          ══ 结构：左类型 · 右载体名（v0.1.5，用户要求）══
+
+              ┌──────────────────────────────────────────────┐
+              │ [图标] 会议          Neural Information...   │
+              └──────────────────────────────────────────────┘
+
+          左侧是**类型**（图标 + 文字），右侧是**载体名**。
+          载体名优先用用户设的**简称**（如 NIPS），没设才用全名。
+
+          ⚠️ 外面包一层 .doc-venue-line 才能让两者分列两端。
+             直接给 .doc-venue 加 text-align: right 的话，
+             它仍是块级、仍占满宽度，底色会从最左铺到最右
+             （变成一条分隔带，而不是标签）。
         */
-        var line2 = composeMeta([doc.author, doc.venue]);
-        if (line2) {
-            var meta = document.createElement('span');
-            meta.className = 'doc-meta';
-            meta.textContent = line2;
-            info.appendChild(meta);
+        var venueLine = document.createElement('span');
+        venueLine.className = 'doc-venue-line';
+
+        /*
+          ⚠️ 类型目前**恒为 unknown**，所以图标与文字都不显示。
+             PDF 里没有权威的载体类型字段（实测 12 篇里 6 篇无任何信号，
+             而猜错会把 Nature 标成「会议」，代价比不显示更大）。
+             数据来源与设置项后续再做 —— 这里先把结构与渲染路径接好，
+             将来只需让 doc.venueType 有值，图标与文字就自动出现。
+        */
+        var type = doc.venueType || 'unknown';
+        if (type !== 'unknown') {
+            var typeEl = document.createElement('span');
+            typeEl.className = 'doc-venue-type';
+            var iconName = VENUE_TYPE_ICON[type];
+            if (iconName && global.ScholariusUI && global.ScholariusUI.icon) {
+                /*
+                  ⚠️ 这里用 innerHTML 是**安全**的，与正文渲染不同：
+                     icon() 返回的是我们自己硬编码的 SVG 字符串
+                     （路径全部来自 Material Symbols 常量表），
+                     不含任何用户数据。用户可影响的只有 type 值本身，
+                     而它经过 VENUE_TYPE_ICON 白名单查表 ——
+                     查不到就是 undefined，不会进 innerHTML。
+                */
+                typeEl.innerHTML = global.ScholariusUI.icon(iconName);
+            }
+            var typeText = t('venue.type.' + type);
+            if (typeText) {
+                var labelEl = document.createElement('span');
+                labelEl.className = 'doc-venue-type-label';
+                labelEl.textContent = typeText;
+                typeEl.appendChild(labelEl);
+            }
+            venueLine.appendChild(typeEl);
         }
 
-        var line3 = composeMeta([
-            doc.pages ? t('vault.pages').replace('{n}', String(doc.pages)) : '',
-            formatSize(doc.size)
-        ]);
-        if (line3) {
-            var meta3 = document.createElement('span');
-            meta3.className = 'doc-meta';
-            meta3.textContent = line3;
-            info.appendChild(meta3);
+        /*
+          载体名：优先用**发表物简称**。
+
+          ⚠️⚠️ 这里取的是哪种「简称」，极容易搞混（用户 2026-09-24 指出）：
+
+             · **发表物简称**（NIPS / CVPR）—— 会议/期刊名字的缩写，
+               存在 shortcut.js 的**全局映射表**里（localStorage），
+               一条配置服务**所有**发表在同一载体的文献。
+               ★ 卡片这里要用的就是这个。
+
+             · **文章简称** —— 这一篇文档自己的短名，
+               存在 doc.venueShort（详情页那一行输入框）。
+               它**不用在载体名上**，而是**顶替①行的标题**
+               （见上面渲染 title 的地方）。
+
+          ⚠️ 踩过的坑：这里原本写的是 `doc.venueShort || doc.venue` ——
+             把**文章简称**当成了载体名的优先来源。后果是：
+             用户给一篇文献填了文章简称 "BERT paper"，
+             卡片上的「发表物」那一栏就显示成 "BERT paper"，
+             完全看不出它发在哪。而且 doc.venueShort 与
+             ScholariusShortcut.lookup() 是两套数据，
+             用户在设置里配的 NIPS 映射**永远不会生效**
+             （lookup 定义了却没人调）。
+
+          ⚠️ 查表用**未截断的原始 venue**（doc.venue），
+             不能用显示用的值 —— 将来若对 venue 做清洗，
+             查表要拿清洗后的值与用户设置时的值对齐。
+             lookup 自己做 trim + 大小写归一，这里不必重复。
+
+          ⚠️ 兜底链：发表物简称 → doc.venue → 空。
+             前两层都空就留白（卡片那一栏本来就是「可为空」的）。
+        */
+        var venueLabel = doc.venue;
+        if (global.ScholariusShortcut && typeof global.ScholariusShortcut.lookup === 'function') {
+            var abbr = global.ScholariusShortcut.lookup(doc.venue || '');
+            if (abbr) venueLabel = abbr;
         }
+        venueLine.appendChild(buildMetaLine('doc-venue', venueLabel));
+        info.appendChild(venueLine);
+
+        // ④ 页数（左）· 发表年份（右）
+        /*
+          ⚠️ 这一行是**两端对齐**的（v0.1.5，用户要求）：
+                 页数靠左 ......................... 发表年份靠右
+
+             所以不能像上面三行那样塞进一个元素 ——
+             必须两个独立的元素，由 CSS 的 justify-content:
+             space-between 把它们推到两端。
+
+          ⚠️ 两者都可能为空（页数取不到 / 年份没抓到）。
+             空的那个仍然要保留元素，否则剩下的那个会跑到中间去
+             （space-between 只有一个子元素时会左对齐，看起来还行，
+              但两个都空时高度会塌掉，四行结构就破了）。
+
+          ⚠️ 年份为空时**什么都不显示**（不是显示「未知」「—」）。
+             用户明确说过：测不出来的留空就行，后面手动改。
+             占位符反而要先解释一遍自己是什么，是负担。
+        */
+        var stats = document.createElement('span');
+        stats.className = 'doc-meta doc-stats';
+        stats.appendChild(buildStat('doc-pages',
+            doc.pages ? t('vault.pages').replace('{n}', String(doc.pages)) : ''));
+        stats.appendChild(buildStat('doc-year', formatYear(doc.year)));
+        info.appendChild(stats);
 
         li.appendChild(thumb);
         li.appendChild(info);
@@ -419,26 +614,60 @@
         return li;
     }
 
-    /** 把非空片段用分隔符连起来；全空则返回空串 */
-    function composeMeta(parts) {
-        var kept = parts.filter(function (p) {
-            return p && String(p).trim();
-        });
-        return kept.join(' · ');
+    /**
+     * 造一行元数据。
+     *
+     * ⚠️ 即使内容为空也要返回元素 —— 空元素由 CSS 的 min-height
+     *    撑出与有内容时相同的高度，这样卡片恒为四行。
+     *    少了这个占位，缺作者的卡片就会矮一行，列表参差不齐。
+     */
+    function buildMetaLine(className, value) {
+        var el = document.createElement('span');
+        el.className = 'doc-meta ' + className;
+        el.textContent = value || '';
+        return el;
     }
 
-    function formatSize(bytes) {
-        var n = Number(bytes) || 0;
-        if (n <= 0) {
-            return '';
-        }
-        if (n < 1024) {
-            return n + ' B';
-        }
-        if (n < 1024 * 1024) {
-            return (n / 1024).toFixed(0) + ' KB';
-        }
-        return (n / 1024 / 1024).toFixed(1) + ' MB';
+    /** 页数/大小这种「行内的一个片段」，不带 .doc-meta 的块级行为 */
+    function buildStat(className, value) {
+        var el = document.createElement('span');
+        el.className = className;
+        el.textContent = value || '';
+        return el;
+    }
+
+    /**
+     * 发表年份 → 显示文本。
+     *
+     * ⚠️ 只接受 4 位数字，其余一律返回空串。
+     *
+     *    为什么要校验而不是直接显示：这个值来自 PDF 的元数据，
+     *    是**外部输入**。PDF 可能是手工编辑过的，或者出版社塞了
+     *    `2015-08-20`、`D:2015`、`©2015` 之类的形态。直接显示会
+     *    把整行撑歪，也难看。
+     *
+     * ⚠️ 存储层（详情页的「日期」字段）现在允许 `YYYY-MM-DD`，
+     *    但**卡片只显示 4 位年份**（用户明确要求）。
+     *    所以这里要把日期里的年份**取出来**，
+     *    而不是像早期版本那样「格式不对就整个丢弃」——
+     *    那会让填了完整日期的文献在卡片上完全没有年份。
+     *
+     * @param {string} value 存储里的值：'' / '2015' / '2015-06' / '2015-06-24'
+     * @returns {string} 4 位年份，认不出则空串
+     */
+    function formatYear(value) {
+        var s = String(value == null ? '' : value).trim();
+        if (!s) return '';
+
+        /*
+          ⚠️ 以 `YYYY` 开头就取这 4 位。
+             模式用 ^\d{4} 而不是完整匹配 —— 只为兼容
+             `2015-06-24`、`2015/06`、`2015年` 这些前缀是年份的写法。
+             范围校验（1800~2099）仍留着，防 `0000` 之类的脏值。
+        */
+        var m = s.match(/^(\d{4})/);
+        if (!m) return '';
+        return /^(1[89]\d{2}|20\d{2})$/.test(m[1]) ? m[1] : '';
     }
 
     function placeholderIcon() {
@@ -536,6 +765,23 @@
         }
     }
 
+    /**
+     * 原生回报「某篇文献的元数据保存完了」。
+     *
+     * ⚠️ 这里**不做任何界面更新** —— 原生保存成功后会再推一次
+     *    完整的 setLibrary()，列表自然就刷新了。
+     *    职责分工：本函数只把结果转给详情页（它要收起面板 + 提示）。
+     *
+     *    这样分工的原因：详情页可能已经关了（用户在保存途中点了关闭），
+     *    那时 detail 模块自己的 id 核对会拦住，不会误报。
+     */
+    function onDocUpdated(id, ok) {
+        if (global.ScholariusDetail) {
+            return global.ScholariusDetail.onDocUpdated(id, ok);
+        }
+        return 'no-detail-module';
+    }
+
     /** 当前页面被切走时：退出多选，避免状态残留 */
     function onLeave() {
         if (selection) {
@@ -547,6 +793,7 @@
         init: init,
         setLibrary: setLibrary,
         onImportFailed: onImportFailed,
+        onDocUpdated: onDocUpdated,
         onLeave: onLeave,
         /** 系统返回键用：是否处于多选模式 */
         isSelecting: function () {

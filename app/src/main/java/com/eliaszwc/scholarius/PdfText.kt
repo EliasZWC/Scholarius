@@ -4,7 +4,10 @@ import android.content.Context
 import android.util.Log
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import com.tom_roush.pdfbox.text.TextPosition
 import java.io.File
 
 /**
@@ -56,6 +59,56 @@ object PdfText {
     @Volatile
     private var initialised = false
 
+    /** 大纲条目。level 从 1 开始（1 = 顶层） */
+    data class OutlineEntry(
+        val level: Int,
+        val title: String,
+        /** 该条目指向的页码（从 1 开始） */
+        val page: Int
+    )
+
+    /**
+     * 结构化的一行：文本 + 排版元数据。
+     *
+     * ══ 为什么需要元数据（v0.1.5）══
+     *
+     * 用户实测（LeCun et al., Nature 2015）：「没有提取到任何目录」。
+     *
+     * 根因：Nature/ACM/NIPS 这类排版里，章节标题**不靠编号**也不靠
+     * 全大写来区分，而是靠**字体**（正文 MinionPro-Regular 9.3pt，
+     * 标题 GlosaMath-Bold 10.0pt）。纯文本流把字体信息丢掉了，
+     * 前端再怎么写启发式都认不出来 —— 实测该文启发式命中 0 条，
+     * 而按字体识别命中 7 条，全部正确。
+     *
+     * 所以必须把「这一行是什么字体、多大、在第几页」带出来。
+     *
+     * ⚠️ 只带**每行主字体**（字符数最多的那个），不带全部 span。
+     *    一行里字体可能混杂（正文里插一个数学符号），
+     *    但标题行的主字体必然占绝对多数。取主字体足够判别，
+     *    且能让每个行对象保持小（一篇文章可能上万行，内存敏感）。
+     */
+    data class Line(
+        val text: String,
+        /** 主字体名，如 "GlosaMath-Bold"。取不到时为空串 */
+        val font: String,
+        /** 主字号（磅）。取不到时为 0 */
+        val size: Float,
+        /** 该行所在页码，从 1 开始 */
+        val page: Int,
+        /** 是否在**段落起始位置**（前一个非空行是段落边界） */
+        val paragraphStart: Boolean
+    )
+
+    /** 提取结果：正文 + 行元数据 + PDF 自带大纲 */
+    data class Result(
+        /** 正文纯文本（阅读页显示用）。行之间用 \n 分隔 */
+        val text: String,
+        /** 与 [text] 按 \n 切分后**一一对应**的行元数据 */
+        val lines: List<Line>,
+        /** PDF 自带大纲；为空表示这份 PDF 没有书签 */
+        val outline: List<OutlineEntry>
+    )
+
     /**
      * 初始化 PDFBox 的资源加载器。
      *
@@ -73,10 +126,228 @@ object PdfText {
         }
     }
 
+    /** 从首页正文里猜出的标题与作者 */
+    data class Head(val title: String, val author: String)
+
+    /**
+     * 只读**第 1 页**，从正文里猜标题与作者。
+     *
+     * ══ 为什么需要（v0.1.5）══
+     *
+     * 有些 PDF 的元数据被生成工具（iLovePDF 等）整个抹掉。
+     * 实测（Wei et al., CoT Prompting, NIPS 2022）：title/author/subject
+     * 全空，导入后列表只剩「14 pages · 385 KB」，标题退回文件名。
+     * 但首页正文里有完整的标题与作者 —— 读一次就能补上。
+     *
+     * ══ 判据 ══
+     *
+     * 论文首页的排布极其统一：
+     *   ① 最大的那行字 = 标题（通常 16~28pt，正文约 10pt）
+     *   ② 标题下面的若干行 = 作者（字号介于标题与正文之间，或与正文同）
+     *   ③ 再往下是单位/邮箱/摘要
+     *
+     * 所以：取首页**字号最大**的行当标题，取它**后面紧邻的、含逗号或
+     * 人名的短行**当作者。
+     *
+     * ⚠️ 只读一页。首页几百行，比整篇便宜得多（这正是分开实现的原因）。
+     * ⚠️ 失败/猜不出就返回空串，由调用方决定怎么兜底。
+     */
+    fun extractHead(pdf: File): Head? {
+        if (!pdf.exists() || !pdf.isFile) return null
+
+        return try {
+            PDDocument.load(pdf).use { document ->
+                if (document.numberOfPages <= 0) return null
+
+                val collector = LineCollector()
+                collector.startPage = 1
+                collector.endPage = 1
+                collector.lineSeparator = "\n"
+                collector.sortByPosition = true
+
+                val buffer = java.io.StringWriter()
+                collector.writeText(document, buffer)
+
+                val lines = collector.raw
+                if (lines.isEmpty()) return null
+
+                guessHead(lines)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "extractHead failed: ${pdf.name}", t)
+            null
+        }
+    }
+
+    /**
+     * 从首页行里猜标题与作者。
+     *
+     * 拆出来是为了可测：不依赖 PDFBox，纯函数，
+     * 可以直接拿一组 Line 喂进来验证判据。
+     */
+    fun guessHead(lines: List<Line>): Head? {
+        if (lines.isEmpty()) return null
+
+        // ① 找字号最大的行 —— 那行就是标题
+        var titleIdx = -1
+        var maxSize = 0f
+        for ((i, l) in lines.withIndex()) {
+            val t = l.text.trim()
+            if (t.isEmpty()) continue
+            /*
+              ⚠️ 排除「字号极大但只 1~2 个字符」的行。
+                 那是首字下沉（Nature 的 "M" 实测 41.6pt）或装饰字母。
+            */
+            if (t.length < 8) continue
+            if (l.size > maxSize) {
+                maxSize = l.size
+                titleIdx = i
+            }
+        }
+        if (titleIdx < 0) return null
+
+        /*
+          ② 标题可能跨多行（长标题会被排版拆开）。
+             把紧随其后、**字号相同**的短行接上，直到遇到明显更小的字号。
+        */
+        val titleParts = ArrayList<String>()
+        titleParts.add(lines[titleIdx].text.trim())
+        var k = titleIdx + 1
+        while (k < lines.size && titleParts.size < 4) {
+            val l = lines[k]
+            val t = l.text.trim()
+            if (t.isEmpty()) { k++; continue }
+            // 字号相同（容差 0.3）且不太长 → 视为标题的续行
+            if (Math.abs(l.size - maxSize) <= 0.3f && t.length in 1..120) {
+                titleParts.add(t)
+                k++
+                continue
+            }
+            break
+        }
+        val title = titleParts.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+
+        /*
+          ③ 作者：标题之后、字号明显小于标题的若干行里，
+             取**含逗号**或**含 "and"** 的那一行（多作者几乎总有分隔符）。
+             再宽松一点：如果连续几行都是短的、都像人名，就拼起来。
+        */
+        val author = guessAuthors(lines, k, maxSize)
+
+        return Head(title, author)
+    }
+
+    /** 标题之后找作者行 */
+    private fun guessAuthors(lines: List<Line>, from: Int, titleSize: Float): String {
+        var i = from
+        // 允许先跳过 1~2 个空行
+        var skipped = 0
+        while (i < lines.size && skipped < 3) {
+            if (lines[i].text.trim().isEmpty()) { i++; skipped++; continue }
+            break
+        }
+
+        val parts = ArrayList<String>()
+        var scanned = 0
+
+        /*
+          ⚠️ 扫描窗口要**足够大**，不能只扫 8 行。
+
+          实测（Transformer, NIPS）首页的排布是**每人三行循环**：
+              Ashish Vaswani / Google Brain / avaswani@google.com
+              Noam Shazeer  / Google Brain / noam@google.com
+              ...
+          8 个作者 = 24 行，加上单位和邮箱共 ~30 行。
+          窗口小于 30 就只能收到第 1 个作者 —— 实测就是这个症状。
+        */
+        while (i < lines.size && scanned < 60 && parts.size < 30) {
+            val l = lines[i]
+            val t = l.text.trim()
+            i++
+            scanned++
+            if (t.isEmpty()) continue
+
+            /*
+              ⚠️ 遇到摘要/正文开头 → **停止**（作者区到此结束）。
+            */
+            if (ABSTRACT_START.containsMatchIn(t)) break
+            // 太长 → 多半是摘要第一句
+            if (t.length > 160) break
+            // 字号比标题还大 → 跑到别的大字去了
+            if (l.size > titleSize + 0.3f) continue
+
+            /*
+              ⚠️ 单位行与邮箱 → **跳过继续找**，不是停止。
+
+                 这是与上一版的关键差别。原来一遇到
+                 "Google Brain" 就 break，于是只能收到第一个作者。
+                 而实际排布里单位夹在作者之间，跳过后
+                 下一个作者就在后面。
+            */
+            if (t.contains('@')) continue
+            if (UNIT_START.containsMatchIn(t)) continue
+            // 纯符号/编号（上标的 † ‡ § 之类会单独成行）
+            if (t.replace(Regex("[^A-Za-z\\u4e00-\\u9fff]"), "").length < 2) continue
+
+            /*
+              ⚠️ 作者的判据：含逗号分隔，或含 " and "，或
+                 2~5 个单词的短行（单人一行）。
+                 实测 NIPS 是「一人一行、无逗号」，CVPR 是
+                 「一行逗号分隔多位」，两种都要能收。
+            */
+            val words = t.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            val isList = t.contains(',') ||
+                Regex("\\band\\b", RegexOption.IGNORE_CASE).containsMatchIn(t)
+            val isSingle = words.size in 2..5 &&
+                t.none { it.isDigit() } && t.length <= 60
+
+            if (isList || isSingle) {
+                parts.add(t)
+                continue
+            }
+
+            /*
+              ⚠️ 走到这里说明这一行既不是作者、也不是已知的单位/邮箱。
+                 可能是「摘要」以外的正文开头（如 "1 Introduction"）——
+                 再往下扫就是正文了，及时收手。
+            */
+            break
+        }
+
+        return parts.joinToString(", ")
+            .replace(Regex("\\s*,\\s*"), ", ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .trimEnd(',')
+    }
+
+    /** 摘要开头的常见写法。见到就停止找作者 */
+    private val ABSTRACT_START = Regex(
+        "^\\s*(abstract|摘要|introduction|1\\s+introduction)\\b",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * 单位/机构行的常见开头。见到就停止找作者
+     *
+     * ⚠️ 还要拦住「引用信息 / 版本信息」这类**出版社封面**才有的行。
+     *    实测（Nature 的 HAL 版首页）：
+     *        "To cite this version:" 后面跟着重复的作者名和标题，
+     *        它们都短、都不含数字，会被作者的宽松判据（2~5 个单词）
+     *        全部当成作者收进来 —— 实测多吸了 3 行。
+     */
+    private val UNIT_START = Regex(
+        "^\\s*(department|university|institute|school|college|google|facebook|microsoft|" +
+            "openai|deepmind|research|center|centre|laborator|faculty|abstract|" +
+            "to cite|cite this|this version|submitted|published|preprint|" +
+            "hal\\b|doi\\b|arxiv\\b|proceedings|conference on|journal of)",
+        RegexOption.IGNORE_CASE
+    )
+
     /**
      * 提取 PDF 正文。
      *
-     * @return 文本；提取不到或失败时返回 null。
+     * @return 正文与自带大纲；提取不到文本时返回 null。
      *
      * ⚠️ 必须在**后台线程**调用：要解压全部内容流并建字体映射，
      *    几十兆的文献在低端机上可能几百毫秒到数秒。
@@ -84,7 +355,7 @@ object PdfText {
      * ⚠️ 调用方负责先调 [ensureInitialised]。这里拿不到 Context
      *    （object 是无状态的），所以不在此处初始化。
      */
-    fun extract(pdf: File): String? {
+    fun extract(pdf: File): Result? {
         if (!pdf.exists() || !pdf.isFile) {
             return null
         }
@@ -96,7 +367,7 @@ object PdfText {
                       否则上面就抛异常进 catch。这里不要求密码 ——
                       用户可先用别的工具解密再导入。
                 */
-                val stripper = PDFTextStripper()
+                val stripper = LineCollector()
 
                 /*
                   ⚠️ sortByPosition 必须为 true。
@@ -157,18 +428,29 @@ object PdfText {
                     return null
                 }
 
-                val text = normalise(raw)
+                /*
+                  ⚠️ 正文与元数据必须**一起**整理。
+                     normalise 会把排版行合并成段落行；
+                     如果只合并文本、元数据保持原样，两边行号就错位了，
+                     前端跳转会全部偏掉。所以让它同时产出两者。
+                */
+                val merged = mergeParagraphs(stripper.raw)
+                val text = merged.text
                 Log.i(
                     TAG,
-                    "extracted ${raw.length} -> ${text.length} chars from ${pdf.name}"
+                    "extracted ${raw.length} -> ${text.length} chars, " +
+                        "${merged.lines.size} lines, ${stripper.raw.size} raw lines, " +
+                        "from ${pdf.name}"
                 )
 
-                if (text.length > MAX_CHARS) {
+                val body = if (text.length > MAX_CHARS) {
                     Log.i(TAG, "truncating ${text.length} -> $MAX_CHARS chars")
                     text.substring(0, MAX_CHARS)
                 } else {
                     text
                 }
+
+                Result(body, merged.lines, readOutline(document))
             }
         } catch (t: Throwable) {
             /*
@@ -181,7 +463,7 @@ object PdfText {
     }
 
     /**
-     * 整理提取出的文本，让它可读。
+     * 把**原始排版行**合并成**段落行**，同时合并元数据。
      *
      * ══ 为什么必须做这一步（v0.1.4）══
      *
@@ -207,24 +489,39 @@ object PdfText {
      *    整理前 236 行（每行都断在词中间）
      *    整理后 121 段（段落完整、标题独立）
      *
+     * ══ v0.1.5：为什么改成接收 Line 列表 ══
+     *
+     * 目录需要「行 → 字体/字号/页码」。而合并会改变行数，
+     * 所以元数据必须**跟着一起合并**，否则前端拿到的行号会全部错位。
+     * 做法：取**段落第一行**的字体与字号 ——
+     * 段落的首行决定这一段的排版属性，这也是排版上的事实。
+     *
      * ⚠️ 判据是启发式的，不可能 100% 准确。取舍原则：
      *    宁可偶尔把两段并成一段（读起来仍通顺），
      *    也不要每行都断成碎片（完全没法读）。
      */
-    private fun normalise(raw: String): String {
-        val out = StringBuilder(raw.length)
+    private fun mergeParagraphs(rawLines: List<Line>): Result {
+        val outText = StringBuilder()
+        val outLines = ArrayList<Line>(rawLines.size)
+
         val para = StringBuilder()
+        var paraMeta: Line? = null
 
         fun flush() {
             if (para.isNotEmpty()) {
-                if (out.isNotEmpty()) out.append("\n\n")
-                out.append(para)
+                if (outText.isNotEmpty()) outText.append('\n')
+                outText.append(para)
+                val meta = paraMeta
+                if (meta != null) {
+                    outLines.add(meta.copy(text = para.toString(), paragraphStart = true))
+                }
                 para.setLength(0)
+                paraMeta = null
             }
         }
 
-        for (line in raw.split('\n')) {
-            val t = line.trim()
+        for (line in rawLines) {
+            val t = line.text.trim()
 
             // 空行 = 段落边界
             if (t.isEmpty()) {
@@ -232,27 +529,13 @@ object PdfText {
                 continue
             }
 
-            if (para.isEmpty()) {
-                para.append(t)
-                continue
-            }
-
-            /*
-              当前行像标题 → 已积累的收掉，这一行自己独立成段。
-              ⚠️ 顺序很关键：必须在「上一行已句末」之前判断。
-                 否则「标题（不以标点结尾）+ 作者」会被合并成
-                 「VISTA: ... AUDITING Weichen Zhang」这种一坨。
-            */
-            if (looksLikeHead(t)) {
-                flush()
-                para.append(t)
-                continue
-            }
+            val flat = Line(t, line.font, line.size, line.page, false)
 
             // 已积累的内容是标题 → 标题独立，正文另起
             if (looksLikeHead(para.toString())) {
                 flush()
                 para.append(t)
+                paraMeta = flat
                 continue
             }
 
@@ -260,15 +543,18 @@ object PdfText {
                 // 上一行已是句末 → 这一行另起
                 flush()
                 para.append(t)
+                paraMeta = flat
             } else {
                 // 上一行在句中 → 合并，英文之间补空格
                 if (needsSpaceBetween(para, t)) para.append(' ')
                 para.append(t)
+                // 元数据保留**第一行**的（段落首行决定排版属性）
+                if (paraMeta == null) paraMeta = flat
             }
         }
         flush()
 
-        return out.toString()
+        return Result(outText.toString(), outLines, emptyList())
     }
 
     /** 段末标点。中英文都列，因为论文里两种都可能出现 */

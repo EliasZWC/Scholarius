@@ -34,3 +34,7 @@ Thumbs.db
 # Python（tools/ 下的辅助脚本）
 __pycache__/
 *.pyc
+
+# 本地预览用的真实论文数据（含全文，受版权保护）。
+# 由 tools/make_dev_library.py 现场生成，不进库。
+app/src/main/assets/www/dev-library.js

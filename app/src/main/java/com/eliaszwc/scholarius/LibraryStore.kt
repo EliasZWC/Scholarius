@@ -72,8 +72,64 @@ object LibraryStore {
         val title: String,
         /** 作者。提取不到时为空串 */
         val author: String,
-        /** 发表物（期刊/会议）。提取不到时为空串 */
+        /**
+         * 发表载体名（展示用）。提取不到时为空串。
+         *
+         * ⚠️ v0.1.6 起，它不再是**唯一**的载体信息来源 ——
+         *    按类别细分的字段（journalName / conferenceName / publisher …）
+         *    在 [fields] 里；这个字段退化为**兼容层**：
+         *
+         *      · 老索引（v0.1.5 及以前）只写它，读出来还能显示；
+         *      · 新导入的文献仍会填它（从 PDF 的 Subject 抓），
+         *        让「类别还没判定」时卡片也有东西可显示。
+         *
+         *    卡片取值顺序见前端 meta.js 的 venueNameOf()：
+         *        类别专属字段 → 本字段 → 空
+         */
         val venue: String,
+        /**
+         * 发表年份，如 `2015`。**提取不到就是空串**，不是 0。
+         *
+         * ⚠️ 用 String 而非 Int：
+         *    · 要能区分「没抓到」与「真的是第 0 年」—— Int 做不到；
+         *    · 它只用于展示，不参与运算；
+         *    · 用户后续手动修改时，空值直接当作「未填」处理。
+         */
+        val year: String,
+        /**
+         * 发表物类别：`journal` / `conference` / `preprint` /
+         * `book` / `thesis` / `report` / `unknown`。
+         *
+         * ⚠️ 空串与 `unknown` 等价（都表示「未判定」）。
+         *    为什么用 String 而不是 enum：索引是 JSON，
+         *    枚举要写序列化器；而取值集合由前端 meta.js 定义，
+         *    两边共用字符串最省事。非法值在读的时候归一到 `unknown`。
+         */
+        val venueType: String,
+        /**
+         * 按类别细分的元数据。**键是前端 meta.js 定义的字段名**，
+         *    值是字符串（空值一律**不存**，不是存空串）。
+         *
+         * ══ 为什么用 Map 而不是 20 个独立属性 ══
+         *
+         * 这套字段有 20+ 个（期刊的卷/期/页码、会议的缩写/地点、
+         * 专著的出版社/ISBN、学位论文的学校/学位类型……），
+         * 而且**类别专属**——一篇期刊论文根本不会有 `isbn`。
+         *
+         * 若做成独立属性，代价是：
+         *   · `Doc` 构造点、`parseDoc`、`writeIndex`、
+         *     `pushLibraryToWeb` 四处都要跟着改，加一个字段改四遍；
+         *   · `update()` 的签名会有 20 个参数（现在是 6 个）；
+         *   · 索引 JSON 里每篇文献都要写 20 个键，其中 15 个是空串。
+         *
+         * 用 Map 之后：加字段只改前端 meta.js，Kotlin 侧**一行不用动**。
+         * 索引里只存用户真有值的那些键。
+         *
+         * ⚠️ 代价：失去了编译期字段检查（写错键名不会报错）。
+         *    用一条纪律补偿：**键名以 meta.js 为唯一准绳**，
+         *    并且 `tools/check-meta.js` 会校验两边一致。
+         */
+        val fields: Map<String, String>,
         /** 导入时间（毫秒） */
         val addedAt: Long,
         /** 页数。读取失败为 0 */
@@ -130,11 +186,51 @@ object LibraryStore {
         title = json.optString("title"),
         author = json.optString("author"),
         venue = json.optString("venue"),
+        // ⚠️ optString 对缺失/null 都返回 ""，正好是「未填」的语义。
+        //    老索引（v0.1.5 之前写的）没有这些键，读出来就是空值，
+        //    卡片相应位置留白 —— 不需要写迁移代码。
+        year = json.optString("year"),
+        // 非法/缺失的类别归一到 unknown —— 前端据此选表单字段，
+        // 拿到不认识的字符串会渲染不出任何专属字段，不如显式归一。
+        venueType = normaliseVenueType(json.optString("venueType")),
+        fields = parseFields(json.optJSONObject("fields")),
         addedAt = json.optLong("addedAt"),
         pages = json.optInt("pages"),
         size = json.optLong("size"),
         sourceName = json.optString("sourceName"),
     )
+
+    /** 合法的发表物类别。与前端 meta.js 的 VENUE_TYPES 必须一致 */
+    private val VENUE_TYPES = setOf(
+        "journal", "conference", "preprint", "book", "thesis", "report", "unknown"
+    )
+
+    private fun normaliseVenueType(raw: String): String =
+        if (raw in VENUE_TYPES) raw else "unknown"
+
+    /**
+     * 读 `fields` 子对象。
+     *
+     * ⚠️ **只保留非空值**。空串与空白串一律丢弃 ——
+     *    否则索引里会堆满 `"isbn": ""` 这类无意义键，
+     *    文件越写越大，而且判断「用户到底填过没有」还得再判空。
+     *
+     * ⚠️ 键名不做白名单校验。理由：前端加字段时不该要求后端同步发版。
+     *    代价是索引里可能存下前端已废弃的键 —— 无害（只是读不到），
+     *    而丢弃未知键会导致「降级安装旧版 → 升级回来数据没了」。
+     *    宁可留着不认识的数据。
+     */
+    private fun parseFields(json: JSONObject?): Map<String, String> {
+        if (json == null || json.length() == 0) return emptyMap()
+        val out = LinkedHashMap<String, String>()
+        val keys = json.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val v = json.optString(k)
+            if (v.isNotBlank()) out[k] = v
+        }
+        return out
+    }
 
     private fun writeIndex(context: Context, docs: List<Doc>) {
         val array = JSONArray()
@@ -146,6 +242,14 @@ object LibraryStore {
                 put("title", doc.title)
                 put("author", doc.author)
                 put("venue", doc.venue)
+                put("year", doc.year)
+                put("venueType", doc.venueType)
+                // fields 为空时**不写这个键**（老版本读到会当成空 Map）
+                if (doc.fields.isNotEmpty()) {
+                    put("fields", JSONObject().apply {
+                        doc.fields.forEach { (k, v) -> put(k, v) }
+                    })
+                }
                 put("addedAt", doc.addedAt)
                 put("pages", doc.pages)
                 put("size", doc.size)
@@ -211,11 +315,57 @@ object LibraryStore {
         // ④ 提取元数据（失败就留空，不阻断导入）
         val meta = PdfMeta.extract(pdf, displayName)
 
+        /*
+          ⑤ 元数据缺失时从**正文首页**兜底。
+
+          ══ 为什么需要（v0.1.5，用真实论文测出来的）══
+
+          实测（Wei et al., Chain-of-Thought Prompting, NIPS 2022）：
+          这份 PDF 由 iLovePDF 重新生成过，元数据被整个抹掉 ——
+          title / author / subject **全空**，列表里只剩「14 pages · 385 KB」，
+          标题还是退回文件名。
+
+          但正文首页明明有标题和作者。所以缺字段时值得再读一次首页。
+
+          ⚠️ 只在**确实缺**的时候才去做这件事。
+             解析正文要解压内容流，有成本（几十毫秒到几百毫秒），
+             元数据齐全时不该白花这个时间。
+          ⚠️ 失败不影响导入 —— 兜底本来就没保证。
+        */
+        val needTitle = meta.title.isBlank()
+        val needAuthor = meta.author.isBlank()
+        var author = meta.author
+        var title = meta.title
+
+        if (needTitle || needAuthor) {
+            val head = try {
+                PdfText.extractHead(pdf)
+            } catch (t: Throwable) {
+                Log.w(TAG, "首页兜底提取失败", t)
+                null
+            }
+            if (head != null) {
+                if (needTitle && head.title.isNotBlank()) title = head.title
+                if (needAuthor && head.author.isNotBlank()) author = head.author
+            }
+        }
+
         val doc = Doc(
             id = id,
-            title = meta.title.ifBlank { fallbackTitle(displayName) },
-            author = meta.author,
+            title = title.ifBlank { fallbackTitle(displayName) },
+            author = author,
             venue = meta.venue,
+            year = meta.year,
+            // ⚠️ 导入时不猜类别。
+            //
+            //    为什么不做「按 venue 文本猜是会议还是期刊」的启发式：
+            //      · 猜错会把用户引到错误的表单（以为在填期刊，其实是会议）；
+            //      · 判定成本高（要靠会议名单/期刊名单，那是很大的数据表）；
+            //      · 用户只需在详情弹窗里点一下，比猜错再改更省事。
+            //    所以初始一律 unknown，表单只显示通用字段，
+            //    等用户选定类别后专属字段才出现（Zotero 也是这个流程）。
+            venueType = "unknown",
+            fields = meta.fields,
             addedAt = System.currentTimeMillis(),
             pages = pages,
             size = pdf.length(),
@@ -342,20 +492,74 @@ object LibraryStore {
     // 改 / 删
     // -----------------------------------------------------------------------
 
-    /** 改标题 / 作者 / 发表物。空串表示清空该字段（标题除外，它会落回文件名） */
-    fun update(context: Context, id: String, title: String?, author: String?, venue: String?): Boolean {
+    /**
+     * 改一篇文献的元数据。
+     *
+     * ══ 为什么签名是「一个 Map」而不是十几个具名参数 ══
+     *
+     * 可编辑字段有 20+ 个，且**按类别不同**。若写成
+     * `update(ctx, id, title, author, year, venueType, journalName,
+     *  volume, issue, pages, doi, conferenceName, …)`：
+     *   · 20 个参数，调用点全是位置参数，极易传错顺序；
+     *   · 加一个字段就要改签名 + 所有调用点 + WebAppBridge；
+     *   · 前端只想改 DOI 时，也得把所有字段回传一遍。
+     *
+     * 改成 Map 后，**只传要改的键**：
+     *   · `patch["doi"] = "10.xxx"` → 只动 doi；
+     *   · `patch["doi"] = ""`        → 清空 doi（空串即删除）；
+     *   · 没出现的键                  → 保持原值。
+     *
+     * ⚠️ `title` 有特殊兜底：清空后会落回文件名。
+     *    这不是「必填」——是「空标题在列表里无法辨认」，必须给个能看的。
+     *
+     * @param patch 要修改的字段。允许的键见前端 meta.js 的字段表。
+     *              另外接受三个非 fields 的顶层键：
+     *                `title` / `author` / `year` / `venueType`
+     */
+    fun update(context: Context, id: String, patch: Map<String, String>): Boolean {
         val docs = list(context)
         val target = docs.firstOrNull { it.id == id } ?: return false
 
+        // --- 顶层字段 ---
+        val newTitle = patch["title"]?.let { raw ->
+            raw.ifBlank { fallbackTitle(target.sourceName) }
+        } ?: target.title
+        val newAuthor = patch["author"] ?: target.author
+        val newYear = patch["year"] ?: target.year
+        val newType = patch["venueType"]?.let { normaliseVenueType(it) } ?: target.venueType
+
+        // --- 类别专属字段（fields）---
+        //
+        // ⚠️ 合并而不是替换：前端只回传它改过的键，
+        //    没回传的（比如切换类别时被隐藏的字段）要保持原值。
+        //    否则用户切一下类别，之前填的卷/期/页码就全丢了。
+        val newFields = LinkedHashMap(target.fields)
+        patch.forEach { (k, v) ->
+            // 四个顶层键不进 fields
+            if (k in TOP_LEVEL_KEYS) return@forEach
+            if (v.isBlank()) {
+                // 空值 = 清空该字段。删除而不是存空串 ——
+                // 见 parseFields 的注释：索引里不堆无意义的空键。
+                newFields.remove(k)
+            } else {
+                newFields[k] = v.trim()
+            }
+        }
+
         val updated = target.copy(
-            title = (title ?: target.title).ifBlank { fallbackTitle(target.sourceName) },
-            author = author ?: target.author,
-            venue = venue ?: target.venue,
+            title = newTitle,
+            author = newAuthor,
+            year = newYear,
+            venueType = newType,
+            fields = newFields,
         )
 
         writeIndex(context, docs.map { if (it.id == id) updated else it })
         return true
     }
+
+    /** 不属于 [Doc.fields] 的顶层键，update() 里要跳过 */
+    private val TOP_LEVEL_KEYS = setOf("title", "author", "year", "venueType", "venue")
 
     /**
      * 删除若干文献（含文件）。

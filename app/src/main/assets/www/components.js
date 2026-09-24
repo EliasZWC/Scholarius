@@ -61,6 +61,85 @@
        底部弹层
        ---------------------------------------------------------------------- */
 
+    /**
+     * 弹层的遮罩（scrim）。
+     *
+     * ══ 为什么在这里，而不是在 HTML 里给每个弹层配一个（v0.1.5）══
+     *
+     * 用户要求：「应用内表单应该是点击表单外的地方表单自动触发取消
+     * 然后收起来。」
+     *
+     * 项目里有 4 个弹层（sheet-picker / sheet-confirm / sheet-update /
+     * sheet-signout）。若在每个 HTML 节点旁写一个 backdrop，
+     * 就得重复 4 遍结构 + 4 遍样式 + 各自绑一遍点击；
+     * 而它们的行为**完全一样**。共用一个动态创建的遮罩，
+     * 行为天然一致，将来加弹层也不会漏。
+     *
+     * ⚠️ 遮罩的 z-index 必须**紧贴**弹层的 100（取 99）。
+     *    太高会盖住弹层本身（点不到按钮），
+     *    太低会被页面内容盖住（点不到遮罩）。
+     */
+    var scrimEl = null;
+
+    function ensureScrim() {
+        if (scrimEl && scrimEl.parentNode) {
+            return scrimEl;
+        }
+        var el = document.createElement('div');
+        el.className = 'sheet-scrim';
+        el.hidden = true;
+        /*
+          ⚠️ 用 click 而不是 touchstart/mousedown。
+             touchstart 会在**滚动惯性中**误触发（用户滑动页面想看清
+             弹层内容，手指抬起时点到了遮罩上），把弹层关掉。
+             click 只在真实的「点按」后触发，滚动时不触发。
+        */
+        el.addEventListener('click', function () {
+            trace('scrim:click', 'dismiss sheet=' + (currentSheet ? currentSheet.id : 'null'));
+            closeSheet();
+        });
+        document.body.appendChild(el);
+        scrimEl = el;
+        return el;
+    }
+
+    function showScrim() {
+        var el = ensureScrim();
+        el.hidden = false;
+        /*
+          ⚠️ 淡入必须分两帧。
+             和弹层的 transform 动画同一个坑：如果在 hidden=false 的
+             同一帧就加 is-open，浏览器会把两次样式变更合并，
+             起始态不是 opacity: 0，transition 不触发（直接跳变）。
+             requestAnimationFrame 让它先以 opacity:0 真实布局一帧。
+        */
+        global.requestAnimationFrame(function () {
+            if (scrimEl) {
+                scrimEl.classList.add('is-open');
+            }
+        });
+    }
+
+    function hideScrim() {
+        if (!scrimEl) {
+            return;
+        }
+        scrimEl.classList.remove('is-open');
+        /*
+          ⚠️ 等过渡结束再置 hidden。
+             立刻置 hidden 会让淡出动画被掐断（一闪就没了）。
+             240ms 是 .sheet-scrim 的 transition 时长，须与之保持一致。
+             用 setTimeout 而不是 transitionend：后者在
+             「元素已被 hidden」或「动画被打断」时不会触发，会漏掉清理。
+        */
+        global.setTimeout(function () {
+            // 期间可能又开了新弹层，此时不能藏
+            if (!currentSheet && scrimEl) {
+                scrimEl.hidden = true;
+            }
+        }, 260);
+    }
+
     function openSheet(sheet, onDismiss) {
         trace('sheet:open', 'incoming=' + (sheet ? sheet.id : 'null') +
             ' hidden=' + (sheet ? sheet.hidden : '-') +
@@ -81,6 +160,7 @@
         currentSheet = sheet;
         currentDismissHandler = typeof onDismiss === 'function' ? onDismiss : null;
         document.body.classList.add('sheet-open');
+        showScrim();
 
         /*
           ⚠️ 进场动画的强制回流，必须**把读到的值用起来**。
@@ -113,6 +193,7 @@
         currentSheet = null;
         document.body.classList.remove('sheet-open');
         sheet.classList.remove('is-open');
+        hideScrim();
 
         sheet.hidden = true;
         notifyDismissed();
@@ -526,7 +607,48 @@
                     btn.appendChild(dot);
                 }
 
-                btn.appendChild(label);
+                /*
+                  ⚠️ 图标与文字要装进**同一个容器**（.sheet-picker-main）。
+
+                     不能把图标和 label 作为 .sheet-picker-item 的并列子元素 ——
+                     那个容器是 `justify-content: space-between`，
+                     并列三项会被摊到左 / 中 / 右，
+                     文字飘到中间，看起来像居中（实测用户反馈就是这个）。
+                     装进一个容器后只有两项可分：本容器 + 对勾，
+                     于是「图标 + 文字」整组自然靠左、彼此紧贴 ——
+                     与文献卡片的排法一致。
+
+                  ⚠️ opt.swatch 不用装进来：它是**颜色预览**，语义上属于
+                     「值」而不是「名称」，且只有字体颜色那几项用 ——
+                     放左边会让人以为是分类图标。它保持独立子项。
+                */
+                var main = document.createElement('span');
+                main.className = 'sheet-picker-main';
+
+                /*
+                  ⚠️ opt.icon 是可选的图标名（ICON_PATHS 里的键）。
+
+                     用途：发表物类别那几个选项 —— 七个类别的名字
+                     （Journal / Conference / Preprint…）光是文字，
+                     用户得逐个读完才知道都是什么；配上图标后
+                     一眼就能扫到要找的那个。
+
+                     ⚠️ **必须**用 ScholariusUI.icon() 生成，
+                        不能自己拼 <svg> —— 那六个图标是 960 体系
+                        （viewBox `0 -960 960 960`），不是 24 体系。
+                        在这里写死 24 会让图标一个像素都不渲染且不报错。
+                        icon() 内部按 ICON_VIEWBOX 表取正确的视口。
+                */
+                if (opt.icon && typeof icon === 'function') {
+                    var mark = document.createElement('span');
+                    mark.className = 'sheet-picker-icon';
+                    mark.setAttribute('aria-hidden', 'true');
+                    mark.innerHTML = icon(opt.icon);
+                    main.appendChild(mark);
+                }
+
+                main.appendChild(label);
+                btn.appendChild(main);
 
                 // 选中标记
                 var mark = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -643,6 +765,14 @@
        Google Material Icons
        ---------------------------------------------------------------------- */
 
+    /*
+      两套坐标系，别混用（详见 icon() 上方的说明）：
+        ICONS_VIEWBOX    —— 24 体系，绝大多数图标
+        SYMBOLS_VIEWBOX  —— 960 体系，Material Symbols 原生的那几个
+    */
+    var ICONS_VIEWBOX = '0 0 24 24';
+    var SYMBOLS_VIEWBOX = '0 -960 960 960';
+
     var ICON_PATHS = {
         check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
         chevronRight: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
@@ -652,7 +782,119 @@
         copy: 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
         openInNew: 'M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z',
         download: 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z',
-        warning: 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z'
+        warning: 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z',
+        /*
+          Material Icons: more_horiz（三个横点）
+          ⚠️ 24 体系（不在下面的 ICON_VIEWBOX 例外表里）——
+             这是 Material **Icons**，不是 Symbols。两者视口不同，
+             搞混就是零像素渲染且不报错。
+        */
+        moreHoriz: 'M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z',
+        /* Material Icons: edit（铅笔，用于详情面板的「编辑」入口） */
+        editPencil: 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z',
+        /* Material Icons: close */
+        closeX: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
+
+        /*
+          ══ 文献类型图标（v0.1.5）══
+
+          用于文献卡片「发表载体」那一行的左侧，表示载体的**性质**。
+
+          ⚠️⚠️ 这六条与 Vault 图标一样，是 **Material Symbols（960 体系）**，
+                所以 viewBox 必须是 `0 -960 960 960`，**不是** `0 0 24 24`。
+                写成 24 体系时图形会落在视口外，一个像素都不渲染。
+
+          ⚠️ 路径**逐字**取自 Google Fonts 官方 CDN：
+                https://fonts.gstatic.com/s/i/short-term/release/
+                    materialsymbolsoutlined/<名字>/default/24px.svg
+             这是 Google 官方分发的 SVG，与 google/material-design-icons
+             仓库的 symbols/ 目录同源。**不要再凭记忆手写** ——
+             本项目已因此出错三次（导航图标缺段 ×2、会议图标拼错 ×1）。
+
+          ⚠️ 换版记录（避免后人改回去）：
+             · 会议：`co_present`（拼错的）→ `groups`（太扁，填充率仅 0.46）
+                     → **`display_group`**（用户指定）
+             · 期刊：`menu_book` → **`import_contacts`**（用户指定，见下）
+             · 预印本：`draft` → **`edit_document`**（用户指定）
+        */
+
+        /*
+          ⚠️ 六条路径**全部**从官方 CDN 取，无一条手写。
+             首次提交时 `school` 是凭记忆写的，取回官方版本一比就发现
+             坐标完全不同（官方以 L40-600 起笔，我写的以 L80-560 起笔）——
+             凭记忆的版本画出来是「扁平的梯形」，官方版是立体的学位帽。
+
+             **判据**：Material Symbols 的路径普遍以「负 y 起笔、大片
+             相对坐标、结尾带 `Z`」为特征；若一条路径短得出奇、或者
+             坐标都是正数，几乎可以肯定是错的。
+        */
+        // Material Symbols: group（两个人，用户指定）
+        /*
+          ⚠️ 会议图标换过**四次**，完整轨迹（别再改回去）：
+
+             ① `co_present` 凭记忆拼的 —— 形状完全不对，像画框。
+             ② `groups`（三个人）—— 语义对，但设计框 24×11（宽扁），
+                填充率仅 0.46，13px 下看着比别人小一半。
+             ③ `display_group`（三人 + 外框 + 三个圆点）—— 尺寸合格
+                （0.67），但线条太多，13px 下糊成一团。
+             ④ **`group`（两个人，当前）** —— 用户指定，理由：
+                「根据简单原则」。两个头 + 两个肩膀，是六类里最简洁的
+                "人"意象。
+
+          ⚠️ 判据（与预印本那次同源）：**13px 只能承载一个形体**。
+             元素越少越清楚。`display_group` 有外框 + 三个人 + 三个圆点，
+             `group` 只有两个头 + 两个肩 —— 后者在 13px 下明显更干净。
+
+          ⚠️ 官方的 `group` 与 `groups` 是**两个不同的图标**，别混：
+             · `group`  = 两个人（本图标）
+             · `groups` = 三个人（更宽扁，设计框 24×11）
+             名字只差一个 s，从 CDN 取的时候务必核对文件名。
+        */
+        venueConference: 'M40-160v-112q0-34 17.5-62.5T104-378q62-31 126-46.5T360-440q66 0 130 15.5T616-378q29 15 46.5 43.5T680-272v112H40Zm720 0v-120q0-44-24.5-84.5T666-434q51 6 96 20.5t84 35.5q36 20 55 44.5t19 53.5v120H760ZM247-527q-47-47-47-113t47-113q47-47 113-47t113 47q47 47 47 113t-47 113q-47 47-113 47t-113-47Zm466 0q-47 47-113 47-11 0-28-2.5t-28-5.5q27-32 41.5-71t14.5-81q0-42-14.5-81T544-792q14-5 28-6.5t28-1.5q66 0 113 47t47 113q0 66-47 113ZM120-240h480v-32q0-11-5.5-20T580-306q-54-27-109-40.5T360-360q-56 0-111 13.5T140-306q-9 5-14.5 14t-5.5 20v32Zm296.5-343.5Q440-607 440-640t-23.5-56.5Q393-720 360-720t-56.5 23.5Q280-673 280-640t23.5 56.5Q327-560 360-560t56.5-23.5ZM360-240Zm0-400Z',
+
+        // Material Symbols: edit（一支铅笔，用户指定）
+        /*
+          ⚠️ 预印本原用 `edit_document`（文档 + 铅笔），但与「报告」的
+             `description`（文档 + 折角）在 13px 下**轮廓几乎一样** ——
+             两者都是一张竖纸，用户分不出来。
+
+             换成 `edit`（只剩铅笔）。用户的原话：
+             「因为比较小，所以不能复杂」。
+
+          ⚠️ 这是个可推广的判据：13px 的图标**只能承载一个形体**。
+             两个图标若共享主体形状（同为"纸"），差异点必须落在
+             主体之外才看得出来（如 `school` 的帽子 vs `book` 的书脊）。
+             整批图标排在一起看时，要先问「一眼扫过去会不会撞脸」。
+
+          ⚠️ 代价：`edit` 的线条较多（一支笔 + 笔尖），在 13px 下笔尖
+             会糊成一团。但整体轮廓是清晰的斜线，认得出「编辑/草稿」。
+             比"和报告撞脸"好。
+        */
+        venuePreprint: 'M200-200h57l391-391-57-57-391 391v57Zm-80 80v-170l528-527q12-11 26.5-17t30.5-6q16 0 31 6t26 18l55 56q12 11 17.5 26t5.5 30q0 16-5.5 30.5T817-647L290-120H120Zm640-584-56-56 56 56Zm-141 85-28-29 57 57-29-28Z',
+
+        // Material Symbols: import_contacts（翻开的书简版，期刊，用户指定）
+        /*
+          ⚠️ 期刊原本用 `menu_book`，现改为 `import_contacts`（用户指定）。
+
+             两点区别：
+               · `menu_book` 书页上有**三行文字**，视觉更密；
+                 `import_contacts` 是**简版**（无文字线），在小尺寸下更干净。
+               · Vault 标签改用 `menu_book`，所以期刊换掉后两者不再混淆。
+
+          ⚠️ 两者是**同一套 960 体系**，viewBox 一致，可以直接替换。
+        */
+        venueJournal: 'M260-320q47 0 91.5 10.5T440-278v-394q-41-24-87-36t-93-12q-36 0-71.5 7T120-692v396q35-12 69.5-18t70.5-6Zm260 42q44-21 88.5-31.5T700-320q36 0 70.5 6t69.5 18v-396q-33-14-68.5-21t-71.5-7q-47 0-93 12t-87 36v394Zm-40 118q-48-38-104-59t-116-21q-42 0-82.5 11T100-198q-21 11-40.5-1T40-234v-482q0-11 5.5-21T62-752q46-24 96-36t102-12q58 0 113.5 15T480-740q51-30 106.5-45T700-800q52 0 102 12t96 36q11 5 16.5 15t5.5 21v482q0 23-19.5 35t-40.5 1q-37-20-77.5-31T700-240q-60 0-116 21t-104 59ZM280-494Z',
+
+        // Material Symbols: book（带书签的合上的书，专著的通用意象）
+        // ⚠️ 与导航栏 Vault 曾经用过的 `book` 是同一个图标 ——
+        //    现在 Vault 换成 menu_book 了，所以不再重复。
+        venueBook: 'M240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h480q33 0 56.5 23.5T800-800v640q0 33-23.5 56.5T720-80H240Zm0-80h480v-640h-80v280l-100-60-100 60v-280H240v640Zm0 0v-640 640Zm200-360 100-60 100 60-100-60-100 60Z',
+
+        // Material Symbols: school（学位帽）
+        venueThesis: 'M480-120 200-272v-240L40-600l440-240 440 240v320h-80v-276l-80 44v240L480-120Zm0-332 274-148-274-148-274 148 274 148Zm0 241 200-108v-151L480-360 280-470v151l200 108Zm0-241Zm0 90Zm0 0Z',
+
+        // Material Symbols: description（文档）
+        venueReport: 'M320-240h320v-80H320v80Zm0-160h320v-80H320v80ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z',
     };
 
     /*
@@ -675,13 +917,41 @@
         '3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 ' +
         '8c0-4.42-3.58-8-8-8z';
 
-    /** 返回一段 svg 标记，图标全部来自 Google Material Icons */
+    /*
+      ⚠️⚠️ viewBox 必须**按图标逐个注册**，不能一律用 0 0 24 24。
+
+      本项目同时存在**两套**互不兼容的 Material 图标坐标系：
+
+        · Material Symbols  →  viewBox `0 -960 960 960`
+          路径坐标全在 x∈[0,960]、y∈[-960,0] 之间。
+        · Material Icons    →  viewBox `0 0 24 24`
+          路径坐标全在 0~24 之间。
+
+      把 960 体系的路径塞进 `0 0 24 24` 的视口，图形**完全落在视口外**
+      —— 结果是「图标位置一片空白」，且**不报任何错**，很难查。
+      反过来把 24 体系的路径塞进 960 视口，则缩成左上角一个小点。
+
+      所以每个图标的 viewBox 必须跟着它自己的路径走。
+      默认 24（兼容既有图标），在下面的表里登记例外。
+    */
+    var ICON_VIEWBOX = {
+        // 960 体系（Material Symbols）—— 见 ICON_PATHS 里同名的注释
+        venueConference: SYMBOLS_VIEWBOX,
+        venueJournal: SYMBOLS_VIEWBOX,
+        venuePreprint: SYMBOLS_VIEWBOX,
+        venueBook: SYMBOLS_VIEWBOX,
+        venueThesis: SYMBOLS_VIEWBOX,
+        venueReport: SYMBOLS_VIEWBOX
+    };
+
+    /** 返回一段 svg 标记，图标全部来自 Google Material 体系 */
     function icon(name) {
         var path = ICON_PATHS[name];
         if (!path) {
             return '';
         }
-        return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+        var box = ICON_VIEWBOX[name] || ICONS_VIEWBOX;
+        return '<svg viewBox="' + box + '" aria-hidden="true" focusable="false">' +
             '<path d="' + path + '"/></svg>';
     }
 

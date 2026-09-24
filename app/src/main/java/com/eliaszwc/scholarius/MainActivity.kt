@@ -388,8 +388,12 @@ class MainActivity : AppCompatActivity() {
                 */
                 onGetThumbnail = { id -> thumbnailFor(id) },
                 onDeleteDocs = { ids -> runOnUiThread { deleteDocs(ids) } },
-                onUpdateDoc = { id, title, author, venue ->
-                    runOnUiThread { updateDoc(id, title, author, venue) }
+                /*
+                  ⚠️ patchJson 是一个 JSON 对象字符串，不是固定参数。
+                     字段会随详情页增加，见 updateDoc 的注释。
+                */
+                onUpdateDoc = { id, patchJson ->
+                    runOnUiThread { updateDoc(id, patchJson) }
                 },
                 onRequestLibrary = { runOnUiThread { pushLibraryToWeb() } },
                 onRequestDocText = { id -> requestDocText(id) },
@@ -1042,6 +1046,27 @@ class MainActivity : AppCompatActivity() {
                 put("title", doc.title)
                 put("author", doc.author)
                 put("venue", doc.venue)
+                // 发表年份，可能是空串（没抓到 / 老索引没这个键）。
+                // 网页据此显示：空串就留白，不要显示占位符。
+                put("year", doc.year)
+                /*
+                  发表物类别。网页靠它决定：
+                    · 卡片上画哪个图标（见 vault.js 的 VENUE_TYPE_ICON）
+                    · 详情页显示哪一组字段（见 meta.js 的 TYPE_FIELDS）
+                  ⚠️ 必须推 —— 前端 meta.js 的字段表是按类别分支的，
+                     不推这个值，详情页就只能显示通用字段。
+                */
+                put("venueType", doc.venueType)
+                /*
+                  类别专属字段（卷/期/页码/DOI/ISBN…）。
+                  ⚠️ 用 JSONObject 嵌套而不是拍平成 top-level 键：
+                     字段名可能和顶层键重名（比如 fields 里将来的 `venue`），
+                     嵌套就没有这个风险，且与索引里的存储结构一一对应。
+                  空表就不放这个键，省得每个 doc 都带一个 {}。
+                */
+                if (doc.fields.isNotEmpty()) {
+                    put("fields", org.json.JSONObject(doc.fields as Map<*, *>))
+                }
                 put("addedAt", doc.addedAt)
                 put("pages", doc.pages)
                 put("size", doc.size)
@@ -1088,12 +1113,53 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 改文献元数据。改完重新推列表。 */
-    private fun updateDoc(id: String, title: String?, author: String?, venue: String?) {
+    /**
+     * 改文献元数据。改完重新推列表。
+     *
+     * ⚠️ 入参是**一个 JSON 对象字符串**，不是固定几个参数。
+     *
+     *    原来签名是 `(id, title, author, venue)` —— 只能改三样东西，
+     *    而详情页要编辑的字段有二十多个（卷/期/页码/DOI/ISBN/学位类型…）。
+     *    每加一个字段就改一次桥签名，既繁琐又容易前后端错位。
+     *
+     *    改成 JSON 后**加字段不用动原生**：网页按 meta.js 的字段表
+     *    把改过的键塞进对象传过来即可。
+     *    `LibraryStore.update` 本来就是 Map 形态（见它的注释），
+     *    这里是把它接到桥上，语义完全一致：
+     *      · 出现的键   → 改成该值
+     *      · 值为空串   → 清空该字段
+     *      · 没出现的键 → 保持原值
+     *
+     * ⚠️ 解析失败就整批不动（返回 false 由桥层记日志），
+     *    不做「尽力解析一半」—— 半截的元数据比不改更糟。
+     */
+    private fun updateDoc(id: String, patchJson: String) {
+        val patch: Map<String, String> = try {
+            val obj = org.json.JSONObject(patchJson)
+            val map = LinkedHashMap<String, String>()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                // optString 对 null 返回 ""，与「清空」语义一致
+                map[k] = obj.optString(k, "")
+            }
+            map
+        } catch (t: Throwable) {
+            debugLog("[library] updateDoc 解析失败：$patchJson")
+            return
+        }
+
+        if (patch.isEmpty()) return
+
         thread {
-            val ok = LibraryStore.update(this, id, title, author, venue)
+            val ok = LibraryStore.update(this, id, patch)
             runOnUiThread {
                 if (ok) pushLibraryToWeb()
+                // 推回给网页：详情页据此决定「已保存」提示要不要显示
+                evaluateInWeb(
+                    "window.ScholariusShell && window.ScholariusShell.docUpdated(" +
+                        "${org.json.JSONObject.quote(id)}, $ok);"
+                )
             }
         }
     }
@@ -1121,7 +1187,7 @@ class MainActivity : AppCompatActivity() {
             PdfText.ensureInitialised(this)
 
             val file = LibraryStore.pdfFile(this, id)
-            val text = if (file.exists()) PdfText.extract(file) else null
+            val result = if (file.exists()) PdfText.extract(file) else null
 
             runOnUiThread {
                 /*
@@ -1130,22 +1196,105 @@ class MainActivity : AppCompatActivity() {
                     手写转义几乎必错（早期 debugLog 的 quote() 就踩过）。
                     用 JSONObject.quote() 是唯一可靠的方式。
                 */
-                if (text == null) {
+                if (result == null) {
                     debugLog("[reader] no text for $id")
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.readerText(" +
-                            "${org.json.JSONObject.quote(id)}, null);"
+                            "${org.json.JSONObject.quote(id)}, null, null, null);"
                     )
                 } else {
-                    debugLog("[reader] pushing ${text.length} chars for $id")
+                    val outlineJson = outlineToJson(result.outline)
+                    val linesJson = linesToJson(result.lines)
+                    debugLog(
+                        "[reader] pushing ${result.text.length} chars, " +
+                            "${result.lines.size} lines, " +
+                            "${result.outline.size} outline entries for $id"
+                    )
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.readerText(" +
                             "${org.json.JSONObject.quote(id)}, " +
-                            "${org.json.JSONObject.quote(text)});"
+                            "${org.json.JSONObject.quote(result.text)}, " +
+                            "$outlineJson, $linesJson);"
                     )
                 }
             }
         }
+    }
+
+    /**
+     * 把自带大纲序列化成 JS 数组字面量。
+     *
+     * ⚠️ 标题里可能有引号/反斜杠/换行，所以**每个字段都过 quote()**。
+     *    拼字符串做 JSON 是 bug 温床，但这里结构极简（3 个字段），
+     *    比引一个 JSON 库划算。
+     */
+    private fun outlineToJson(entries: List<PdfText.OutlineEntry>): String {
+        if (entries.isEmpty()) return "[]"
+        val sb = StringBuilder(entries.size * 48)
+        sb.append('[')
+        for ((i, e) in entries.withIndex()) {
+            if (i > 0) sb.append(',')
+            sb.append("{\"level\":").append(e.level)
+            sb.append(",\"title\":").append(org.json.JSONObject.quote(e.title))
+            sb.append(",\"page\":").append(e.page)
+            sb.append('}')
+        }
+        sb.append(']')
+        return sb.toString()
+    }
+
+    /**
+     * 把行元数据序列化成 JS 数组字面量。
+     *
+     * ⚠️ 这是 v0.1.5 为「目录靠字体识别」新增的载荷。
+     *
+     * ⚠️ **行数可能上万，这里的体积必须控制**：
+     *    - JSON key 用**单字母**（f/s/p），不用 font/size/page。
+     *      实测一篇文章 4000 行时，长 key 会让字符串多出 ~100KB，
+     *      而 WebView 的 evaluateJavascript 参数是要跨进程传的。
+     *    - 字号保留 1 位小数（float 序列化会产出 9.300000190734863 这种）。
+     *    - 字体名做**去重**：一篇文章通常只有十几个字体，
+     *      但每行都重复一遍会浪费大量空间。这里输出
+     *      `{"fonts":[...],"lines":[[fIdx,size,page],...]}`，
+     *      行里只存字体**下标**。
+     *    - 文本本身**不在这里重复传**（正文已单独传过），
+     *      前端按 `text.split('\n')` 的下标就能对上。
+     */
+    private fun linesToJson(lines: List<PdfText.Line>): String {
+        if (lines.isEmpty()) return "null"
+
+        // 字体名去重，建立 名称 -> 下标
+        val fontIndex = LinkedHashMap<String, Int>()
+        for (l in lines) {
+            if (l.font.isNotEmpty() && !fontIndex.containsKey(l.font)) {
+                fontIndex[l.font] = fontIndex.size
+            }
+        }
+
+        val sb = StringBuilder(lines.size * 24 + fontIndex.size * 32)
+        sb.append("{\"fonts\":[")
+        for ((i, name) in fontIndex.keys.withIndex()) {
+            if (i > 0) sb.append(',')
+            sb.append(org.json.JSONObject.quote(name))
+        }
+        sb.append("],\"lines\":[")
+        for ((i, l) in lines.withIndex()) {
+            if (i > 0) sb.append(',')
+            sb.append('[')
+            sb.append(fontIndex[l.font] ?: -1)
+            sb.append(',')
+            /*
+              ⚠️ 字号用 (size*10).roundToInt() 传**整数**，
+                 前端再除 10。直接传 float 会得到
+                 9.300000190734863 这种长尾，体积翻好几倍。
+            */
+            sb.append(Math.round(l.size * 10f))
+            sb.append(',')
+            sb.append(l.page)
+            sb.append(']')
+        }
+        sb.append("]}")
+        return sb.toString()
     }
 
     /** 用系统浏览器打开外部链接（站内导航不走这里） */

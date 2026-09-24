@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Scholarius 发表物图标 · 候选对比</title>
+    <style>
+        :root {
+            --bg: #EFEFED;
+            --surface: #FFFFFF;
+            --surface-raised: #E4E4E1;
+            --on-surface: #111111;
+            --on-surface-variant: #6B6B69;
+            --outline: #D5D5D2;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 24px;
+            background: var(--bg);
+            color: var(--on-surface);
+            font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+
+        h1 {
+            font-size: 20px;
+            margin: 0 0 6px;
+        }
+
+        h2 {
+            font-size: 15px;
+            margin: 28px 0 10px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--outline);
+        }
+
+        .lead {
+            color: var(--on-surface-variant);
+            margin: 0 0 8px;
+            max-width: 760px;
+        }
+
+        .note {
+            font-size: 13px;
+            color: var(--on-surface-variant);
+            background: var(--surface-raised);
+            border-left: 3px solid #C0392B;
+            padding: 10px 12px;
+            border-radius: 4px;
+            margin: 12px 0;
+            max-width: 860px;
+        }
+
+        /* ---- 图标墙：按 24px 网格展示，看单图形态 ---- */
+        .wall {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+            gap: 12px;
+            margin: 12px 0 4px;
+        }
+
+        .tile {
+            background: var(--surface);
+            border-radius: 10px;
+            padding: 12px 8px 10px;
+            text-align: center;
+        }
+
+        .tile svg {
+            width: 40px;
+            height: 40px;
+            fill: var(--on-surface);
+            display: block;
+            margin: 0 auto 8px;
+        }
+
+        .tile .name {
+            font-size: 11px;
+            font-weight: 600;
+            word-break: break-all;
+        }
+
+        .tile .size {
+            font-size: 10px;
+            color: var(--on-surface-variant);
+            margin-top: 2px;
+        }
+
+        .tile .bad {
+            color: #C0392B;
+            font-weight: 700;
+        }
+
+        .tile .ok {
+            color: #15803D;
+            font-weight: 700;
+        }
+
+        .swatch {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            margin-right: 4px;
+            vertical-align: -1px;
+        }
+
+        /* ---- 真实卡片预览 ---- */
+        .cards {
+            background: var(--surface);
+            border-radius: 12px;
+            padding: 4px 12px;
+            max-width: 420px;
+        }
+
+        .rowline {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 10px 0;
+            border-bottom: 1px solid var(--outline);
+        }
+
+        .rowline:last-child {
+            border-bottom: 0;
+        }
+
+        .rowline .left {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            color: var(--on-surface-variant);
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .rowline .left svg {
+            width: 13px;
+            height: 13px;
+            fill: currentColor;
+            opacity: 0.75;
+        }
+
+        .pill {
+            font-size: 12px;
+            color: var(--on-surface-variant);
+            background: color-mix(in srgb, currentColor 12%, transparent);
+            padding: 0 6px;
+            border-radius: 4px;
+            line-height: 1.5;
+        }
+
+        /* ---- 小尺寸（13px）逐像素检查 ---- */
+        .tiny {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            align-items: center;
+            background: var(--surface);
+            border-radius: 10px;
+            padding: 14px;
+        }
+
+        .tiny figure {
+            margin: 0;
+            text-align: center;
+        }
+
+        .tiny svg {
+            width: 13px;
+            height: 13px;
+            fill: var(--on-surface);
+            display: block;
+            margin: 0 auto 4px;
+        }
+
+        .tiny figcaption {
+            font-size: 10px;
+            color: var(--on-surface-variant);
+        }
+
+        code {
+            background: var(--surface-raised);
+            border-radius: 3px;
+            padding: 1px 5px;
+            font-size: 12px;
+        }
+
+        .navdemo {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            padding: 6px 14px;
+            background: var(--surface);
+            border-radius: 10px;
+            margin-right: 10px;
+        }
+
+        .navdemo svg {
+            width: 24px;
+            height: 24px;
+            fill: var(--on-surface-variant);
+        }
+
+        .navdemo span {
+            font-size: 11px;
+            color: var(--on-surface-variant);
+        }
+
+        /* ---- 撞脸检查 ---- */
+        .faceoff-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--surface);
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            max-width: 520px;
+        }
+
+        .faceoff-row svg {
+            width: 18px;
+            height: 18px;
+            fill: var(--on-surface);
+            flex: 0 0 auto;
+        }
+
+        .fo-name {
+            font-size: 12px;
+            color: var(--on-surface);
+            flex: 1 1 auto;
+        }
+
+        .fo-score {
+            font-size: 11px;
+            font-weight: 700;
+            flex: 0 0 auto;
+        }
+
+        .fo-score.bad {
+            color: #C0392B;
+        }
+
+        .fo-score.ok {
+            color: var(--on-surface-variant);
+            font-weight: 400;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>发表物图标 · 候选对比</h1>
+    <p class="lead">
+        全部路径取自 <code>google/material-design-icons</code> 官方仓库（与 <code>design/nav-preview.html</code> 同一份来源），
+        <b>未经手改</b>。每个图标下方标出：向量的设计框尺寸，以及在 13px 显示框里的<b>实际渲染尺寸</b>与<b>填充率</b>。
+    </p>
+
+    <div class="note">
+        <b>为什么要看填充率：</b>Material 图标并非都占满 24×24 的设计框。
+        宽扁的图标（如 <code>groups</code>）在 13px 下只有 6px 高，看起来会<b>比别的图标小一半</b>，
+        像没对齐。填充率 = 实际渲染高度 ÷ 13，六个图标应当落在<b>同一档</b>（实测目标 0.7~0.85）。
+    </div>
+
+    <h2>① 六类载体图标（当前方案）</h2>
+    <p class="lead">发表物那一行左侧的图标。先看单图形态，再看右侧 13px 的实际观感。</p>
+    <div class="wall" id="wallVenue"></div>
+
+    <h2>② 13px 真实尺寸（卡片里的实际大小）</h2>
+    <div class="tiny" id="tinyVenue"></div>
+
+    <h2>③ 卡片里的真实观感</h2>
+    <p class="lead">左：类型（图标 + 文字）　右：载体名（带淡底色）</p>
+    <div class="cards" id="cardDemo"></div>
+
+    <h2>③.5 撞脸检查（13px 像素重合度）</h2>
+    <div class="note">
+        <b>为什么单看填充率不够：</b>预印本原本用 <code>edit_document</code>（纸 + 铅笔）、
+        报告用 <code>description</code>（纸 + 折角），两者设计框都是 640×800、填充率都是 0.83，
+        指标全「合格」—— 但在 13px 下<b>一眼看过去就是同一个图标</b>。
+        重合度 &gt; 0.72 标红提醒（仅为提示，最终靠人眼）。
+    </div>
+    <div id="faceoff"></div>
+
+    <h2>④ Vault 图标（定案 <code>storage</code>，与历史版本对比）</h2>
+    <div class="note">
+        <b>换版轨迹：</b><code>book</code>（与「专著」重复）→ <code>menu_book</code>（像"正在阅读"）
+        → <b><code>storage</code>（三层机架，"存放/归档"）</b>。
+        <code>menu_book</code> 并未浪费 —— 它现在是卡片里「期刊」的图标。
+    </div>
+    <div class="wall" id="wallVault"></div>
+
+    <h2>⑤ 导航栏里的样子</h2>
+    <div id="navDemo"></div>
+
+    <script src="../app/src/main/assets/www/components.js"></script>
+    <script>
+        /*
+          ════════════════════════════════════════════════════════════
+          图标路径
+
+          ⚠️⚠️ **不再在本页维护路径副本**。
+
+             原先这里有一份手抄的 ICON 表，结果改了组件里的图标、
+             忘了改这里，两边长期不一致（`school` 一条就是例子：
+             组件里写错、本页也写错，互相「印证」，谁也没发现）。
+
+             现在**直接加载 `components.js`**，用它的 `ScholariusUI.icon()`
+             和真实的 viewBox 表渲染。这样预览页永远是当前实现的样子，
+             不存在「预览和实际不符」。
+
+          ⚠️ 代价：本页必须用 **http 服务**打开（file:// 下 script 跨目录
+             可能被拦）。用仓库里的预览脚本起服务，不要直接双击。
+          ════════════════════════════════════════════════════════════
+        */
+        var UI = window.ScholariusUI;
+
+        // 图标元信息：中文名、官方图标名、viewBox 体系
+        /*
+          ⚠️ vb 必须**如实标注**，不能凭印象写。
+
+             本页六类载体与 Vault 一样，**全部是 960 体系**
+             （Material Symbols 原生：viewBox `0 -960 960 960`）。
+             这一点和本文件的历史版本相反 —— 旧版本是 24 体系，
+             后来为了与导航栏一致，整批换成了 Symbols。
+
+             实测踩过：co_present 这条路径曾是从卡片代码里抄的
+             （那时是 24 体系），但标注写成 '960'，度量时除以 960，
+             得到「13px → 0.9×0.7」这种明显错误的数据。
+             标注错了，整列数字就都不可信。
+        */
+        var INFO = {
+            venueConference: { zh: '会议', off: 'group', vb: '960' },
+            venueJournal: { zh: '期刊', off: 'import_contacts', vb: '960' },
+            venuePreprint: { zh: '预印本', off: 'edit', vb: '960' },
+            venueBook: { zh: '专著', off: 'book', vb: '960' },
+            venueThesis: { zh: '学位论文', off: 'school', vb: '960' },
+            venueReport: { zh: '报告', off: 'description', vb: '960' },
+
+            /*
+              Vault 图标已定案为 **`storage`**（三层机架），
+              换版轨迹：`book` → `menu_book` → `storage`。
+
+              ⚠️ `storage` 与 `menu_book` 都**不在** components.js 的
+                 ICON_PATHS 里 —— 导航图标是内联在 index.html 的
+                 （用双份 outline/fill，结构与 icon() 不同）。
+                 所以下面两条用 `inline` 字段直接写明路径，
+                 路径必须与 index.html 保持逐字一致。
+
+              ⚠️ menu_book 退役后并没浪费：它现在是卡片里「期刊」的图标
+                 （venueJournal），所以这里仍能借它对照。
+            */
+            vaultNew: {
+                zh: 'Vault（定案 storage）', off: 'storage', vb: '960',
+                inline: 'M120-160v-160h720v160H120Zm80-40h80v-80h-80v80Zm-80-440v-160h720v160H120Zm80-40h80v-80h-80v80Zm-80 280v-160h720v160H120Zm80-40h80v-80h-80v80Z'
+            },
+            vaultPrev: { zh: 'Vault（上一版 menu_book）', off: 'menu_book', vb: '960', alias: 'venueJournal' },
+            vaultOld: { zh: 'Vault（最早 book，与「专著」重复）', off: 'book', vb: '960', alias: 'venueBook', dup: true }
+        };
+
+        function svgFor(key, cls) {
+            var info = INFO[key] || {};
+            // inline：路径直接写在本文件里（Vault 导航图标不在 ICON_PATHS 中）
+            // alias ：借另一个图标名去 components.js 里取路径
+            var markup;
+            if (info.inline) {
+                markup = '<svg viewBox="0 -960 960 960" aria-hidden="true" focusable="false">' +
+                    '<path d="' + info.inline + '"/></svg>';
+            } else {
+                markup = UI.icon(info.alias || key);
+            }
+            if (!markup) { return ''; }
+            if (cls) {
+                markup = markup.replace('<svg', '<svg class="' + cls + '"');
+            }
+            return markup;
+        }
+
+        /*
+          量出图标在 960 设计框里的实际占用尺寸。
+
+          ⚠️ getBBox() 返回的是**用户坐标系**下的边界，与 CSS 尺寸无关，
+             所以要先按 viewBox 归一化：bbox / 960 * 显示尺寸。
+             （本页全是 960 体系；若将来混入 24 体系的图标，
+               必须按 INFO[key].vb 分别取除数，否则数字不可比。）
+        */
+        function measure(key, displayPx) {
+            var host = document.createElement('div');
+            host.style.cssText = 'position:fixed;left:-9999px;top:0;';
+            host.innerHTML = svgFor(key);
+            document.body.appendChild(host);
+            var path = host.querySelector('path');
+            var info = INFO[key] || {};
+            var unit = info.vb === '24' ? 24 : 960;
+            var bb = null;
+            try { bb = path.getBBox(); } catch (e) { }
+            host.remove();
+            if (!bb || !bb.width) return null;
+            var k = displayPx / unit;
+            return {
+                design: Math.round(bb.width) + '×' + Math.round(bb.height),
+                w: +(bb.width * k).toFixed(1),
+                h: +(bb.height * k).toFixed(1),
+                fill: +(bb.height * k / displayPx).toFixed(2)
+            };
+        }
+
+        // ---- ③.5 撞脸检查：13px 像素重合度 ----
+        /*
+          ⚠️ 为什么单看「填充率」不够：
+
+             预印本原本用 `edit_document`（纸 + 铅笔），报告用 `description`
+             （纸 + 折角），两者设计框都是 **640×800**、填充率都是 0.83 ——
+             按旧指标都「合格」，但在 13px 下**一眼看过去就是同一个图标**。
+
+             用户在真实屏幕上发现了这个问题。**指标合格 ≠ 人能分辨。**
+
+          下面把每个图标按 13px 渲染成位图，两两算 IoU（交并比）。
+          超过阈值就标红 —— 这只是**提示**，不是判决，最终还得靠人眼。
+        */
+        var FACEOFF_THRESHOLD = 0.72;
+
+        function rasterize(key, px) {
+            var markup = svgFor(key);
+            if (!markup) { return Promise.resolve(null); }
+            var c = document.createElement('canvas');
+            c.width = px;
+            c.height = px;
+            var ctx = c.getContext('2d');
+            var img = new Image();
+            return new Promise(function (resolve) {
+                img.onload = function () {
+                    ctx.drawImage(img, 0, 0, px, px);
+                    resolve(ctx.getImageData(0, 0, px, px).data);
+                };
+                img.onerror = function () { resolve(null); };
+                img.src = 'data:image/svg+xml;charset=utf-8,' +
+                    encodeURIComponent(markup);
+            });
+        }
+
+        function iou(a, b) {
+            if (!a || !b) { return -1; }
+            var inter = 0;
+            var union = 0;
+            for (var i = 3; i < a.length; i += 4) {
+                var pa = a[i] > 40;
+                var pb = b[i] > 40;
+                if (pa && pb) { inter++; }
+                if (pa || pb) { union++; }
+            }
+            return union ? inter / union : -1;
+        }
+
+        function buildFaceoff() {
+            var host = document.getElementById('faceoff');
+            if (!host) { return; }
+            var PX = 13;
+            var rasters = {};
+            var chain = Promise.resolve();
+            VENUE_KEYS.forEach(function (k) {
+                chain = chain.then(function () {
+                    return rasterize(k, PX).then(function (d) { rasters[k] = d; });
+                });
+            });
+            chain.then(function () {
+                var found = false;
+                for (var i = 0; i < VENUE_KEYS.length; i++) {
+                    for (var j = i + 1; j < VENUE_KEYS.length; j++) {
+                        var a = VENUE_KEYS[i];
+                        var b = VENUE_KEYS[j];
+                        var s = iou(rasters[a], rasters[b]);
+                        if (s < 0) { continue; }
+                        var bad = s > FACEOFF_THRESHOLD;
+                        if (bad) { found = true; }
+                        var row = document.createElement('div');
+                        row.className = 'faceoff-row';
+                        row.innerHTML = svgFor(a) + svgFor(b) +
+                            '<span class="fo-name">' + INFO[a].zh + ' / ' + INFO[b].zh +
+                            '</span>' +
+                            '<span class="fo-score ' + (bad ? 'bad' : 'ok') + '">' +
+                            s.toFixed(2) + (bad ? ' ← 撞脸' : '') + '</span>';
+                        host.appendChild(row);
+                    }
+                }
+                if (!found) {
+                    var p = document.createElement('p');
+                    p.className = 'lead';
+                    p.textContent = '未发现重合度超过 ' + FACEOFF_THRESHOLD +
+                        ' 的图标对。';
+                    host.appendChild(p);
+                }
+            });
+        }
+
+        // ---- ① 图标墙 ----
+        var VENUE_KEYS = ['venueConference', 'venueJournal', 'venuePreprint',
+            'venueBook', 'venueThesis', 'venueReport'];
+        var wall = document.getElementById('wallVenue');
+        VENUE_KEYS.forEach(function (k) {
+            // ⚠️ 一律按 **13px**（卡片里的真实显示尺寸）度量，
+            //    这样载体墙与 Vault 墙的口径一致，可以横向比较。
+            var m = measure(k, 13);
+            var good = m && m.fill >= 0.68;
+            var t = document.createElement('div');
+            t.className = 'tile';
+            t.innerHTML = svgFor(k) +
+                '<div class="name">' + INFO[k].zh + '</div>' +
+                '<div class="size">' + INFO[k].off + '</div>' +
+                '<div class="size">设计框 ' + (m ? m.design : '?') + '</div>' +
+                '<div class="size ' + (good ? 'ok' : 'bad') + '">' +
+                (m ? '13px → ' + m.w + '×' + m.h + ' · 填充 ' + m.fill : '度量失败') +
+                '</div>';
+            wall.appendChild(t);
+        });
+
+        // ---- ② 13px 真实尺寸 ----
+        var tiny = document.getElementById('tinyVenue');
+        VENUE_KEYS.forEach(function (k) {
+            var f = document.createElement('figure');
+            f.innerHTML = svgFor(k) + '<figcaption>' + INFO[k].zh + '</figcaption>';
+            tiny.appendChild(f);
+        });
+
+        // ---- ③ 卡片观感 ----
+        var rows = [
+            { type: 'venueJournal', label: 'Journal', short: '' },
+            { type: 'venueConference', label: 'Conference', short: 'NIPS' },
+            { type: 'venueConference', label: 'Conference', short: 'CVPR' },
+            { type: 'venuePreprint', label: 'Preprint', short: 'arXiv' },
+            { type: 'venueThesis', label: 'Thesis', short: '' },
+            { type: 'venueReport', label: 'Report', short: 'TR-2024' }
+        ];
+        var cd = document.getElementById('cardDemo');
+        rows.forEach(function (r) {
+            var el = document.createElement('div');
+            el.className = 'rowline';
+            el.innerHTML = '<span class="left">' + svgFor(r.type) +
+                '<span>' + r.label + '</span></span>' +
+                (r.short ? '<span class="pill">' + r.short + '</span>' : '');
+            cd.appendChild(el);
+        });
+
+        // ---- ④ Vault 图标：定案 vs 历史版本 ----
+        /*
+          ⚠️ Vault 图标**已定案为 `storage`**（三层机架）。
+
+             换版轨迹：`book` → `menu_book` → `storage`。
+               · `book`      与卡片「专著」完全相同 → 混淆。
+               · `menu_book` 不重复了，但「翻开的书」读起来像
+                 "正在阅读"，不像"库房"。
+               · `storage`   三层抽屉/机架，语义直指「存放、归档」。
+
+             注意 `book` / `menu_book` 都没浪费：
+               · `book`      现在是卡片里「专著」的图标。
+               · `menu_book` 现在是卡片里「期刊」的图标。
+        */
+        var VAULT_KEYS = ['vaultNew', 'vaultPrev', 'vaultOld'];
+        var wallV = document.getElementById('wallVault');
+        VAULT_KEYS.forEach(function (k) {
+            var m13 = measure(k, 13);
+            var m24 = measure(k, 24);
+            var t = document.createElement('div');
+            t.className = 'tile';
+            t.innerHTML = svgFor(k) +
+                '<div class="name">' + INFO[k].zh + '</div>' +
+                '<div class="size">' + INFO[k].off + '</div>' +
+                '<div class="size">设计框 ' + (m13 ? m13.design : '?') + '</div>' +
+                (INFO[k].dup
+                    ? '<div class="size bad">与「专著」重复 → 已弃用</div>'
+                    : (k === 'vaultNew'
+                        ? '<div class="size ok">当前定案</div>'
+                        : '<div class="size">历史版本</div>')) +
+                '<div class="size">24px 导航栏 → ' + (m24 ? m24.w + '×' + m24.h : '?') +
+                ' · 填充 ' + (m24 ? m24.fill : '?') + '</div>';
+            wallV.appendChild(t);
+        });
+
+        var VAULT_KEYS_FOR_NAV = ['vaultNew', 'vaultPrev'];
+
+        // ---- ⑤ 导航栏预览 ----
+        var nav = document.getElementById('navDemo');
+        VAULT_KEYS_FOR_NAV.forEach(function (k) {
+            var wrap = document.createElement('span');
+            wrap.className = 'navdemo';
+            wrap.innerHTML = svgFor(k) + '<span>Vault</span>';
+            nav.appendChild(wrap);
+        });
+
+        // ---- 跑撞脸检查（异步，位图渲染要等 img.onload）----
+        buildFaceoff();
+    </script>
+</body>
+
+</html>
