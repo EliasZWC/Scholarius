@@ -776,18 +776,19 @@
                 </svg>
             </button>
             <!--
-              PDF 视图切换按钮：在详情按钮**左边**（用户要求）。
+              「阅读 / 原始」视图切换按钮：在详情按钮**左边**（用户要求）。
 
               语义是「切换视图」而不是「打开某个东西」，所以用
               toggle 语义（aria-pressed）而不是 aria-haspopup。
-              aria-label 由 JS 按当前视图切换（见 reader.js syncViewToggle）。
+              图标与 aria-label 由 JS 按当前视图切换
+              （见 reader.js syncViewToggle）。
 
-              图标由 JS 用 ScholariusUI.icon('visibility') 填 ——
-              与详情按钮同一个做法：图标路径只在 components.js 定义一处。
+              ⚠️ 图标用 raw_on / raw_off（用户选定），两只由 JS 注入 ——
+                 图标路径只在 components.js 定义一处。
             -->
             <button class="icon-button reader-view-toggle" type="button"
                 id="reader-view-toggle" aria-pressed="false"
-                aria-label="PDF View" data-i18n-aria-label="reader.pdfView"></button>
+                aria-label="Raw View"></button>
             <!--
               详情按钮。只在菜单展开时可见（与返回按钮同一条顶栏）。
               图标由 JS 用 ScholariusUI.icon('moreHoriz') 填 ——
@@ -802,8 +803,8 @@
           正文区：点它中间的 1/3 区域切换菜单。
 
           ⚠️ 里面是**两个互斥的视图**：
-             · .reader-content —— 文本视图（重排后的正文）
-             · .reader-pdf     —— PDF 视图（WebView 内置查看器）
+             · .reader-content —— 阅读视图（重排后的正文）
+             · .reader-pdf     —— 原始视图（WebView 内置查看器）
              由 reader.js 的 setView() 用 hidden 切换，同时只显示一个。
         -->
         <div class="reader-body" id="reader-body">
@@ -822,8 +823,9 @@
               ⚠️ 沙箱与 allow 都不给 —— 内置 PDF 查看器不需要脚本权限，
                  给它反而扩大攻击面（PDF 本身来自外部）。
             -->
+            <!-- 原始视图（出版方版面，名字对应顶栏按钮的 raw 图标） -->
             <iframe class="reader-pdf" id="reader-pdf" hidden
-                title="PDF" data-i18n-title="reader.pdfView"></iframe>
+                title="Raw View" data-i18n-title="reader.rawView"></iframe>
         </div>
 
         <!--

@@ -7,8 +7,8 @@ plugins {
 // 版本号：唯一来源。只有明确要求发版时才修改这两个值。
 // versionCode 每次发版 +1；versionName 必须与 Git 标签 vX.Y.Z 中的 X.Y.Z 一致。
 // ---------------------------------------------------------------------------
-val appVersionCode = 110
-val appVersionName = "0.1.10"
+val appVersionCode = 111
+val appVersionName = "0.1.11"
 
 // 可选：从环境变量读取发布签名（由 GitHub Actions 注入）。
 // 未配置时回退到 debug 签名，保证工作流始终能产出可安装的 APK。

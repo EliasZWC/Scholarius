@@ -191,9 +191,14 @@
               ⚠️ 写的是「点了会切到哪个视图」，不是「当前是哪个视图」——
                  按钮标签应该描述**动作的后果**。
                  当前状态由 aria-pressed 表达，不靠 label 重复。
+
+              ⚠️ 术语（用户 2026-09-24 定）：
+                 reading = 重排后的正文，用来**读**；
+                 raw     = 出版方原始版面，用来**核对**。
+                 英文不用 "PDF View" —— 那是文件格式，不是用户的意图。
             */
-            'reader.pdfView': 'PDF View',
-            'reader.textView': 'Text View',
+            'reader.rawView': 'Raw View',
+            'reader.readingView': 'Reading View',
 
             // 阅读设置：字体
             'reader.font': 'Font',
@@ -465,8 +470,8 @@
             'reader.abstract': '摘要',
 
             // 视图切换（无参标签，写「点了会切到哪个视图」）
-            'reader.pdfView': 'PDF 视图',
-            'reader.textView': '文本视图',
+            'reader.rawView': '原始视图',
+            'reader.readingView': '阅读视图',
 
             // 阅读设置：字体
             'reader.font': '字体',

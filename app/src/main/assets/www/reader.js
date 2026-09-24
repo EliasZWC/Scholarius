@@ -138,8 +138,8 @@
     var panelOpen = false;
     /** 目录弹窗是否展开 */
     var tocOpen = false;
-    /** 当前视图：'text' | 'pdf' */
-    var view = 'text';
+    /** 当前视图：'reading' | 'raw' */
+    var view = 'reading';
 
     /**
      * 目录条目：[{ level, title, line }]
@@ -318,7 +318,7 @@
         });
     }
 
-    // --- PDF 视图 -----------------------------------------------------------
+    // --- 原始 / 阅读 视图 ---------------------------------------------------
 
     /**
      * PDF 受控通道的 URL 前缀。
@@ -341,19 +341,44 @@
             encodeURIComponent(String(id || ''));
     }
 
-    /** 顶栏「视图切换」按钮：绑事件 + 填图标 */
+    /**
+     * 顶栏视图切换按钮：绑事件 + 填图标。
+     *
+     * ══ 术语：为什么叫「阅读 / 原始」而不是「文本 / PDF」 ══
+     *
+     * 用户 2026-09-24 定的：
+     *   · 阅读视图（reading）= 重排后的正文，用来**读**
+     *   · 原始视图（raw）    = 出版方原始版面，用来**核对**
+     *
+     * 图标用 Material Symbols 的 raw_on / raw_off（用户选定）：
+     * 两只都写着 "RAW"，差别是 raw_off 多一道斜杠 ——
+     * 图形本身就表达了「这是原始内容」+「开关」，
+     * 比抽象的 eye 图标更贴近含义，也不必依赖文字说明。
+     *
+     * ⚠️ 两个图标**都要预先填进按钮**（一个显示、一个隐藏），
+     *    切换时只切 hidden，不重建 innerHTML ——
+     *    重建会让图标闪一下（浏览器要重新解析 SVG）。
+     */
     function mountViewToggle() {
         if (!viewToggleBtn) {
             return;
         }
 
-        // 图标只在这里定义一次（路径在 components.js）
-        if (global.ScholariusUI && global.ScholariusUI.icon) {
-            viewToggleBtn.innerHTML = global.ScholariusUI.icon('visibility');
+        var ui = global.ScholariusUI;
+        if (ui && ui.icon) {
+            /*
+              ⚠️ 用两个 <span> 各装一只图标，不用 innerHTML 两次覆盖。
+                 理由见上：覆盖式重建会闪。这里一次性建好、之后只切显示。
+            */
+            viewToggleBtn.innerHTML =
+                '<span class="reader-view-icon" data-view-icon="raw">' +
+                ui.icon('rawOff') + '</span>' +
+                '<span class="reader-view-icon" data-view-icon="reading">' +
+                ui.icon('rawOn') + '</span>';
         }
 
         viewToggleBtn.addEventListener('click', function () {
-            setView(view === 'pdf' ? 'text' : 'pdf');
+            setView(view === 'raw' ? 'reading' : 'raw');
         });
 
         syncViewToggle();
@@ -364,31 +389,31 @@
      *
      * ══ 为什么是「两个视图互斥」而不是「叠加一个覆盖层」══
      *
-     * PDF 视图要占满整个正文区（内置查看器自己带缩放/翻页），
-     * 叠加会让文本视图在底下继续占内存、也可能被点到。
+     * 原始视图要占满整个正文区（内置查看器自己带缩放/翻页），
+     * 叠加会让阅读视图在底下继续占内存、也可能被点到。
      * 所以用 hidden 严格互斥，同时只有一个在文档流里。
      *
-     * ⚠️ **只在切到 PDF 时才设置 iframe.src**。
+     * ⚠️ **只在切到原始视图时才设置 iframe.src**。
      *    PDF 动辄几十 MB，进阅读页就加载会白等几秒；
-     *    而多数用户看的是重排后的文本视图。
+     *    而多数用户看的是重排后的阅读视图。
      *
-     * ⚠️ 切回文本时**保留 iframe 的 src 不置空** ——
-     *    用户可能来回切（文本看到一半去核对原文），
+     * ⚠️ 切回阅读视图时**保留 iframe 的 src 不置空** ——
+     *    用户可能来回切（正文看到一半去核对原文），
      *    每次置空都会重新下载 + 重新定位滚动位置。
      *    释放交给 close()。
      *
-     * @param {string} next 'text' | 'pdf'
+     * @param {string} next 'reading' | 'raw'
      */
     function setView(next) {
-        var want = (next === 'pdf') ? 'pdf' : 'text';
+        var want = (next === 'raw') ? 'raw' : 'reading';
         view = want;
 
-        var isPdf = (want === 'pdf');
+        var isRaw = (want === 'raw');
 
-        if (contentEl) contentEl.hidden = isPdf;
+        if (contentEl) contentEl.hidden = isRaw;
         if (pdfEl) {
-            pdfEl.hidden = !isPdf;
-            if (isPdf) {
+            pdfEl.hidden = !isRaw;
+            if (isRaw) {
                 // 第一次进入（或换了文献）才真的设 src
                 var wantSrc = currentDoc ? pdfUrlFor(currentDoc.id) : '';
                 if (wantSrc && pdfEl.getAttribute('src') !== wantSrc) {
@@ -402,25 +427,48 @@
     }
 
     /**
-     * 刷新视图切换按钮的状态与无障碍标签。
+     * 刷新视图切换按钮：图标、状态、无障碍标签。
      *
-     * ⚠️ aria-label 要写**即将切到**的视图，而不是当前视图 ——
-     *    按钮的语义是"点了会发生什么"。写当前视图会让读屏用户
-     *    以为按钮描述的是现在看到的东西，从而按错。
+     * ══ 图标与标签都描述**动作**，不是"当前状态" ══
+     *
+     * raw_on / raw_off 是一对开关图标（用户选定）：
+     *
+     *   当前在阅读视图 → 显示 **raw_on**（把原始视图「打开」）
+     *                     标签 "Raw View"
+     *   当前在原始视图 → 显示 **raw_off**（把原始视图「关掉」）
+     *                     标签 "Reading View"
+     *
+     * ⚠️ 两者**必须同向**：图标说"往哪去"、标签也说"往哪去"。
+     *    曾经把标签写成动作、图标写成当前状态 ——
+     *    于是按钮在说两件事，谁看都会错。
+     *
+     * ⚠️ 那「当前在哪个视图」由谁表达？aria-pressed。
+     *    这是唯一表达状态的地方，不靠图标/标签重复。
      */
     function syncViewToggle() {
         if (!viewToggleBtn) {
             return;
         }
-        var toPdf = (view !== 'pdf');
-        viewToggleBtn.setAttribute('aria-pressed', view === 'pdf' ? 'true' : 'false');
+        var isRaw = (view === 'raw');
+
+        /*
+          ⚠️ 两图标预置在按钮里，靠 hidden 切显示。
+             不重建 innerHTML —— 那会让图标闪一下（重新解析 SVG）。
+             这里只切 hidden，不碰 innerHTML。
+        */
+        var iconRaw = viewToggleBtn.querySelector('[data-view-icon="raw"]');
+        var iconReading = viewToggleBtn.querySelector('[data-view-icon="reading"]');
+        if (iconRaw) iconRaw.hidden = isRaw;
+        if (iconReading) iconReading.hidden = !isRaw;
+
+        viewToggleBtn.setAttribute('aria-pressed', isRaw ? 'true' : 'false');
         viewToggleBtn.setAttribute(
             'aria-label',
-            t(toPdf ? 'reader.pdfView' : 'reader.textView')
+            t(isRaw ? 'reader.readingView' : 'reader.rawView')
         );
         /*
           ⚠️ data-i18n-aria-label 必须**移除** ——
-             它在语言切换时会把 innerHTML/属性重刷成模板里的原始文案，
+             它在语言切换时会把属性重刷成模板里的原始文案，
              把我们这里算出来的「即将切到哪个视图」覆盖掉。
              i18n 刷新由 refreshChrome() 主动调本函数负责。
         */
@@ -486,19 +534,19 @@
         setPanel(false);
 
         /*
-          ⚠️ 每次打开都回到**文本视图**，并清掉上一篇的 PDF。
+          ⚠️ 每次打开都回到**阅读视图**，并清掉上一篇的 PDF。
 
              理由：
-             ① 用户上次可能停在 PDF 视图，但新开一篇时默认给重排文本
-                更符合"读论文"的意图（PDF 视图是核对原文用的次要入口）；
+             ① 用户上次可能停在原始视图，但新开一篇时默认给重排正文
+                更符合"读论文"的意图（原始视图是核对原文用的次要入口）；
              ② 不清掉的话 iframe 里还是**上一篇**的 PDF ——
-                切到 PDF 视图会先闪一下旧文献，很难看。
+                切到原始视图会先闪一下旧文献，很难看。
 
-             ⚠️ 置 src 为空字符串（而不是 removeAttribute）：
+             ⚠️ 置 src 为 about:blank（而不是 removeAttribute）：
                 空 src 会让 iframe 立刻卸载文档并释放内置查看器；
                 removeAttribute 在部分 WebView 上不触发卸载。
         */
-        setView('text');
+        setView('reading');
         if (pdfEl) {
             pdfEl.setAttribute('src', 'about:blank');
         }
@@ -536,7 +584,7 @@
                     contentEl.textContent = '';
                 }
                 /*
-                  ⚠️ 释放 PDF 视图的内置查看器。
+                  ⚠️ 释放原始视图的内置查看器。
 
                      不释放的话它会一直持有文件句柄与渲染资源 ——
                      读十几篇之后内存明显上涨（内置查看器不认识
@@ -546,7 +594,7 @@
                 if (pdfEl) {
                     pdfEl.setAttribute('src', 'about:blank');
                 }
-                view = 'text';
+                view = 'reading';
             }
         }, 280);
     }

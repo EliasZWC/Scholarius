@@ -1159,7 +1159,38 @@ body {
 }
 
 /*
-  ⚠️ 视图切换按钮的**选中态**（当前正在看 PDF）。
+  ⚠️ 视图切换按钮里的两只图标（raw_on / raw_off）。
+
+     按钮的 innerHTML 里预先塞了两只图标，靠 hidden 切显示 ——
+     这样切换时不需要重建 innerHTML（重建会让图标闪一下）。
+
+  ⚠️ `[hidden]` 必须自己兜底：UA 的 `[hidden] { display: none }`
+     优先级很低，会被下面把 span 设成 flex/inline-flex 的规则盖掉，
+     结果两只图标同时显示、挤在一起。
+*/
+.reader-view-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.reader-view-icon[hidden] {
+    display: none;
+}
+
+/*
+  ⚠️ 图标尺寸：与顶栏其他图标（.icon-button svg）一致为 24px。
+     显式写死，因为这两只 SVG 是从 960 体系来的，
+     不写的话会按内容撑开（实测比旁边的箭头/三点明显偏大）。
+*/
+.reader-view-icon svg {
+    width: 24px;
+    height: 24px;
+    fill: currentColor;
+}
+
+/*
+  ⚠️ 视图切换按钮的**选中态**（当前正在看原始视图）。
 
      .icon-button 是全站通用类，不该认识"阅读页视图"这个概念，
      所以状态样式单独写在这里。
