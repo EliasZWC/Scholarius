@@ -871,7 +871,16 @@ object PdfText {
         fun flush() {
             if (para.isNotEmpty()) {
                 val meta = paraMeta
-                val blockText = para.toString()
+                /*
+                  ⚠️ 断词还原必须在这里做，因为合并时是用空格连接的
+                     （`scientific re-` + `search` → `scientific re- search`），
+                     所以正则要按**合并后的形态**（`- ` 连字符加空格）匹配。
+                     实测四篇论文共 64 处（`learn- ing` `ex- tremely`）。
+                */
+                var blockText = para.toString()
+                blockText = blockText.replace(Regex("(\\w)- (\\w)"), "$1$2")
+                blockText = normaliseText(blockText)
+
                 if (outText.isNotEmpty()) outText.append('\n')
                 outText.append(blockText)
                 if (meta != null) {
@@ -914,15 +923,24 @@ object PdfText {
                 它宁可多断几次（多断只是多一个短段落，
                 视觉上无害），也不要让标题黏进正文。
         */
-        fun startsNewBlock(t: String): Boolean {
+        /**
+         * 到达的这行是否开启新的块。
+         *
+         * ⚠️ 与旧版的**根本区别**：现在把**字号/粗体**作为主判据
+         *    （[isHeadingByStyle]），形态判据只作补充。
+         *    旧版只用 [looksLikeHead] 的纯文本形态 ——
+         *    而实测 `1. Introduction`（12pt Bold）在窄行排版下
+         *    反而没被判成标题，一堆正文行却判成了标题，正好反了。
+         */
+        fun startsNewBlock(t: String, size: Float, font: String): Boolean {
             if (t.isEmpty()) return true
-            // 页码 / 页眉一律独立，不并进正文
             if (looksLikePageArtifact(t)) return true
+            if (isHeadingByStyle(size, font, bodySize)) return true
             return looksLikeHead(t)
         }
 
         for (line in rawLines) {
-            val t = line.text.trim()
+            val t = normaliseText(line.text)
 
             // 空行 = 段落边界
             if (t.isEmpty()) {
@@ -933,20 +951,49 @@ object PdfText {
             val flat = Line(t, line.font, line.size, line.page, false)
 
             /*
+              ⚠️ **最优先：整行只有一个章节号**（`3` / `3.1`）。
+
+                 这类行在 PDF 里是"编号单独一行、标题在下一行"的排法
+                 （实测 Word2Vec 2013 / Transformer 2017）。
+                 必须**攒进 para**，让下一行的标题文字接上来合成
+                 `3.1 Problem Formulation`。
+
+                 ⚠️ 若按"短行 → 独立块"处理，会得到一堆 `2.1` `2.2` 的
+                    3 字符碎片，把段落长度中位数从 400+ 拉到 13（实测）。
+
+                 ⚠️ 必须放在粗体判据**之前** —— 因为章节号行本身也是粗体，
+                    否则会被 isHeadingByStyle 拦下来当独立标题。
+            */
+            if (BARE_NUMBER.matches(t)) {
+                flush()
+                para.append(t)
+                paraMeta = flat
+                continue
+            }
+
+            /*
+              ⚠️ 上一行刚攒下章节号 → 这一行就是它的标题，无条件接上。
+            */
+            if (para.isNotEmpty() && BARE_NUMBER.matches(para.toString())) {
+                if (needsSpaceBetween(para, t)) para.append(' ')
+                para.append(t)
+                continue
+            }
+
+            /*
+              ⚠️ 字号远小于正文 → 图表刻度 / 脚注 / 页码，**直接丢弃**。
+                 见 [MIN_BODY_RATIO] 的注释（ResNet 那批 3.3pt 的 `0 1 2 3`）。
+            */
+            if (bodySize > 0f && line.size > 0f && line.size < bodySize * MIN_BODY_RATIO) {
+                continue
+            }
+
+            /*
               ⚠️ 顺序要紧：**先**排掉页码/页眉（独立成块），
                  **再**判断公式碎片（黏合）。
 
                  反例（实测回归）：先判公式碎片 → 页码 `13.5`
                  被当成变量黏到页眉 `14` 上，产出 `13.5 14` 伪标题。
-
-              ⚠️ 单个数学符号（`=` `Δ` `∑`）单独成行 —— 公式被拆行的碎片。
-
-                 实测 473 个段落里有 31 个是这种 1 字符块，
-                 散落在正文中间（`Δ` `=` `Δ` …），视觉上像乱码。
-
-                 处理：**黏到当前段落尾部，不判句末**。
-                   · 前面没有内容 → 自己起个头（后面还有符号会跟上）
-                   · 不 flush：避免把「A = B」拆成三段
             */
             if (looksLikePageArtifact(t)) {
                 flush()
@@ -978,7 +1025,7 @@ object PdfText {
               ⚠️ 到达的这行像标题 / 像页码 → 先把上一段收掉。
                  见 startsNewBlock 的注释（这是"标题黏进正文"的修复）。
             */
-            if (startsNewBlock(t)) {
+            if (startsNewBlock(t, line.size, line.font)) {
                 flush()
                 para.append(t)
                 paraMeta = flat
@@ -986,7 +1033,9 @@ object PdfText {
             }
 
             // 已积累的内容是标题 → 标题独立，正文另起
-            if (looksLikeHead(para.toString())) {
+            if (para.isNotEmpty() &&
+                startsNewBlock(para.toString(), paraMeta?.size ?: 0f, paraMeta?.font ?: "")
+            ) {
                 flush()
                 para.append(t)
                 paraMeta = flat
@@ -1040,28 +1089,62 @@ object PdfText {
     }
 
     /**
-     * 估计正文字号（众数）。
+     * 估计正文字号（**页级众数再投票**）。
      *
-     * ⚠️ 只统计**看起来像正文的行**（长度超过 SHORT_LINE）——
-     *    把标题、作者、页码也算进来会让众数偏小，
-     *    于是正文本身被判成"比基准大"，全都变成标题。
+     * ══ ⚠️ 为什么不能直接取全局众数（2026-09-24 实测）══
      *
-     * ⚠️ 按 0.5pt 分桶：PDF 里同一字号的浮点值可能有微小抖动
-     *    （9.299999 vs 9.3），不分桶会散成一堆只出现一次的值，
+     * HAL 版 LeCun《Deep learning》的**封面页**整页用 10.9pt，
+     * 而论文正文用 9.3pt。封面页的"长行"数量不小，
+     * 直接把全局众数带偏 —— 实测得到 6.8pt，**全错**。
+     *
+     * 后果是灾难性的：正文 9.3pt 被判成"比基准(6.8)大 → 标题"，
+     * 于是整篇正文都成了标题。
+     *
+     * ══ 正解：分层投票 ══
+     *
+     * ① 先算**每一页自己**的众数字号（页内噪声先被吸收）；
+     * ② 再对"每页的众数"取众数 —— **一页一票**。
+     *
+     * 这样封面页只占一票，而正文有几十页，影响被压到最小。
+     * 跨排版（封面/正文/附录用不同字号）时这个做法才稳。
+     *
+     * ⚠️ 只统计**较长的行**（长度 > 24）：标题、作者、页码都很短，
+     *    把它们算进来会让众数偏到标题字号上，
+     *    于是正文被判成"比基准小"，标题全部丢失。
+     *
+     * ⚠️ 按 0.5pt 分桶：PDF 里同一字号的浮点值有微小抖动
+     *    （9.2999999 vs 9.3），不分桶会散成一堆只出现一次的值，
      *    众数就失去意义。
      */
     private fun estimateBodySize(lines: List<Line>): Float {
-        val buckets = HashMap<Int, Int>()
+        // ① 每页的字号直方图
+        val perPage = HashMap<Int, HashMap<Int, Int>>()
         for (l in lines) {
             if (l.size <= 0f) continue
-            if (l.text.trim().length <= SHORT_LINE) continue
+            if (l.text.trim().length <= BODY_SAMPLE_MIN_CHARS) continue
             val key = Math.round(l.size * 2f)
-            buckets[key] = (buckets[key] ?: 0) + 1
+            val bucket = perPage.getOrPut(l.page) { HashMap() }
+            bucket[key] = (bucket[key] ?: 0) + 1
         }
-        if (buckets.isEmpty()) return 0f
+        if (perPage.isEmpty()) return 0f
+
+        // ② 每页投出它自己的众数（一页一票），再对票数取众数
+        val votes = HashMap<Int, Int>()
+        for ((_, bucket) in perPage) {
+            var bk = 0
+            var bn = -1
+            for ((k, n) in bucket) {
+                if (n > bn) {
+                    bn = n
+                    bk = k
+                }
+            }
+            votes[bk] = (votes[bk] ?: 0) + 1
+        }
+
         var bestKey = 0
         var bestN = -1
-        for ((k, n) in buckets) {
+        for ((k, n) in votes) {
             if (n > bestN) {
                 bestN = n
                 bestKey = k
@@ -1112,72 +1195,71 @@ object PdfText {
         }
 
         /*
-          ⚠️ 标题判据（第二版，实测收紧过两轮）。
-
-             第一版「短行 + 无句末标点」→ 封面页整段地址被判成 12 个标题。
-             第二版（本版）要求**至少一个正向信号**，
-             并且对"仅靠字体"的情况加了长度与形态限制。
-
-             信号（满足任一即可，但都要过 looksLikePageArtifact）：
-               · 编号 + 标题文字（`3 Methodology` / `3.1 Problem`）
-               · 全大写（`ABSTRACT` / `RELATED WORK`）
-               · 粗体字族
-               · 字号明显大于正文
+          ⚠️ 表格数据行 → 当段落，**绝不**当标题。
+             见 [looksLikeTableRow] 的注释（实测 82 个"标题"里 31 个是表格行）。
+             放在标题判据**之前**。
         */
-        val hasNumberedTitle = HEADING_NUM_PREFIX.containsMatchIn(t)
-        val allCaps = UPPER_HEAD.matches(t) && t.length >= 3
-        val boldish = isBoldFont(meta.font)
-        val biggerThanBody = bodySize > 0f && meta.size > bodySize + 0.3f
+        if (looksLikeTableRow(t)) {
+            return Block("paragraph", t, 0, meta.page)
+        }
 
         /*
           ⚠️ 封顶长度。
 
              `2022 saw the release of…` 这类**以年份开头的正文段落**
              会被 HEADING_NUM_PREFIX 收进来（"2022 " 完全符合
-              `\d+\s+\S`）。真标题不会长到 80 字符以上。
+             `\d+\s+\S`）。真标题不会长到 90 字符以上。
         */
         if (t.length > TITLE_MAX_CHARS) {
             return Block("paragraph", t, 0, meta.page)
         }
 
         /*
-          ⚠️ 只靠字体/字号时，**要求字族与正文基线不同**，
-             且必须是短行（第三轮收紧）。
+          ══ 标题判据（第三版，2026-09-24 用字体/字号重做）══
 
-             ══ 实测数据（HAL 版 LeCun《Deep learning》）══
+          第一版「短行 + 无句末标点」→ 封面页整段地址被判成 12 个标题，
+            且在窄行排版下把 54-72% 的正文行切碎。
+          第二版加了"至少一个正向信号"的限制。
+          本版把**字号/粗体提升为主判据**（相对判据，跨排版成立）。
 
-             封面页的字体与论文正文**完全不同**：
+          信号（满足任一即可）：
+            · 编号 + 标题文字（`3 Methodology` / `3.1 Problem`）
+            · 全大写（`ABSTRACT` / `RELATED WORK`）
+            · 字号明显大于正文      ← 最可靠
+            · 粗体
+        */
+        val hasNumberedTitle = HEADING_NUM_PREFIX.containsMatchIn(t) && t.length <= TITLE_MAX_CHARS
+        val allCaps = UPPER_HEAD.matches(t) && t.length >= 3
 
+        if (hasNumberedTitle || allCaps) {
+            return Block("heading", t, headingLevel(t), meta.page)
+        }
+
+        /*
+          ⚠️ 字号/粗体判据**必须**加长度与"像不像正文句子"的限制。
+
+             ══ 为什么（实测，HAL 版 LeCun《Deep learning》）══
+
+             封面页的字体与论文正文完全不同：
                  封面页   LibertinusSerif-Regular  10.9pt
                  正文     MinionPro-Regular         9.3pt
                  真标题   GlosaMath-Bold          10.0pt
 
-             ⚠️ 只看「比正文大」会把整张封面判成标题（实测 31 块）——
-                因为封面确实用了更大的字。这是**数据本身的特征**，
-                不是判据写错了。
+             只看「比正文大/粗」会把整张封面判成标题（实测 31 块）——
+             因为封面确实用了更大的字。这是**数据本身的特征**。
 
-             ⚠️ 那为什么还要留着"字号更大"这条？
-                因为它对**正文开始之后**的小节标题是有效的
-                （不少出版社模板里节标题只比正文大 0.5~1pt，
-                 没有编号、也不是粗体）。
+             所以还要**排除长句与正文句子**：
+               · 长度 <= TITLE_MAX_CHARS（早已在上面检查过）
+               · 不能"像正文"（[looksLikeProse]：较长且含句末标点）
 
-             三条限制叠加后，封面页这类**整段异物**会被挡掉：
-               ① 必须是短行（<= SHORT_LINE）—— 封面那些长句不符合
-               ② 不能是「疑似正文句子」（含句末标点且较长）
-               ③ 长度 <= TITLE_MAX_CHARS
-
-             ⚠️ 诚实的局限：作者名、单位、邮箱这些**短行**依然可能
-                被误判成标题（它们短、且与正文不同字体）。
-                这在视觉上只是"字号略大"，不影响可读性；
-                而为了消掉它们把"字号更大"整条判据删掉，
+             ⚠️ 诚实的局限：作者名、单位、邮箱这些短行依然可能被判成标题
+                （它们短、且与正文不同字体）。这在视觉上只是"字号略大"，
+                不影响可读性；而为了消掉它们把字号判据整条删掉，
                 会让真正无编号的节标题全部丢失 —— 取舍下保留。
         */
-        val fontOnlyEvidence = (boldish || biggerThanBody) &&
-            t.length <= SHORT_LINE &&
-            !looksLikeProse(t)
-
-        if (hasNumberedTitle || allCaps || fontOnlyEvidence) {
-            return Block("heading", t, headingLevel(t), meta.page)
+        val styleEvidence = isHeadingByStyle(meta.size, meta.font, bodySize)
+        if (styleEvidence && !looksLikeProse(t)) {
+            return Block("heading", t, headingLevelByStyle(t, meta.size, bodySize), meta.page)
         }
 
         return Block("paragraph", t, 0, meta.page)
@@ -1332,27 +1414,71 @@ object PdfText {
     }
 
     /**
-     * 这一行是否用了**粗体字族**。
+     * 按**字号相对正文的超出幅度**推断标题层级。
      *
-     * ⚠️ 覆盖三种命名习惯（实测来源不同，命名完全不同）：
-     *      · 标准名：`...Bold` / `...Black` / `...Heavy`
-     *      · LaTeX 默认：`CMBX10`（Computer Modern Bold eXtended）——
-     *        arXiv 上一大半论文是这套
-     *      · 后缀式：`...-Bold` / `...,Bold`（Adobe 有的字体这样写）
+     * ⚠️ 只在没有编号可用时才走这里（有编号时 [headingLevel] 更可靠 ——
+     *    编号的点分直接表达层级，`3` 是一级、`3.1` 是二级）。
      *
-     * ⚠️ 排除数学字体（CMMI / CMSY）：它们不是粗体，
-     *    但名字里没有 Bold，所以这里无需特判 —— 只要不误把
-     *    `CMR10`（正文罗马体）当成粗体即可。
+     * ══ 为什么用**字号差**而不是绝对字号（实测）══
+     *
+     * ResNet 论文正文 10.0pt：
+     *     `1. Introduction`          12.0pt  → 差 +2.0  → 一级
+     *     `3.1. Residual Learning`   11.0pt  → 差 +1.0  → 二级
+     *
+     * ⚠️ 阈值取 1.8：要把 +2.0 与 +1.0 分开。
+     *    取 1.0 → 两者都判一级（层级丢失）；
+     *    取 2.5 → 两者都判二级。
+     *    这个数是从真实排版里**量出来的**，不是拍的。
+     *
+     * ⚠️ 不同期刊的实际差值不同（有的章 +3pt、节 +1.5pt），
+     *    但「章比节大得多」这个**顺序关系**是普遍的，
+     *    所以用两档 + 一个中间阈值，比猜具体数值稳。
      */
-    private fun isBoldFont(name: String): Boolean {
-        if (name.isBlank()) return false
-        val n = name.lowercase()
-        if (n.contains("bold") || n.contains("black") || n.contains("heavy")) {
-            return true
-        }
-        // CMBX = LaTeX 的粗体扩展
-        if (n.startsWith("cmbx")) return true
-        return false
+    private fun headingLevelByStyle(text: String, size: Float, bodySize: Float): Int {
+        // 有编号优先用编号
+        val byNum = headingLevel(text)
+        if (byNum > 1) return byNum
+
+        if (bodySize <= 0f) return 1
+        return if (size - bodySize >= 1.8f) 1 else 2
+    }
+
+
+    /**
+     * 判据：这一行是不是**表格数据行**。
+     *
+     * ══ ⚠️ 为什么必须单独判（2026-09-24 实测）══
+     *
+     * ResNet 论文里 82 个"标题"中有 **31 个其实是表格行**：
+     *
+     *     `27.94 27.88 34 layers`
+     *     `28.54 25.03 Table 2. Top-1 error (%, 10-crop testing)…`
+     *     `24.27 7.38 plain-34`
+     *     `28.54 10.02 ResNet-34 A`
+     *
+     * 这些行**在 PDF 里是表格单元格**，提取出来后变成"短行"，
+     * 而表格里常用稍粗/稍大的字（表头），于是被字号判据收成标题。
+     *
+     * 渲染成标题的后果很糟：字号忽大忽小、目录里混进一堆数字。
+     *
+     * ══ 判据 ══
+     *
+     * 表格数据行的特征是**多个数值/短 token 并排**（列结构被拉平）：
+     *   · 以数字开头，且
+     *   · 含有 2 个以上的"数值 token"（`\d+(\.\d+)?` 或带 % 的）
+     *
+     * ⚠️ 为什么要求**至少 2 个**数值：
+     *    `3.1. Residual Learning` 也以数字开头，但只有一个编号数值，
+     *    它是**真标题**。只按"以数字开头"判会把所有编号标题误伤。
+     *
+     * ⚠️ 为什么还要限制长度：长段落里出现两个数值很正常
+     *    （"we achieve 3.57% and 4.49% error"）。表格行是**短的**。
+     */
+    private fun looksLikeTableRow(t: String): Boolean {
+        if (t.length > TABLE_ROW_MAX_CHARS) return false
+        if (!TABLE_ROW_START.containsMatchIn(t)) return false
+        // 数值 token 至少 2 个（含 % 也算）
+        return TABLE_NUMBER.findAll(t).take(2).count() >= 2
     }
 
     /**
@@ -1469,44 +1595,198 @@ object PdfText {
      *    如 "2015 saw the release of the Transformer architecture…"
      *    会被 [HEADING_NUM_PREFIX] 收进来。标题不会这么长。
      */
-    private const val TITLE_MAX_CHARS = 80
+    private const val TITLE_MAX_CHARS = 90
 
-    /** 短行阈值。正文行通常远长于此 */
-    private const val SHORT_LINE = 60
+    /**
+     * 字号容差：超过正文字号这么多才算「比正文大」。
+     *
+     * ⚠️ 取 0.35pt 而不是更大：不少出版社模板里节标题只比正文大 0.5pt
+     *    （实测 ResNet 论文 12.0 vs 10.0、子节 11.0 vs 10.0）。
+     *    容差过大会漏掉这些「只大一点」的标题。
+     */
+    private const val BODY_SIZE_TOL = 0.35f
+
+    /**
+     * 正文字号的最小比例。低于 `bodySize * 该值` 的行**不是正文**。
+     *
+     * ══ ⚠️ 为什么必须有这条（2026-09-24 实测）══
+     *
+     * ResNet 论文里有一整批 **3.3pt** 的行：`0` `1` `2` `3` `4` `5` `6`
+     * —— 那是训练曲线的**坐标轴刻度**；还有 6.6pt 的
+     * `training error (%)`（坐标轴标题）。正文字号是 10.0pt。
+     *
+     * 这些行有两个致命特征：
+     *   ① 它们不是句子，读起来是乱码（`0 1 2 3 4 5 6`）；
+     *   ② 数量极大（一张图几十行），会把段落长度统计彻底污染 ——
+     *      实测未过滤时"短段落占比"高达 51.8%，几乎全是这些刻度。
+     *
+     * ⚠️ 取 0.75 而不是更激进：论文正文里的上标/下标可能到 0.8 倍
+     *    （`x²`、`H₂O`），脚注常是 0.85-0.9 倍。
+     *    0.75 能把图表刻度筛掉，又不至于误伤脚注（脚注是完整句子，留着无害）。
+     */
+    private const val MIN_BODY_RATIO = 0.75f
+
+    /**
+     * 纯编号单独成行的形态：`3` / `3.1` / `3.1.2`。
+     *
+     * ══ ⚠️ 为什么需要它（2026-09-24 实测）══
+     *
+     * PDF 的章节号有两种排法：
+     *   a) `3.1 Problem Formulation`    —— 编号与标题同一行
+     *   b) `3.1` / `Problem Formulation` —— 编号**单独一行**
+     *
+     * 形态 b 很常见（实测 Word2Vec 2013、Transformer 2017 都是）。
+     * 它在纯文本流里表现为一个 3 字符的孤立行，
+     * 若按"短行 → 独立块"处理，会得到一堆 `2.1` `2.2` `2.3` 的碎片，
+     * 把段落长度中位数从 400+ 拉到 13（实测）。
+     *
+     * 所以必须**先识别它、攒着**，让紧接着的标题行接上来合成一行。
+     */
+    private val BARE_NUMBER = Regex("^\\d{1,2}(?:\\.\\d{1,2}){0,2}\\.?$")
+
+    /**
+     * 表格数据行的长度上限（表格行都很短）。
+     *
+     * ⚠️ 取 110 而不是 70：表格行常带表题
+     *    （`28.54 25.03 Table 2. Top-1 error (%, 10-crop testing)…`），
+     *    这类行会到 90-110 字符。70 会让它们漏网（实测 82→60 之后
+     *    仍有 8 条这种）。
+     */
+    private const val TABLE_ROW_MAX_CHARS = 110
+
+    /** 表格行以数值开头 */
+    private val TABLE_ROW_START = Regex("^\\d")
+
+    /** 表格里的数值 token（含百分号、小数点、负号） */
+    private val TABLE_NUMBER = Regex("-?\\d+(?:\\.\\d+)%?")
+
+    /*
+      ⚠️⚠️ 这里曾经有一个 `SHORT_LINE = 60` 常量，作为「是不是独立块」的
+         **主判据**（`len <= 60 && 末字符不是句末标点 → 独立块`）。
+         它已经**被删除**，因为那是 2026-09-24 那次「抽取结果一团乱麻」的根因：
+
+           · 60 是按**双栏宽行**（每行 60-90 字符）拍的；
+           · 而用户论文库里大量**单栏窄行**排版，中位行宽只有 10-36 字符；
+           · 于是 54%~72% 的正文行都满足 `<= 60`，
+             只要该行恰好不以句末标点结尾就被切成独立块。
+
+         **判据：绝对字符数阈值不能跨排版使用。**
+         双栏宽行与单栏窄行的行宽差 3-5 倍，任何固定值都只能对一半文档有效。
+
+         现在分段由**字号与粗体**（相对判据，见 [isHeadingByStyle]）主导。
+         不要再把它加回来。
+    */
+
+    /**
+     * 估计正文字号时，参与统计的最小行长度。
+     *
+     * ⚠️ 用 24：太小会把标题/作者/页码算进来（众数偏到标题字号上），
+     *    太大则会丢掉大量**真实正文行** —— 窄行排版下正文行常常只有
+     *    20-40 字符（实测中位 10-36），门槛高一点样本就不够了。
+     */
+    private const val BODY_SAMPLE_MIN_CHARS = 24
+
+    /**
+     * 连字（ligature）还原表。
+     *
+     * ⚠️ 为什么需要：PDF 里 `fi` `fl` 常被排成**单个字形**
+     *    （U+FB01 等），提取出来就是 `ﬁ` `ﬂ`。
+     *    实测四篇论文里共 64 处 —— `difﬁcult` `classiﬁcation` `ﬂow`。
+     *
+     * 后果不只是"看起来怪"：
+     *   · 复制出去贴到别处（Word/浏览器）会变成方框或乱码；
+     *   · 全文检索 `difficult` **搜不到** `difﬁcult`。
+     *
+     * ⚠️ 必须在**入库前**还原（而不是渲染时）：
+     *    否则 text 与 blocks 两处会不一致，
+     *    且用户复制的、搜索的、后续做全文索引的都是未还原的那份。
+     */
+    private val LIGATURES = mapOf(
+        "\uFB00" to "ff",
+        "\uFB01" to "fi",
+        "\uFB02" to "fl",
+        "\uFB03" to "ffi",
+        "\uFB04" to "ffl",
+        "\uFB05" to "st",
+        "\uFB06" to "st"
+    )
+
+    /** 连字还原 + 连续空白压缩。所有文本入库前都要过这一道 */
+    private fun normaliseText(s: String): String {
+        if (s.isEmpty()) return s
+        var out = s
+        for ((k, v) in LIGATURES) {
+            if (out.contains(k)) out = out.replace(k, v)
+        }
+        // 压缩连续空格/制表符（PDF 提取常见多个空格对齐）
+        return out.replace(Regex("[ \\t]+"), " ").trim()
+    }
+
+    /**
+     * 判断某个字体名是否**看起来是粗体/中等粗细**。
+     *
+     * ⚠️ 只看字体名，不看字形 —— 后者要解析字体程序，成本高得不成比例。
+     *
+     * ⚠️ 关键词要覆盖各家的命名习惯（实测都是真实遇到过的）：
+     *    `-Bold`      Adobe/LaTeX 系（NimbusRomNo9L-Medi 是 Times 的粗体）
+     *    `Medi`       URW 的 "Medium"（**注意不能写成 "Medium"** ——
+     *                 实际字体名是 `NimbusRomNo9L-Medi`，被截断过）
+     *    `CBX` / `CBB` Computer Modern 的 bold extended / bold
+     *    `Black` `Heavy` `SemiB`  其他常见别名
+     */
+    private fun isBoldFont(name: String): Boolean {
+        if (name.isEmpty()) return false
+        val n = name.lowercase()
+        return n.contains("bold") || n.contains("black") || n.contains("heavy") ||
+            n.contains("medi") || n.contains("semib") ||
+            n.contains("cbx") || n.contains("cbb") || n.contains("-md")
+    }
 
     /**
      * 判断一行是否「自成一段」（标题、作者、单位、编号等）。
      *
-     * ⚠️ 短行 + 不含句末标点 → 视为独立块。
-     *    正文行几乎总以标点结尾（句子结束），且明显更长；
-     *    而标题、作者名、单位、邮箱这些恰好都短且无句末标点。
+     * ⚠️⚠️ **2026-09-24 重写：这里过去是最大的 bug 来源。**
+     *
+     * 旧版是 `len(s) <= SHORT_LINE(60) && 末字符不是句末标点 → true`。
+     * 那 60 是按双栏宽行拍的，而用户论文多为单栏窄行（中位 10-36 字符）
+     * → 54%~72% 的正文行被误判成独立块。
+     *
+     * 现在的**主判据是字号与粗体**（相对判据，跨排版成立），
+     * 形态判据只保留两条与排版无关的：
+     *   ① 全大写（`ABSTRACT` / `RELATED WORK`）
+     *   ② 以编号开头（`3 Methodology` / `3.1 Problem`）
+     *
+     * ⚠️ **不再**用"短行且无句末标点"当判据 —— 那条在窄行排版下必然误伤。
+     *    字号信息在 [classifyBlock] 与 [isHeadingByStyle] 里用，
+     *    那里能拿到 bodySize。
      */
     private fun looksLikeHead(s: String): Boolean {
         if (s.isEmpty()) return false
         if (NUMBER_ONLY.matches(s)) return true
-        if (UPPER_HEAD.matches(s)) return true
-        /*
-          ⚠️ **以连字符结尾的行是「断词续行」，永远不是标题。**
+        if (UPPER_HEAD.matches(s) && s.length >= 3) return true
+        if (HEADING_NUM_PREFIX.containsMatchIn(s) && s.length <= TITLE_MAX_CHARS) return true
+        return false
+    }
 
-             实测证据（HAL 版 LeCun《Deep learning》封面页）：
-
-                 for the deposit and dissemination of scientific re-    ← 53 字符
-                 search documents, whether they are published or not.
-
-             第一行 53 字符 ≤ SHORT_LINE(60)，且末字符是 `-` 不在
-             SENTENCE_END 里 → 旧判据把它当"独立块"，于是**同一句话被
-             硬断成两段**，读起来就是 `scientific re-` / `search documents`。
-
-             ⚠️ 这类行必须**并进下一行**，不能 flush。
-                判据：末字符是 `-`（或 `–` `—`）→ 返回 false。
-                真正的标题极少以连字符结尾（"Multi-" 这种前缀标题很少见，
-                且真出现了也只是少一次 flush，代价远小于打断正文）。
-        */
-        val last = s[s.length - 1]
-        if (last == '-' || last == '\u2013' || last == '\u2014') return false
-        if (s.length <= SHORT_LINE && SENTENCE_END.none { it == last }) {
-            return true
-        }
+    /**
+     * **按排版属性**判断这一行是否开启新的块（标题）。
+     *
+     * ══ 这是修好「段落被拆碎 / 标题认不出来」的关键函数 ══
+     *
+     * 旧代码把字号与粗体信号**算出来了却没用于分段决策** ——
+     * 实测 ResNet 的 `1. Introduction`（12.0pt Bold）被判为普通行，
+     * 而一堆正文行（10.0pt Regular）反被判为独立块。正好反了。
+     *
+     * @param size      该行的主字号
+     * @param font      该行的主字体名
+     * @param bodySize  正文字号（由 [estimateBodySize] 得出；0 表示未知）
+     */
+    private fun isHeadingByStyle(size: Float, font: String, bodySize: Float): Boolean {
+        if (bodySize <= 0f) return false
+        // 字号明显大于正文 —— 最可靠的信号
+        if (size > bodySize + BODY_SIZE_TOL) return true
+        // 粗体（但字号不小于正文时才靠它；否则是标题里的强调）
+        if (isBoldFont(font) && size >= bodySize - BODY_SIZE_TOL) return true
         return false
     }
 

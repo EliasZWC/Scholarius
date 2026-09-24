@@ -28,3 +28,13 @@ _*.txt
 #    路径固定在 tools/smoke/_font_<年份>.json。
 _font_*.json
 _fixture_*.json
+
+# 结构化块夹具（tools/emit_blocks.py 的产物）。
+# ⚠️ 同样是**论文全文**（按段落切开），与 _font_*.json 一样不能提交。
+#    用 `_blocks_*.json` 而不是精确文件名：以后会为更多论文生成，
+#    逐个列举必然漏（这个教训在 _*.txt 那条已经吃过一次）。
+_blocks_*.json
+
+# ⚠️ 临时探针文件：会被临时复制到 assets/www 下供浏览器测试，
+#    名字以 _probe 结尾。忘了删就会被打进 APK（多一份论文正文）。
+_*probe*.json

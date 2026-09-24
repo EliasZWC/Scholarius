@@ -959,13 +959,21 @@
 
             if (kind === 'heading') {
                 /*
-                  ⚠️ 标题层级只映射到 h2 / h3，**不用 h1** ——
-                     详情页/页面本身已有 h1 语义（应用标题），
+                  ⚠️ 标题层级映射到 h2 / h3 / h4，**不用 h1** ——
+                     页面本身已有 h1 语义（应用标题），
                      正文里再出 h1 会破坏文档大纲。
-                     超过 2 级的也压到 h3（视觉上三档够了，
-                     再细分在手机上分不出来）。
+
+                 层级来源（原生侧 PdfText.classifyBlock）：
+                    1 = 章（`3` / `Abstract`，字号最大）
+                    2 = 节（`3.1`，字号次之或粗体）
+                    3 = 更深层（`3.1.1`），原生侧封顶到 3
+
+                 ⚠️ 三档全部保留 —— 早先这里把 level>=2 一律压到 h3，
+                    于是「章」与「节」在视觉上分不出来，
+                    而 CSS 里本来就为三档各写了字号（见 styles.css）。
+                     映射：level 1 → h2，2 → h3，>=3 → h4
                 */
-                var lv = b.level >= 3 ? 3 : (b.level >= 2 ? 3 : 2);
+                var lv = (b.level >= 3) ? 4 : ((b.level === 2) ? 3 : 2);
                 el = document.createElement('h' + lv);
                 el.className = 'reader-heading';
 
