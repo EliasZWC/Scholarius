@@ -595,16 +595,16 @@ body {
     align-items: center;
     justify-content: flex-start;
     gap: 8px;
-    padding: 0 8px;
     /*
       顶部栏背景从屏幕最上沿开始（视觉上不留空隙），
       但内容要压到安全区之下，否则返回按钮被状态栏图标盖住。
-      做法：高度 = 56 + safe-top，用 padding 把内容推下来。
+
+      ⚠️ 尺寸与 .reader-bottom / .bottom-nav 同一套：
+         安全区 + 8 + 48 + 8，保证三条栏的图标视觉重量一致。
     */
-    height: calc(56px + var(--safe-top));
-    padding-top: var(--safe-top);
-    padding-left: calc(8px + var(--safe-left));
-    padding-right: calc(8px + var(--safe-right));
+    height: calc(64px + var(--safe-top));
+    padding: calc(var(--safe-top) + 8px) calc(8px + var(--safe-right))
+        8px calc(8px + var(--safe-left));
     box-sizing: border-box;
     background: var(--nav-bg);
     transform: translateY(-100%);
@@ -619,8 +619,15 @@ body {
   底部选项栏。现在是 .reader-stack 里的 flex 子元素（不是 absolute），
   因为面板要和它拼在一起从底部往上排。
 
+  ⚠️ 尺寸必须与全站底部导航（.bottom-nav）**逐项对齐**。
+     实测对比（用户质疑后量的，之前只凭印象写注释，是错的）：
+         .bottom-nav     总高 88 = 8(上) + 48(内容) + 8 + 24(安全区)
+                         图标 24x24，文字 12px / 行高 16
+         .reader-bottom  旧值 总高 80 = 0(上) + 56(内容) + 24(安全区)
+                         图标 22x22，文字 11px / 行高 14
+     三处差异都会让两条栏切换时看着不一样。现已全部对齐。
+
   ⚠️ 收起时用 translateY(100%) 滑出屏幕；菜单展开时归位。
-     面板展开时整条上移面板的高度（见 .reader-stack 与 --reader-panel-h）。
 */
 .reader-bottom {
     flex: 0 0 auto;
@@ -629,11 +636,15 @@ body {
     align-items: center;
     justify-content: center;
     gap: 4px;
-    padding: 0 8px;
-    padding-left: calc(8px + var(--safe-left));
-    padding-right: calc(8px + var(--safe-right));
-    height: calc(56px + var(--safe-bottom));
-    padding-bottom: var(--safe-bottom);
+    /*
+      ⚠️ 64 = 8(上) + 48(内容) + 8(下)，再叠安全区。
+         旧值写的是 56，导致总高 80 而导航栏是 88，差 8px。
+    */
+    height: calc(64px + var(--safe-bottom));
+    /* 上 8 + 内容 48 + 下 8 = 64，再叠安全区 */
+    padding: 8px 4px calc(8px + var(--safe-bottom));
+    padding-left: calc(4px + var(--safe-left));
+    padding-right: calc(4px + var(--safe-right));
     box-sizing: border-box;
     background: var(--nav-bg);
     /* 藏起来时整体下移 */
@@ -748,6 +759,13 @@ body {
 /*
   选项栏里的图标按钮：纵向排（图标在上、文字在下），
   比纯图标好认 —— 「目录」和「设置」光看图不太分得清。
+
+  ⚠️ 图标与文字尺寸必须与全站导航项（.nav-item）**逐项对齐**。
+     实测差异（用户质疑后量的）：
+         .nav-item     图标 24x24，文字 12px / 行高 16
+         .reader-action 旧值 图标 22x22，文字 11px / 行高 14
+     差 2px 肉眼能看出「阅读页的图标小一圈」。
+     这里全部改成与导航项相同的数值。
 */
 .reader-action {
     flex: 1 1 0;
@@ -757,7 +775,13 @@ body {
     justify-content: center;
     gap: 3px;
     max-width: 96px;
-    padding: 6px 4px;
+    /*
+      ⚠️ min-height 48px —— 与 .nav-item 一致。
+         不加的话内容（24 图标 + 3 gap + 16 文字 = 43）撑不到 48，
+         实测内容区只有 40px，比导航栏矮 8px。
+    */
+    min-height: 48px;
+    padding: 0 2px;
     border: 0;
     border-radius: 12px;
     background: transparent;
@@ -779,14 +803,16 @@ body {
 }
 
 .reader-action svg {
-    width: 22px;
-    height: 22px;
+    /* 与 .nav-item 的图标同为 24x24 */
+    width: 24px;
+    height: 24px;
     fill: currentColor;
 }
 
 .reader-action-label {
-    font-size: 11px;
-    line-height: 14px;
+    /* 与 .nav-label 同为 12px / 行高 16 */
+    font-size: 12px;
+    line-height: 16px;
     letter-spacing: 0.02em;
 }
 
