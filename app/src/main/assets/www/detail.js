@@ -100,7 +100,7 @@
      *
      * ⚠️ 用 meta.js 的 TOP_LEVEL_KEYS 表，**不在这里硬编码**。
      *    之前写的是 `key === 'title' || key === 'author' || key === 'year'`，
-     *    加 venueShort 时就得记得同时改三处（读/写/提交），
+     *    加 shortTitle 时就得记得同时改三处（读/写/提交），
      *    漏一处就会出现「填了简称但保存后不见了」。
      *    表单从一份表派生，判断也从同一份表派生。
      */
@@ -144,7 +144,7 @@
      * 打开详情页。
      *
      * @param {Object} doc 文库里的文献对象
-     *        （含 id/title/author/year/venueShort/venueType/fields…）
+     *        （含 id/title/author/year/shortTitle/venueType/fields…）
      */
     function open(doc) {
         if (!root || !doc) return;
@@ -154,7 +154,7 @@
           ⚠️ 深拷贝 fields。直接用 doc.fields 的引用会让「改到一半关闭」
              直接改到文库数据上（下次渲染卡片就显示未保存的值）。
 
-          ⚠️ venueShort 也必须拷 —— 它是顶层字段，同样不能在
+          ⚠️ shortTitle 也必须拷 —— 它是顶层字段，同样不能在
              draft 上直接持有 currentDoc 的值（否则「取消」无效）。
         */
         draft = {
@@ -162,7 +162,7 @@
             title: doc.title || '',
             author: doc.author || '',
             year: doc.year || '',
-            venueShort: doc.venueShort || '',
+            shortTitle: doc.shortTitle || '',
             venueType: doc.venueType || 'unknown',
             fields: {}
         };
@@ -384,7 +384,7 @@
      */
     function syncShortName() {
         if (!shortNameInput || !draft) return;
-        shortNameInput.value = draft.venueShort || '';
+        shortNameInput.value = draft.shortTitle || '';
         /*
           ⚠️ 占位提示在这里补上（用户要求「所有空的输入框都给个提示填充文字」）。
 
@@ -1397,12 +1397,17 @@
             */
             year: draft.year,
             /*
-              ⚠️ 简称要显式带上 —— 它不在 fieldsFor() 的结果里
+              ⚠️ **短标题**要显式带上 —— 它不在 fieldsFor() 的结果里
                  （见 meta.js：SHORT_NAME_FIELD 是独立的一项，
                  因为它在界面上是行内形态而非整行形态）。
-                 忘了这一行就会出现「填了简称但保存后不见」。
+
+                 ⚠️ 这一行还不够 —— 光把它放进 patch，Kotlin 侧
+                    若不把 `shortTitle` 列进 TOP_LEVEL_KEYS，
+                    它会被当普通类别字段写进 `fields`，读回来时
+                    又只读顶层，于是保存后消失。
+                    四处必须一致（见 meta.js SHORT_NAME_FIELD 的注释）。
             */
-            venueShort: draft.venueShort,
+            shortTitle: draft.shortTitle,
             venueType: draft.venueType
         };
 
@@ -1497,7 +1502,7 @@
         currentDoc.title = draft.title;
         currentDoc.author = draft.author;
         currentDoc.year = draft.year;
-        currentDoc.venueShort = draft.venueShort;
+        currentDoc.shortTitle = draft.shortTitle;
         currentDoc.venueType = draft.venueType;
         currentDoc.fields = draft.fields;
 
@@ -1526,13 +1531,13 @@
         cancelBtnEl = document.getElementById('detail-cancel');
 
         /*
-          ⚠️ 简称在 HTML 里是静态元素，绑定只需做一次。
+          ⚠️ 短标题在 HTML 里是静态元素，绑定只需做一次。
              writeValue 会按 meta.js 的 TOP_LEVEL_KEYS 判断出
-             venueShort 属于顶层，所以直接调它即可，不用在这里特判。
+             shortTitle 属于顶层，所以直接调它即可，不用在这里特判。
         */
         if (shortNameInput) {
             shortNameInput.addEventListener('input', function () {
-                writeValue('venueShort', shortNameInput.value);
+                writeValue('shortTitle', shortNameInput.value);
             });
         }
 

@@ -107,6 +107,37 @@ object LibraryStore {
          */
         val venueType: String,
         /**
+         * **短标题**（Short Title）。空串 = 未填。
+         *
+         * ⚠️ 它填了之后会**顶替卡片①行的标题**（见前端 vault.js
+         *    的 renderCard）——因为用户既然专门起了短名，
+         *    就是为了在列表里一眼认出来，再显示那一长串正式标题
+         *    （常被截断成 "Attention is All you N…"）反而更难认。
+         *
+         * ⚠️ 它**不是**「发表物简称」——后者是会议/期刊名字的缩写
+         *    （NIPS / CVPR），是一张全局映射表，存在前端的
+         *    localStorage 里（见 shortcut.js），**不进本结构**。
+         *
+         * ══ 为什么是顶层字段而不是 fields 里的普通键 ══
+         *
+         * ⚠️ 因为它**参与卡片渲染**（顶替标题）。放进 [fields] 也能存，
+         *    但 fields 的语义是「按类别细分的元数据」——
+         *    切类别时前端会跳过不显示的字段，而短标题与类别无关，
+         *    不应被那条规则牵连。
+         *
+         * ⚠️ 它必须**同时**出现在四处，否则保存后消失（v0.1.5 真踩过）：
+         *      · 本属性（存）；
+         *      · parseDoc（读）；
+         *      · writeIndex（写）；
+         *      · TOP_LEVEL_KEYS（否则被当 fields 里的键）。
+         *    当时叫 `venueShort` 且只在前端加了，Kotlin 四处都没有 ——
+         *    于是它被写进 fields，读回来时只读顶层，读不到。
+         *    表现为「填了短标题、保存、重开就没了」，
+         *    而且**只在真机复现**（浏览器预览的 dev-library.js
+         *    把旧名当顶层了），所以本地怎么测都绿。
+         */
+        val shortTitle: String = "",
+        /**
          * 按类别细分的元数据。**键是前端 meta.js 定义的字段名**，
          *    值是字符串（空值一律**不存**，不是存空串）。
          *
@@ -193,6 +224,9 @@ object LibraryStore {
         // 非法/缺失的类别归一到 unknown —— 前端据此选表单字段，
         // 拿到不认识的字符串会渲染不出任何专属字段，不如显式归一。
         venueType = normaliseVenueType(json.optString("venueType")),
+        // ⚠️ 顶层键，必须在这里读。miss 了它就是「短标题保存后消失」
+        //    （曾经用 venueShort 这个名字，Kotlin 侧没接住）。
+        shortTitle = json.optString("shortTitle"),
         fields = parseFields(json.optJSONObject("fields")),
         addedAt = json.optLong("addedAt"),
         pages = json.optInt("pages"),
@@ -244,6 +278,11 @@ object LibraryStore {
                 put("venue", doc.venue)
                 put("year", doc.year)
                 put("venueType", doc.venueType)
+                // ⚠️ 短标题必须写出，否则重开就没了（见 Doc.shortTitle）。
+                //    空串也写 —— 与 fields 不同，它是个固定顶层键，
+                //    省略会让 parseDoc 读到 ""，效果一样但索引里
+                //    看不出这个键存在，排查时不直观。
+                put("shortTitle", doc.shortTitle)
                 // fields 为空时**不写这个键**（老版本读到会当成空 Map）
                 if (doc.fields.isNotEmpty()) {
                     put("fields", JSONObject().apply {
@@ -366,6 +405,11 @@ object LibraryStore {
             //    等用户选定类别后专属字段才出现（Zotero 也是这个流程）。
             venueType = "unknown",
             fields = meta.fields,
+            // ⚠️ 导入时短标题一律为空 —— PDF 里没有任何信息能推出
+            //    「用户想给这篇起什么短名」，这是纯人工字段。
+            //    显式写出来而不是靠默认值，是因为它必须与
+            //    parseDoc / writeIndex 保持同一组键名，写出来能一眼核对。
+            shortTitle = "",
             addedAt = System.currentTimeMillis(),
             pages = pages,
             size = pdf.length(),
@@ -527,6 +571,15 @@ object LibraryStore {
         val newAuthor = patch["author"] ?: target.author
         val newYear = patch["year"] ?: target.year
         val newType = patch["venueType"]?.let { normaliseVenueType(it) } ?: target.venueType
+        /*
+          ⚠️ 短标题也走顶层。空串是合法值（= 用户清空了短标题，
+             卡片退回显示标题），所以**不能**像 fields 那样
+             「空值就不写」—— 那样用户清不掉已有的短标题。
+
+             所以用「patch 里没这个键 → 保持原值」的写法：
+             `patch[...] ?: target.shortTitle`。
+        */
+        val newShortTitle = patch["shortTitle"] ?: target.shortTitle
 
         // --- 类别专属字段（fields）---
         //
@@ -551,6 +604,7 @@ object LibraryStore {
             author = newAuthor,
             year = newYear,
             venueType = newType,
+            shortTitle = newShortTitle,
             fields = newFields,
         )
 
@@ -558,8 +612,19 @@ object LibraryStore {
         return true
     }
 
-    /** 不属于 [Doc.fields] 的顶层键，update() 里要跳过 */
-    private val TOP_LEVEL_KEYS = setOf("title", "author", "year", "venueType", "venue")
+    /**
+     * 不属于 [Doc.fields] 的顶层键，update() 里要跳过。
+     *
+     * ⚠️ 必须与前端 meta.js 的 TOP_LEVEL_KEYS **逐字一致**，
+     *    而 meta.js 那份又必须与 dev-library.js 的 TOP 一致。
+     *
+     * ⚠️ `shortTitle` 漏在这里就是「短标题保存后消失」的根因 ——
+     *    它会被当成普通类别字段写进 fields，而 parseDoc 只读顶层。
+     *    当时名字叫 `venueShort`，两边都没接住。
+     */
+    private val TOP_LEVEL_KEYS = setOf(
+        "title", "author", "year", "venueType", "venue", "shortTitle"
+    )
 
     /**
      * 删除若干文献（含文件）。

@@ -156,7 +156,7 @@ if (storeTop.size < 5) {
 /*
   ⚠️ 字段分两类，落到索引里的位置不同：
 
-    ① **顶层键**：title / author / year / venueType / venue
+    ① **顶层键**：title / author / year / venueType / shortTitle
        —— 它们在 Doc 上有独立属性，`put("xxx", doc.xxx)`
 
     ② **fields 子对象**：其余全部（journalName / doi / isbn …）
@@ -169,7 +169,39 @@ if (storeTop.size < 5) {
       （其内部键是动态的，Kotlin 不逐一认识 ——
         这正是用 Map 的代价，见 LibraryStore.Doc.fields 的注释）。
 */
-const TOP_LEVEL_FIELD_KEYS = new Set(['title', 'author', 'year']);
+
+/*
+  ⚠️⚠️ 这一组**必须从 meta.js 读，不能硬编码**（v0.1.5 踩过）。
+
+     原来写的是 `new Set(['title', 'author', 'year'])` ——
+     手写的三元素列表。后果：
+
+       · `venueType` / `venue` 明明也是顶层键，却没被校验；
+       · 更糟的是后来新增的 `shortTitle`（当时叫 `venueShort`）
+         也不在里面 —— 于是**这个校验脚本对它是完全沉默的**，
+         即使在它真正出问题时跑一遍，也只会照常打印 ok。
+
+     而它出的是什么问题：Kotlin 的 TOP_LEVEL_KEYS 里漏了这个键，
+     于是它被当普通类别字段写进 fields，读回来只读顶层 → 读不到。
+     **短标题保存后消失，且只在真机复现。**
+
+     ⚠️ 这个脚本存在的**唯一理由**就是提前发现 JS/Kotlin 键名不一致，
+        而硬编码的白名单把自己变成了同一种 bug 的下一个藏身处 ——
+        「校验清单本身要人工维护」等于没有校验。
+
+     所以改成从 meta.js 的 TOP_LEVEL_KEYS 直接读：
+     那份是前端认定的顶层键全集，Kotlin 必须逐字跟上。
+     两边谁漏了都会立刻报出来。
+*/
+const metaTopMatch = /var TOP_LEVEL_KEYS = \{([\s\S]*?)\};/.exec(meta);
+if (!metaTopMatch) {
+    fail('读不到 meta.js 的 TOP_LEVEL_KEYS');
+}
+const metaTopKeys = [...metaTopMatch[1].matchAll(/(\w+)\s*:\s*1/g)].map((m) => m[1]);
+if (!metaTopKeys.length) {
+    fail('meta.js 的 TOP_LEVEL_KEYS 解析出 0 个键，提取规则可能失效');
+}
+const TOP_LEVEL_FIELD_KEYS = new Set(metaTopKeys);
 
 if (!storeTop.has('fields')) {
     fail('索引里没有 fields 键 —— 类别专属字段会全部丢失');
@@ -177,15 +209,82 @@ if (!storeTop.has('fields')) {
     ok('索引里有 fields 子对象（类别专属字段的落点）');
 }
 
-const missingInStore = uniqueKeys.filter(
-    (k) => TOP_LEVEL_FIELD_KEYS.has(k) && !storeTop.has(k)
-);
+/*
+  ⚠️ 两个方向都要查：
+
+    ① meta.js 认定为顶层的键，Kotlin 必须真的 `put("...", doc....)`；
+    ② Kotlin 的 TOP_LEVEL_KEYS 必须与 meta.js 的**逐字相同**。
+
+     ② 是 ① 的补充：光有 ① 时，若 Kotlin 写了这个键、
+     但没把它列进 TOP_LEVEL_KEYS，update() 仍会把它当 fields 处理 ——
+     即「写得出、读得回，但保存时进错地方」。
+
+     ⚠️ 后者正是短标题那个 bug 的第二半，必须一并拦住。
+*/
+const missingInStore = [...TOP_LEVEL_FIELD_KEYS].filter((k) => !storeTop.has(k));
 if (missingInStore.length) {
-    fail('前端定义了但索引里不存的顶层字段: ' + missingInStore.join(', '));
+    fail(
+        'meta.js 定义为顶层、但 Kotlin 未写入索引的字段: ' +
+        missingInStore.join(', ')
+    );
 } else {
-    const direct = uniqueKeys.filter((k) => TOP_LEVEL_FIELD_KEYS.has(k));
     const nested = uniqueKeys.filter((k) => !TOP_LEVEL_FIELD_KEYS.has(k));
-    ok(direct.length + ' 个顶层字段 + ' + nested.length + ' 个嵌套字段，落点齐全');
+    ok(
+        TOP_LEVEL_FIELD_KEYS.size + ' 个顶层字段 + ' +
+        nested.length + ' 个嵌套字段，落点齐全'
+    );
+}
+
+/*
+  ⚠️ 再核对 Kotlin 的 TOP_LEVEL_KEYS 与 meta.js 是否逐字一致。
+
+     ⚠️ 漏在这里的键不会导致「存不下」，但会导致
+        「保存时被当成 fields 里的键」—— 见上面 ② 的说明。
+*/
+const storeTopKeysMatch = /private val TOP_LEVEL_KEYS = setOf\(([\s\S]*?)\)/.exec(store);
+if (!storeTopKeysMatch) {
+    fail('读不到 Kotlin 的 TOP_LEVEL_KEYS');
+} else {
+    const ktTopKeys = [...storeTopKeysMatch[1].matchAll(/"(\w+)"/g)]
+        .map((m) => m[1])
+        .sort();
+    const metaSorted = [...TOP_LEVEL_FIELD_KEYS].sort();
+    if (ktTopKeys.join(',') !== metaSorted.join(',')) {
+        fail(
+            'TOP_LEVEL_KEYS 两边不一致\n' +
+            '        前端: ' + metaSorted.join(', ') + '\n' +
+            '        后端: ' + ktTopKeys.join(', ')
+        );
+    } else {
+        ok('TOP_LEVEL_KEYS 两边一致（' + ktTopKeys.length + ' 项）');
+    }
+}
+
+/*
+  ⚠️ 还要核对 dev-library.js 的 TOP —— 那是浏览器预览的假桥。
+
+     它若与真 Kotlin 不一致，就会出现「预览正常、真机出错」
+     （或反过来），这是最难查的一类问题：
+     本地怎么测都绿。
+*/
+const devlib = read('app/src/main/assets/www/dev-library.js');
+const devTopMatch = /var TOP = \{([\s\S]*?)\};/.exec(devlib);
+if (!devTopMatch) {
+    fail('读不到 dev-library.js 的 TOP 白名单');
+} else {
+    const devKeys = [...devTopMatch[1].matchAll(/(\w+)\s*:\s*1/g)]
+        .map((m) => m[1])
+        .sort();
+    const metaSorted = [...TOP_LEVEL_FIELD_KEYS].sort();
+    if (devKeys.join(',') !== metaSorted.join(',')) {
+        fail(
+            'dev-library.js 的 TOP 与 meta.js 不一致（预览与真机会分叉）\n' +
+            '        预览: ' + devKeys.join(', ') + '\n' +
+            '        前端: ' + metaSorted.join(', ')
+        );
+    } else {
+        ok('dev-library.js 的 TOP 与前端一致');
+    }
 }
 
 // venueType 的特殊值集合必须两边一致

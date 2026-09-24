@@ -43,9 +43,34 @@ VENUE_TYPE = {
     '2016_残差连接提出_CVPR_He.pdf': 'conference',
     '2022_LLM思维链提出_NIPS_Wei.pdf': 'conference',
 }
-VENUE_SHORT = {
-    'Neural Information Processing Systems': 'NIPS',
-    '2016 IEEE Conference on Computer Vision and Pattern Recognition': 'CVPR',
+
+# ⚠️⚠️ 已删除 `VENUE_SHORT`（原来把 NIPS / CVPR 写进 doc.shortTitle）。
+#
+#    它原来是这么用的：
+#        'venueShort': VENUE_SHORT.get(d['venue'], '')
+#    而 VENUE_SHORT 里是：
+#        'Neural Information Processing Systems': 'NIPS'
+#
+#    这**混淆了两个不同的概念**（用户 2026-09-24 专门指出）：
+#      · 发表物简称（NIPS / CVPR）= 会议/期刊**名字**的缩写，
+#        是一张全局映射表，服务所有发表在同一载体的文献，
+#        存在 localStorage（见 www/shortcut.js），在设置页里配；
+#      · 短标题（Short Title）= **这一篇文献**标题的短形式，
+#        一篇一个值，存在 doc.shortTitle，填了顶替卡片①行的标题。
+#
+#    NIPS 是对 **venue 的缩写**，不是对 **这篇文献标题的缩写** ——
+#    把它写进 shortTitle 是类别错误。而且它还是**全局映射**里
+#    才该有的东西，放到单篇文献上就变成"每篇都要手工重复"。
+#
+#    所以这里不再生成任何 shortTitle 预览值：让它为**空串**，
+#    预览时正好验证"未填短标题 → 卡片显示原标题"这条路径。
+#    要测"填了短标题"的形态，在详情页里手填即可。
+
+# 预览用的短标题。**与载体无关**，是给这一篇文献起的短名。
+# 同理只给两条，让"有 / 无短标题"两种卡片形态都能看到。
+SHORT_TITLE = {
+    '2017_Transformer提出纯注意力模型_NIPS_Vaswani.pdf': 'Transformer',
+    '2016_残差连接提出_CVPR_He.pdf': 'ResNet',
 }
 
 
@@ -364,8 +389,8 @@ def main():
             'year': d['year'],
             # 人工标注的载体类型（模拟将来用户自己设置的结果）
             'venueType': VENUE_TYPE.get(d['sourceName'], 'unknown'),
-            # 简称（模拟用户在设置页里配的简称表）
-            'venueShort': VENUE_SHORT.get(d['venue'], ''),
+            # 短标题（这一篇文献的短名，不是载体缩写 —— 见上面 SHORT_TITLE 的注释）
+            'shortTitle': SHORT_TITLE.get(d['sourceName'], ''),
             # 详情页要编辑的类别字段。预览里给空表 ——
             # 让「从未填过」和「填了值」两种状态都能测到。
             'fields': {},
@@ -416,7 +441,7 @@ DEV_SHIM = r'''
 window.ScholariusDevLibrary.load = function () {
   var list = this.docs.map(function (d) {
     return { id: d.id, title: d.title, author: d.author, venue: d.venue,
-             venueType: d.venueType, venueShort: d.venueShort,
+             venueType: d.venueType, shortTitle: d.shortTitle,
              fields: d.fields || {}, year: d.year || '',
              addedAt: d.addedAt, pages: d.pages, size: d.size,
              sourceName: d.sourceName };
@@ -456,10 +481,19 @@ if (typeof window.ScholariusNative.requestDocText !== 'function') {
 
   ⚠️ TOP 白名单必须与 meta.js 的 TOP_LEVEL_KEYS / Kotlin 的
      LibraryStore.TOP_LEVEL_KEYS **逐字一致**。
-     踩过的坑：漏了 venueShort，于是它被当成 fields 里的键写成
-     d.fields.venueShort —— 前端填的简称在库里"消失"了
-     （patch 里明明有）。真机不会这样，只有预览会，
-     但足够让人误判成前端 bug 查半天。
+
+     ⚠️⚠️ 这里曾经写的是 `venueShort`，而**同时**：
+        · Kotlin 的 TOP_LEVEL_KEYS 里没有它；
+        · Kotlin 的 Doc / parseDoc / writeIndex 四处都没有它。
+        于是出现最贵的一类 bug：
+          · 浏览器预览（用这个垫片）→ 存顶层 → 一切正常；
+          · 真机（走 Kotlin）→ 被当 fields 的键写进 fields，
+            而 parseDoc 只读顶层 → 读不到。
+          · 表现：短标题保存后消失，**本地怎么测都是绿的**。
+
+     所以这个白名单不是可选的便利设施 —— 它是唯一能提前发现
+     JS/Kotlin 键名不一致的地方。已由 tools/check-meta.js 机械校验，
+     改了这边不改那边会直接报错。
 */
 if (typeof window.ScholariusNative.updateDoc !== 'function') {
   window.ScholariusNative.updateDoc = function (id, patchJson) {
@@ -472,7 +506,7 @@ if (typeof window.ScholariusNative.updateDoc !== 'function') {
       if (d) {
         var TOP = {
           title: 1, author: 1, year: 1, venueType: 1, venue: 1,
-          venueShort: 1
+          shortTitle: 1
         };
         if (typeof patch.title === 'string' && !patch.title.trim()) {
           patch.title = d.sourceName || 'Untitled';

@@ -368,7 +368,7 @@
      *     它的用途是「卡片上省宽度」（见 meta.js 的 venueNameOf），
      *     作用在卡片的**③发表物那一行**。
      *
-     *   · 文章简称是**单篇文献的一个字段**（存在 doc.venueShort），
+     *   · 短标题是**单篇文献的一个字段**（存在 doc.shortTitle），
      *     一篇一个值。⚠️ 它的用途是**顶替卡片①行的标题**
      *     （用户 2026-09-24：「short name 一旦确定，列表卡片的
      *     文章标题就用 short name 代替」）——
@@ -395,20 +395,34 @@
      *    占满行的形态，然后 detail.js 还得再特判一次「这个要用
      *    另一种排法」—— 同一件事在两处描述，容易漂移。
      *
-     * ⚠️ key 用 `venueShort`（不是 shortName / docShort）：
-     *    这是**既有**的存储名，dev-library.js 和卡片渲染
-     *    （vault.js 的 venueShort）都在用。改名要同时动三处，
-     *    而且老数据要迁移。
+     * ⚠️ key 用 `shortTitle`，**已从 `venueShort` 改名**（用户 2026-09-24 拍板）。
      *
-     *    ⚠️ 命名是个历史遗留问题：`venueShort` 看起来像
-     *       「发表物简称」，但实际存的是文章简称。
-     *       之所以不改：代价（三处改名 + 数据迁移）大于收益
-     *       （只是在读代码时容易被名字误导，已在此注释说清）。
-     *       将来若真要为「发表物简称」加个按篇覆盖的字段，
-     *       那时必须一并改名，否则两个 key 会撞。
+     *    旧名 `venueShort` 的毛病有两个，第二个是致命的：
+     *      ① 读起来像「发表物简称」——而它存的是短标题，
+     *         正是用户抱怨的混淆点；
+     *      ② **它与 Kotlin 侧对不上**，导致真机上短标题永远存不住。
+     *         `LibraryStore.TOP_LEVEL_KEYS` 里没有 `venueShort`，
+     *         `Doc` 也没有这个字段，`writeIndex` 更不会写出它 ——
+     *         于是保存时它被当普通类别字段塞进 `fields`，
+     *         而 `parseDoc` 又只读顶层 `json.optString("venueShort")`，
+     *         读不到。**表现为填了短标题、保存、重开就没了。**
+     *         （浏览器预览看不出来 —— dev-library.js 的 TOP 白名单里
+     *          把它当顶层了，所以只在真机上复现。）
+     *
+     *    ⚠️ 改名后**两边必须逐字一致**：
+     *         meta.js 的 TOP_LEVEL_KEYS
+     *         Kotlin 的 LibraryStore.TOP_LEVEL_KEYS
+     *         Kotlin 的 Doc.shortTitle / parseDoc / writeIndex
+     *         dev-library.js 的 TOP
+     *       四处缺一不可。
+     *
+     *    ⚠️ 不做旧数据迁移：
+     *       `venueShort` 从未真正落盘过（上述 bug 导致它总是进 fields，
+     *       而那也读不回来），所以线上不存在带 `venueShort` 的数据。
+     *       万一有脏数据残在 `fields.venueShort`，它只是读不到，无害。
      */
     var SHORT_NAME_FIELD = {
-        key: 'venueShort',
+        key: 'shortTitle',
         label: 'vault.field.shortTitle',
         kind: 'text',
         maxLength: 40,
@@ -511,12 +525,16 @@
      * 顶层（非 fields 嵌套）字段的 key 集合。
      *
      * ⚠️ 与 Kotlin 侧 LibraryStore.TOP_LEVEL_KEYS 必须**逐字一致**：
-     *       setOf("title", "author", "year", "venueType", "venue")
-     *    这里多一个 `venueShort` —— 它同样是顶层键（不在 doc.fields 里），
-     *    所以保存时要跳过 fields 合并那段逻辑。
+     *       setOf("title", "author", "year", "venueType", "venue", "shortTitle")
+     *    这里多一个 `venue` —— 它是老数据的载体名兼容字段。
+     *
+     * ⚠️ `shortTitle` 必须在里面。之前它叫 `venueShort` 且**不在这里**，
+     *    导致它被当普通字段写进 `fields`，读回来时只读顶层，
+     *    于是短标题保存后消失（详见 SHORT_NAME_FIELD 的注释）。
      */
     var TOP_LEVEL_KEYS = {
-        title: 1, author: 1, year: 1, venueType: 1, venue: 1, venueShort: 1
+        title: 1, author: 1, year: 1, venueType: 1, venue: 1,
+        shortTitle: 1
     };
 
     /**

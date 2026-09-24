@@ -159,13 +159,13 @@
         // 标题 / 作者 / 发表物 / 原文件名都参与匹配 ——
         // 用户可能记得的是文件名而不是标题
         //
-        // ⚠️ doc.venueShort（文章简称）**必须也在内**。
+        // ⚠️ doc.shortTitle（短标题）**必须也在内**。
         //    卡片上显示的标题就是它（见 renderCard）——
         //    用户在列表里看到 "BERT paper" 然后去搜 "BERT"，
         //    搜不到是最让人恼火的一类 bug：
         //    屏幕上明明写着，却搜不出来。
         var haystack = [
-            doc.venueShort || '',
+            doc.shortTitle || '',
             doc.title || '',
             doc.author || '',
             doc.venue || '',
@@ -456,10 +456,10 @@
              此时卡片不能是空白。
 
           ⚠️ 空串要 fall through 到下一层，不能当成"有值"。
-             doc.venueShort 可能存着 '' 或 '   '（用户填了又删），
+             doc.shortTitle 可能存着 '' 或 '   '（用户填了又删），
              所以必须 trim 后判空。
         */
-        var shortName = (doc.venueShort || '').trim();
+        var shortName = (doc.shortTitle || '').trim();
         var title = document.createElement('span');
         title.className = 'doc-title';
         if (shortName) {
@@ -552,14 +552,14 @@
                一条配置服务**所有**发表在同一载体的文献。
                ★ 卡片这里要用的就是这个。
 
-             · **文章简称** —— 这一篇文档自己的短名，
-               存在 doc.venueShort（详情页那一行输入框）。
+             · **短标题** —— 这一篇文档自己的短名，
+               存在 doc.shortTitle（详情页那一行输入框）。
                它**不用在载体名上**，而是**顶替①行的标题**
                （见上面渲染 title 的地方）。
 
           ⚠️ 踩过的坑：这里原本写的是 `doc.venueShort || doc.venue` ——
-             把**文章简称**当成了载体名的优先来源。后果是：
-             用户给一篇文献填了文章简称 "BERT paper"，
+             把**短标题**当成了载体名的优先来源。后果是：
+             用户给一篇文献填了短标题 "BERT paper"，
              卡片上的「发表物」那一栏就显示成 "BERT paper"，
              完全看不出它发在哪。而且 doc.venueShort 与
              ScholariusShortcut.lookup() 是两套数据，

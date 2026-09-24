@@ -1058,6 +1058,18 @@ class MainActivity : AppCompatActivity() {
                 */
                 put("venueType", doc.venueType)
                 /*
+                  **短标题**。填了之后网页会用它**顶替卡片的标题**
+                  （见 vault.js 的 renderCard）。
+
+                  ⚠️ 必须推 —— 不推的话卡片就看不到它，
+                     表现与「短标题没保存」完全一样，
+                     但根因在推送这层，排查时会往错的方向找。
+
+                  ⚠️ 空串也推：网页用 `(doc.shortTitle || '').trim()`
+                     判空后回退显示标题，空串是合法输入。
+                */
+                put("shortTitle", doc.shortTitle)
+                /*
                   类别专属字段（卷/期/页码/DOI/ISBN…）。
                   ⚠️ 用 JSONObject 嵌套而不是拍平成 top-level 键：
                      字段名可能和顶层键重名（比如 fields 里将来的 `venue`），
