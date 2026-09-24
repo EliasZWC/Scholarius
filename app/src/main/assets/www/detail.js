@@ -975,14 +975,30 @@
                 }
             }
             /*
-              ⚠️ 光标位置要跟格子里的数字对齐 —— 不然用户点在第 5 格
-                 打字，光标却停在第 1 格，看起来像没反应。
+              ⚠️ 高亮「下一个字符会落到哪一格」= 当前已填位数那一格。
 
-                 做法：把 selection 当作「数字串里的下标」，
-                 但由于 input 里存的**就是**纯数字串（无分隔符），
-                 浏览器自己的光标位置与格子下标天然一一对应，
-                 不需要额外映射。这里只做画格子。
+                 为什么需要它（v0.1.7 用户反馈「第二位框前面冒出输入符号」）：
+                 透明 input 的 caret 位置由**它自己的排版**决定
+                 （7.5px/字，从最左连续排），而展示层的格子是
+                 「48px 宽 + 8px 间隔 + 两个 '-' 分隔符」——
+                 两套位置对不上，caret 会飘到格子之间或边框上。
+
+                 修法是**把 caret 藏掉**（见 styles.css 的
+                 .detail-date-input），焦点位置改由这里表达：
+                 高亮下一个待填格。既没有位置不准的竖线，
+                 又能让用户知道「现在填到第几位」。
+
+                 ⚠️ 已填满 8 位时没有"下一个待填格"，此时高亮**最后一格**
+                    （用户继续打字会覆盖末位，高亮那里语义一致）。
             */
+            var cursorAt = Math.min(d.length, DATE_SLOTS - 1);
+            for (var m = 0; m < DATE_SLOTS; m++) {
+                if (m === cursorAt) {
+                    segEls[m].classList.add('is-cursor');
+                } else {
+                    segEls[m].classList.remove('is-cursor');
+                }
+            }
         }
 
         /*
@@ -1050,6 +1066,24 @@
                     if (document.activeElement === input) place();
                 });
             }
+            /*
+              ⚠️ 聚焦时才显示「下一格」高亮（paint 里加 is-cursor）。
+                失焦后不该还留着一格高亮，否则看起来像始终处于编辑态。
+            */
+            group.classList.add('is-focused');
+        });
+
+        /*
+          ⚠️ 失焦：撤掉 is-focused 与格高亮。
+
+             为什么高亮开关要两处都做（这里 + paint）：
+             paint() 每次都重算 is-cursor，但它不知道焦点状态 ——
+             它只管"下一个待填格"。所以用 group 上的 is-focused
+             作为**门**，由 CSS 决定焦点之外不显示高亮。
+             这样即使失焦时又触发了一次 paint，视觉也不会漏。
+        */
+        input.addEventListener('blur', function () {
+            group.classList.remove('is-focused');
         });
 
         group.appendChild(input);

@@ -950,6 +950,38 @@ body {
 .doc-stats > .doc-year {
     flex: 0 0 auto;
     text-align: right;
+    /*
+      ⚠️ 年份要比左边的页数**更突出**（用户 2026-09-24：
+         「列表卡片右下角的年份字体也加深一些，现在有些不够突出」）。
+
+         为什么年份值得更突出：页数是「这份文件多厚」（与内容无关的属性），
+         而年份是**筛选文献的主要依据** —— 用户扫列表时常在找「哪年的」。
+
+         ⚠️ 怎么突出：**字重 600**（同字号 11px 不变）。
+
+             这里刻意**不换颜色**。卡片的层级约定是
+             「字号 + 字重分层，颜色只有亮/淡两档」
+             （见 .doc-info 顶部那段长注释：作者栏曾因与标题同色被
+             用户否掉，「只有标题用这个颜色，其他不用这个颜色」）。
+             给年份单独加一档颜色会破坏这条约定，
+             也让它比作者/发表物都亮 —— 那两行才是内容主体。
+
+             ⚠️ 600 会走 Bold 字档（见 app-spec：400/500→Regular，
+                600/700→Bold），所以是实打实的加粗，不是合成粗体。
+    */
+    font-weight: 600;
+    /*
+      ⚠️ 颜色只从 --on-surface-variant 提到 --on-surface 的**中间态**：
+         用 on-surface-variant 实色 + 略微加亮，
+         与页数（variant）拉开可见差距，但不至于跳到标题那一档。
+    */
+    color: var(--on-surface);
+    /*
+      ⚠️ 透明度 0.85 —— 让它仍归属「次要信息」这一族，
+         不像标题那样满对比度。纯 var(--on-surface) 实测太抢眼，
+         会把视线从标题上拽走（作者栏踩过同一个坑）。
+    */
+    opacity: 0.85;
 }
 
 /* 空状态 */
@@ -2283,15 +2315,31 @@ body {
 /*
   ⚠️ 真正接收输入的控件：**透明铺满整行**。
 
-     用户看到的 8 个格子是它上面的展示层画的，它自己不可见
-     （但 caret 可见 —— 光标要能看见，否则用户不知道在打字）。
+     用户看到的 8 个格子是它上面的展示层画的。
 
-     ⚠️ 用 opacity 而不是 visibility:hidden —— 后者会让它
-        不接收点击。也不能用 `color: transparent` 之外的办法，
-        因为 caret 的颜色跟随 color。所以这里是：
-          · 文字透明（用户看到的是展示层的数字）
-          · caret 用 caret-color 单独给回可见颜色
-          · 背景透明（圆角框由展示层的格子画）
+     ══ 为什么把 caret 藏掉（`caret-color: transparent`）══
+
+     踩过的坑（v0.1.7 用户反馈）：透明 input 用自己的排版度量
+     从左边缘依次摆字符（实测 7.5px/字），而展示层的 8 个格子
+     是「48px 宽 + 8px 间隔 + 两个 '-' 分隔符」——
+     两套位置**根本对不上**。
+     于是 caret 会出现在格子之间的空白/边框上，看起来像
+     「某个框前面冒出一个输入符号」：
+       第 5 位 → caret 在 x≈37.5（落在第 1 格右半边）
+       第 6 位 → x≈45（第 1 格右边缘）
+       第 7 位 → x≈52.5（掉进格间空隙，看不见了）
+       第 8 位 → x≈60 → 又落回可见区
+     用户描述「第 5 位出现、第 6 位消失」与之完全吻合。
+
+     ⚠️ 不要试图用 letter-spacing / padding 把 caret 对齐到格子 ——
+        分隔符与 gap 的宽度要一起凑，换个字体或 WebView 就错位，
+        是个永远修不干净的活。
+
+     ══ 替代方案 ══
+
+     焦点提示改由**展示层**表达（见下面的 .detail-date:focus-within
+     描深边框 + .is-cursor 高亮当前格）。用户看到的是
+     「第 3 格被高亮」，比一个位置不准的细竖线清楚得多。
 */
 .detail-date-input {
     position: absolute;
@@ -2305,14 +2353,15 @@ body {
     background: transparent;
     color: transparent;
     /*
-      ⚠️ caret 必须可见，否则用户点进去完全看不出焦点在哪
-         （透明输入框里唯一的位置提示就是它）。
+      ⚠️ caret 必须**彻底隐藏**：它的位置由 input 自己的排版决定，
+         与展示层的格子对不齐（见上面的长注释）。
+         焦点位置改由展示层高亮当前格来表达。
     */
-    caret-color: var(--on-surface);
+    caret-color: transparent;
     font: inherit;
     font-size: 15px;
     outline: none;
-    /* 让 caret 从最左边开始，与第 1 格的位置对齐 */
+    /* 与展示层同向排版，纯粹为了整洁（字符本身不可见） */
     text-align: left;
 }
 
@@ -2454,6 +2503,30 @@ body {
 */
 .detail-date:focus-within .detail-date-seg {
     border-color: var(--on-surface-variant);
+}
+
+/*
+  ⚠️ 当前格高亮：**焦点态下**「下一个字符会落到哪一格」。
+
+     为什么需要它：透明 input 的 caret 位置由它自己的排版决定
+     （7.5px/字从头排），与展示层的格子（48px + 8px 间隔 + 分隔符）
+     对不齐 —— caret 会飘到格子之间或边框上，
+     看起来像「某个框前面冒出一个输入符号」。
+     所以 caret 已彻底隐藏（见上面 .detail-date-input），
+     焦点位置由这一格的高亮来表达。
+
+     ⚠️ 必须挂在 `.is-focused` 之后 ——
+        否则失焦后还会留着一格高亮，像始终在编辑状态。
+        `.is-focused` 由 detail.js 在 input 的 focus/blur 里加删。
+*/
+.detail-date.is-focused .detail-date-seg.is-cursor {
+    /*
+      ⚠️ 用与聚焦边框同一个令牌，但**再加一圈内阴影**做强调 ——
+         只用颜色会与"整行都被聚焦描深"混淆，看不出是哪一格。
+         内阴影不占布局（不会让格子宽度变化而抖动）。
+    */
+    border-color: var(--on-surface);
+    box-shadow: inset 0 0 0 1px var(--on-surface);
 }
 
 /*
