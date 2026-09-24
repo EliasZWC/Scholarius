@@ -1550,6 +1550,233 @@ body {
     margin-top: 0;
 }
 
+/* --------------------------------------------------------------------------
+   阅读页 · 文本分级区域（v0.1.17）
+   -------------------------------------------------------------------------- */
+
+/*
+  ⚠️ 什么是「区域」：把正文按**结构**切成块 ——
+
+      标题区 / 作者区 / 摘要区 / 关键词区      （首页，各成一块）
+      一级章节区                                （每个一级标题开一个）
+        └─ 二级章节区                            （可再嵌）
+             └─ 三级章节区
+
+  ⚠️ 区域边界由**文字自身**决定（哪一行到哪一行），不是矩形框 ——
+     用户原话：「我说的不是框，而是类似选中的区域，框只能是方的，
+     但区域可以根据文本来」。段落是不规则形状，方框会框进
+     旁边的栏、页眉、公式编号。
+
+  ⚠️ 层级只用**缩进**表达，不用背景色/边框区分 ——
+     正文区域加了底色会显得像"引用块"，而那不是它的语义。
+     缩进 + 左侧竖线足够表达"这段从属于上面那个标题"。
+*/
+
+/* 一级区域：不做缩进（它就是顶层） */
+.rd-region {
+    display: block;
+}
+
+/*
+  ⚠️ 二/三级区域靠左侧竖线 + 缩进表达从属关系。
+
+     ⚠️ 竖线用 border-left 而不是伪元素：
+        伪元素要定位、要算高度，而 border 天然跟随内容高度。
+*/
+.rd-region-lv2 > .rd-region-body,
+.rd-region-lv3 > .rd-region-body {
+    border-left: 2px solid var(--outline);
+    padding-left: 12px;
+    margin-left: 2px;
+}
+
+/* 三级区域再缩进一档（与二级拉开，否则看不出更深） */
+.rd-region-lv3 > .rd-region-body {
+    padding-left: 10px;
+}
+
+/* 章节区的可折叠头部 */
+.rd-region-head {
+    /*
+      ⚠️ 重置按钮默认样式（它是 <button>，为了键盘可达性）。
+         见 reader.js makeRegionHeader 的说明：
+         可点的必须是 <button>，不能给 <h2> 直接绑 click。
+    */
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    /*
+      ⚠️ 折叠把手要看得出来 —— 用左侧一个小三角。
+         用伪元素而不是插一个 SVG：省一次 DOM 创建，
+         且图标在折叠/展开时要旋转，伪元素更好控制。
+    */
+    position: relative;
+}
+
+/*
+  ⚠️ 三角指示符。
+     用一个旋转 45° 的方块两条边（CSS 的 chevron 画法），
+     比用字符 "▶" 好 —— 字符在各平台字形差异大，且基线下沉。
+
+     ⚠️ 位置：**标题左侧**，不是标题上面。
+       手机上横向空间紧，左侧一个小三角不占地方。
+*/
+.rd-region-head::before {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 0.75em;
+    width: 5px;
+    height: 5px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    /* 指向右下 = "展开着，可以收起" */
+    transform: rotate(45deg);
+    transition: transform 150ms ease;
+    opacity: 0.55;
+}
+
+/* 收起时三角转向右（"可以展开"） */
+.rd-region-head[aria-expanded="false"]::before {
+    transform: rotate(-45deg);
+}
+
+/*
+  ⚠️ 头部里的标题要**让出三角的位置**。
+     标题本身有 margin（见 .reader-heading），
+     这里不动它的 margin，只用 padding 给三角留位。
+*/
+.rd-region-head .rd-region-title {
+    padding-left: 16px;
+    /*
+      ⚠️ 覆盖 .reader-heading 的 `margin-top: 1.6em`。
+         在区域头部里，标题是**独立一行**，
+         顶栏与它之间不需要再拉 1.6em（那会让每个章节看起来
+         上面空了一大块，而且折叠后更明显）。
+
+         ⚠️ 但也不能完全去掉上边距：连续两个章节之间需要呼吸感。
+            取 0.9em 折中。
+    */
+    margin: 0.9em 0 0.35em;
+}
+
+/* 整篇的第一个区域头部不要上边距（否则正文顶部多一块空白） */
+.rd-region:first-child > .rd-region-head > .rd-region-title {
+    margin-top: 0;
+}
+
+/* 首页区（标题/作者/摘要/关键词）的标题 */
+.rd-region-titletext {
+    margin: 1.2em 0 0.3em;
+    font-size: 0.85em;
+    font-weight: 700;
+    /* 首页区标题是全大写小字（论文里的习惯），与正文章节标题区分开 */
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    /*
+      ⚠️ 颜色用较淡的一档 —— 它是个**标签**（"这段是摘要"），
+         不是内容本身，不该抢正文的注意力。
+    */
+    color: var(--on-surface-variant);
+}
+
+.rd-region-titletext:first-child {
+    margin-top: 0;
+}
+
+/*
+  ⚠️ 首页区整体给一点下边距，与后面的正文拉开。
+     否则"摘要"的正文会和"1 Introduction"挤在一起，
+     而那两段在意义上完全不同（一个是元信息，一个是正文）。
+*/
+.rd-region-title,
+.rd-region-author,
+.rd-region-abstract,
+.rd-region-keyword {
+    margin-bottom: 0.4em;
+}
+
+/* 文章标题区：比正文明显大，因为那是论文题目 */
+.rd-region-title .reader-para {
+    font-size: 1.15em;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+/* 作者区：稍小、颜色略淡（它是元信息） */
+.rd-region-author .reader-para {
+    font-size: 0.95em;
+    color: var(--on-surface-variant);
+}
+
+/*
+  ⚠️ 摘要区：**保持与正文同样的字号**，只靠左右缩进 + 淡背景区分。
+
+     理由：摘要是要读的内容（很多人先读摘要决定要不要读全文），
+     缩小字号会让它难读。而"它是摘要"这个信息由区域标题表达。
+*/
+.rd-region-abstract .reader-para {
+    padding: 8px 10px;
+    background: var(--surface);
+    border-radius: 6px;
+}
+
+/* 关键词区：一行短语，字号略小（更接近标签而非正文） */
+.rd-region-keyword .reader-para {
+    font-size: 0.92em;
+}
+
+/*
+  ⚠️ 段落在区域里的首个不要上边距 ——
+     区域标题已经给了下边距，段落再顶 1em 会双倍留白。
+*/
+.rd-region-body > .reader-para:first-child,
+.rd-region-body > .rd-region:first-child > .rd-region-head > .rd-region-title {
+    margin-top: 0;
+}
+
+/*
+  脚注 / 参考文献 / 关键词块（用户标注出来的类型）。
+
+  ⚠️ 脚注与参考文献都**缩小字号**（它们是辅助内容）。
+     关键词不缩 —— 它是元信息但很短，缩小了像被删掉了。
+*/
+.reader-text-footnote,
+.reader-text-reference {
+    font-size: 0.88em;
+    color: var(--on-surface-variant);
+}
+
+.reader-text-reference {
+    /*
+      ⚠️ 参考文献的悬挂缩进：让续行对齐到文字而不是序号。
+         这是学术排版的标准做法，也让人一眼看出"这是文献条目"。
+    */
+    padding-left: 1.6em;
+    text-indent: -1.6em;
+}
+
+.reader-text-keyword {
+    font-size: 0.95em;
+}
+
+/*
+  首页区的区域标题（"标题 / 作者 / 摘要"这几个小标签）。
+
+  ⚠️ 它们是**我们**生成的分区标头，不是论文里的文字。
+     用 .rd-region-titletext 这个类名与论文标题
+     （.rd-region-title，是论文题目本身）区分开 —— 两者语义完全不同，
+     名字只差一个 text 很容易看混，注意区分：
+        .rd-region-title      = 标题**区**（容器，装论文题目）
+        .rd-region-titletext  = 区域内的那个小标签
+*/
+
 /* 正文里的占位提示（还在解析中 / 提取失败） */
 .reader-hint {
     display: flex;
@@ -1682,6 +1909,248 @@ body {
     position: absolute;
     inset: 0;
     min-height: 0;
+}
+
+/* --------------------------------------------------------------------------
+   阅读页 · 原始视图的「标注」浮层（v0.1.17）
+   -------------------------------------------------------------------------- */
+
+/*
+  ⚠️ 坐标层级说明（本项目反复被 z-index 覆盖坑过，所以集中写清）：
+
+      正文/页图            0（不设，靠 DOM 顺序）
+      .anno-layer          1   ← 浮在页图之上，才能接手势
+      .anno-box            2
+      .anno-box-tag        3
+      顶栏 / 底栏          11  ← 天然在 .reader-body **之外**
+      面板                 60
+
+  ⚠️ 浮层的 z-index 只需高过**同一 slot 内**的页图，不要写成 999。
+     写大了会盖住顶栏（用户在别处踩过这个坑：诊断浮层 9999 贴底，
+     把所有从底部升起的弹层都盖住了）。顶栏在 .reader-body 外面，
+     本来就不参与同一层叠上下文，给它数值是多余的。
+*/
+
+/*
+  标注浮层。
+
+  ⚠️ 尺寸与位置**由 JS 设置**（left/top/width/height 内联样式），
+     不在这里写死 —— 因为必须与 `object-fit: contain` 后
+     图片**实际显示区域**严格重合。见 reader.js positionAnnotateLayer。
+
+  ⚠️ `touch-action: none` 是必须的：不写的话手指拖拽会被
+     浏览器解释成**滚动页面**，pointermove 收不到几个点，
+     画出来的框会是一小段。这是 Pointer Events 画图最常见的坑。
+*/
+.anno-layer {
+    position: absolute;
+    z-index: 1;
+    touch-action: none;
+    /*
+      ⚠️ 默认不给背景 —— 浮层必须"看不见"，
+         否则会挡住下面的页图。只在编辑态显示一层淡色描边，
+         让用户知道"这页可以画"。
+    */
+    background: transparent;
+}
+
+/* 编辑模式下给浮层一点视觉暗示：可画区域有一圈虚线 */
+.reader.is-annotating .anno-layer {
+    outline: 1px dashed rgba(0, 0, 0, 0.22);
+    outline-offset: -1px;
+    cursor: crosshair;
+}
+
+/* 深色主题下白色虚线才看得见 */
+[data-theme="dark"] .reader.is-annotating .anno-layer {
+    outline-color: rgba(255, 255, 255, 0.3);
+}
+
+/*
+  编辑模式下的页图**不接手势**（否则 pointerdown 会被 img 吃掉）。
+
+  ⚠️ 用 `pointer-events: none` 而不是给 img 也绑事件 ——
+     绑事件会重复实现一套坐标换算（见 makePageImg 的说明）。
+*/
+.reader.is-annotating .pdf-page-img {
+    pointer-events: none;
+}
+
+/* 一个矩形标注框 */
+.anno-box {
+    position: absolute;
+    z-index: 2;
+    box-sizing: border-box;
+    /*
+      ⚠️ 用半透明填充 + 实线边：既要看出"这块被标了"，
+         又要能看清底下是什么（用户标的前提就是看得到原文）。
+    */
+    background: rgba(255, 193, 7, 0.16);
+    border: 1.5px solid #FFC107;
+    border-radius: 2px;
+}
+
+/*
+  ⚠️ 拖拽中的虚线框（ghost）。
+     与已落定的框视觉上必须**明显不同** ——
+     否则用户会以为已经画好了，松手前就想去看结果。
+*/
+.anno-box.is-ghost {
+    background: rgba(255, 193, 7, 0.08);
+    border-style: dashed;
+}
+
+/* 各类型的颜色区分（同类型一眼能认出来） */
+.anno-box-formula {
+    background: rgba(33, 150, 243, 0.16);
+    border-color: #2196F3;
+}
+
+.anno-box-table {
+    background: rgba(76, 175, 80, 0.16);
+    border-color: #4CAF50;
+}
+
+.anno-box-figure {
+    background: rgba(156, 39, 176, 0.16);
+    border-color: #9C27B0;
+}
+
+/* 框上的类型标签。贴在框的左上角内侧 */
+.anno-box-tag {
+    position: absolute;
+    z-index: 3;
+    top: 0;
+    left: 0;
+    padding: 1px 5px;
+    font-size: 10px;
+    line-height: 1.5;
+    font-weight: 600;
+    color: #FFFFFF;
+    background: rgba(0, 0, 0, 0.62);
+    border-bottom-right-radius: 3px;
+    /*
+      ⚠️ 标签**不能**接手势 —— 它是一个视觉标记。
+         接了的话在标签上按下会被当成"点已有框"（删除），
+         而用户的意图是"从这儿开始画一个新框"。
+    */
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+/* 虚线框（ghost）不显示标签 —— 还没落定，写了也没意义 */
+.anno-box.is-ghost .anno-box-tag {
+    display: none;
+}
+
+/*
+  编辑模式下的类型选择条。
+
+  ⚠️ 位置：**贴顶栏下方**，不是贴底。
+     本项目踩过坑：诊断浮层贴 `bottom: 0` + 高 z-index，
+     把所有从底部升起的弹层（设置面板、目录）全盖住了。
+     类型条虽然不常驻，但同一条纪律：**别贴底**。
+
+  ⚠️ 只在编辑模式下出现（由 .reader.is-annotating 控制）。
+*/
+.anno-bar {
+    position: absolute;
+    z-index: 12;
+    /*
+      ⚠️ 顶栏高度是 `calc(64px + var(--safe-top))`（见 .reader-top），
+         这里必须用同一个算式，否则类型条会与顶栏错开或重叠。
+         项目里没有 --reader-top-h 这种变量 —— 不要凭空引入，
+         那样两边就会各自演化。
+    */
+    top: calc(64px + var(--safe-top));
+    left: 0;
+    right: 0;
+    display: none;
+    /*
+      ⚠️ 横向可滚（类型多，窄屏放不下），
+         但不显示滚动条 —— 手机上滚动条很碍眼。
+    */
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 6px;
+    padding: 8px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left));
+    background: var(--nav-bg);
+    border-bottom: 1px solid var(--outline);
+    white-space: nowrap;
+}
+
+.anno-bar::-webkit-scrollbar {
+    display: none;
+}
+
+.reader.is-annotating .anno-bar {
+    display: flex;
+}
+
+/* 类型条里的一个类型按钮 */
+.anno-chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px;
+    border: 1px solid var(--outline);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--on-surface);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+/*
+  ⚠️ 选中态用**深色实心底 + 反色文字**，与本项目的
+     --fab-bg / --fab-fg（主按钮）同一种反色思路。
+
+     ⚠️ 这里**没有** --primary / --primary-weak 这两个变量
+        （本项目不设主色，主按钮一律用 nav-active 反色），
+        所以不要写 var(--primary) —— 那会让整条规则静默失效。
+*/
+.anno-chip[aria-pressed="true"] {
+    border-color: var(--nav-active);
+    background: var(--nav-active);
+    color: var(--bg);
+}
+
+/* 类型按钮里的图标 */
+.anno-chip svg {
+    width: 15px;
+    height: 15px;
+    fill: currentColor;
+    display: block;
+}
+
+/* 编辑模式下的提示条（告诉用户"点框可删"） */
+.anno-tip {
+    position: absolute;
+    z-index: 12;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(12px + var(--safe-bottom));
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.7);
+    color: #FFFFFF;
+    font-size: 12px;
+    line-height: 1.4;
+    display: none;
+    /*
+      ⚠️ 只是提示，**不能接手势** ——
+         它浮在页图下缘，接了会挡住那一块的画框操作。
+    */
+    pointer-events: none;
+    max-width: calc(100% - 32px);
+    text-align: center;
+}
+
+.reader.is-annotating .anno-tip {
+    display: block;
 }
 
 

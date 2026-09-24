@@ -206,6 +206,147 @@ class MainActivity : AppCompatActivity() {
         return PdfPages.pageCount(this, id)
     }
 
+    /**
+     * 取用户标注（json 对象字符串）。
+     *
+     * ⚠️ **同步**，理由同 [pdfPageFor]：网页进编辑模式/渲染文本视图时
+     *    要立刻拿到，异步会让界面先按「无标注」渲染一帧再跳变。
+     *    标注文件只有几 KB，同步读是可接受的。
+     *
+     * ⚠️ 读不到时返回**空对象的 JSON**（不是空串）——
+     *    网页可以无条件 `JSON.parse`，少一处判空。
+     */
+    private fun annotationsFor(id: String): String {
+        if (!DOC_ID_PATTERN.matches(id)) {
+            Log.w(TAG, "标注请求的 id 非法：$id")
+            return EMPTY_ANNOTATIONS
+        }
+        return try {
+            val doc = AnnotationStore.load(this, id)
+            annotationsToJson(doc)
+        } catch (t: Throwable) {
+            Log.w(TAG, "标注读取异常：$id", t)
+            EMPTY_ANNOTATIONS
+        }
+    }
+
+    /**
+     * 保存用户标注（整份覆盖）。
+     *
+     * ⚠️ 在这里把网页来的 JSON **解析成模型再落盘**，而不是原样转发字符串。
+     *    理由：网页侧的数据是不可信输入（用户可以改 localStorage、
+     *    也可能是我自己前端写错）。过一遍 [AnnotationStore.save] 的
+     *    校验/夹取，落盘的才一定是干净的。
+     *    代价是解析两次（这里一次、save 里拼一次），对几 KB 的数据无所谓。
+     *
+     * @return 是否成功；网页据此决定要不要提示"保存失败"
+     */
+    private fun saveAnnotationsFor(id: String, json: String): Boolean {
+        if (!DOC_ID_PATTERN.matches(id)) {
+            Log.w(TAG, "标注保存的 id 非法：$id")
+            return false
+        }
+        return try {
+            val doc = parseAnnotations(json)
+            AnnotationStore.save(this, id, doc)
+        } catch (t: Throwable) {
+            Log.w(TAG, "标注解析/保存异常：$id", t)
+            false
+        }
+    }
+
+    /** 把标注序列化成给网页的 JSON。空文档也要返回合法结构 */
+    private fun annotationsToJson(doc: AnnotationStore.Doc): String {
+        val regions = StringBuilder()
+        regions.append('[')
+        for ((i, m) in doc.regions.withIndex()) {
+            if (i > 0) regions.append(',')
+            regions.append("{\"x0\":").append(box4(m.x0))
+            regions.append(",\"y0\":").append(box4(m.y0))
+            regions.append(",\"x1\":").append(box4(m.x1))
+            regions.append(",\"y1\":").append(box4(m.y1))
+            regions.append(",\"page\":").append(m.page)
+            regions.append(",\"type\":").append(quote(m.type))
+            regions.append('}')
+        }
+        regions.append(']')
+
+        val texts = StringBuilder()
+        texts.append('[')
+        for ((i, m) in doc.texts.withIndex()) {
+            if (i > 0) texts.append(',')
+            texts.append("{\"from\":").append(m.fromLine)
+            texts.append(",\"to\":").append(m.toLine)
+            texts.append(",\"type\":").append(quote(m.type))
+            if (m.level > 0) {
+                texts.append(",\"level\":").append(m.level)
+            }
+            texts.append('}')
+        }
+        texts.append(']')
+
+        return "{\"regions\":$regions,\"texts\":$texts}"
+    }
+
+    /**
+     * 解析网页传来的标注 JSON。
+     *
+     * ⚠️ 逐字段 `optXxx` + 默认值，**不抛** —— 网页可能传来
+     *    缺字段的对象（比如只画了个框还没选类型）。宁可少收几条，
+     *    也不要因为一条坏数据整份保存失败。
+     *
+     * ⚠️ 非法类型在这里就丢掉（用 [AnnotationStore.isValidRegionType] /
+     *    [AnnotationStore.isValidTextType]）—— 落盘前的最后一道闸。
+     */
+    private fun parseAnnotations(json: String): AnnotationStore.Doc {
+        val root = org.json.JSONObject(json)
+
+        val regions = ArrayList<AnnotationStore.RegionMark>()
+        root.optJSONArray("regions")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val type = o.optString("type", "")
+                if (!AnnotationStore.isValidRegionType(type)) continue
+                regions.add(
+                    AnnotationStore.RegionMark(
+                        x0 = o.optDouble("x0", 0.0).toFloat(),
+                        y0 = o.optDouble("y0", 0.0).toFloat(),
+                        x1 = o.optDouble("x1", 0.0).toFloat(),
+                        y1 = o.optDouble("y1", 0.0).toFloat(),
+                        page = o.optInt("page", 0),
+                        type = type
+                    )
+                )
+            }
+        }
+
+        val texts = ArrayList<AnnotationStore.TextMark>()
+        root.optJSONArray("texts")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val type = o.optString("type", "")
+                if (!AnnotationStore.isValidTextType(type)) continue
+                texts.add(
+                    AnnotationStore.TextMark(
+                        fromLine = o.optInt("from", -1),
+                        toLine = o.optInt("to", -1),
+                        type = type,
+                        level = o.optInt("level", 0)
+                    )
+                )
+            }
+        }
+
+        return AnnotationStore.Doc(regions, texts)
+    }
+
+    /** 归一化坐标保留 4 位小数（理由见 AnnotationStore.round4） */
+    private fun box4(v: Float): String =
+        (Math.round(v * 10000f) / 10000.0).toString()
+
+    /** 读不到标注时的返回值：合法空结构，网页可直接 JSON.parse */
+    private val EMPTY_ANNOTATIONS = "{\"regions\":[],\"texts\":[]}"
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         /*
@@ -463,6 +604,8 @@ class MainActivity : AppCompatActivity() {
                 */
                 onGetPdfPage = { id, page -> pdfPageFor(id, page) },
                 onGetPdfPageCount = { id -> pdfPageCountFor(id) },
+                onGetAnnotations = { id -> annotationsFor(id) },
+                onSetAnnotations = { id, json -> saveAnnotationsFor(id, json) },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,
@@ -1355,11 +1498,28 @@ class MainActivity : AppCompatActivity() {
             sb.append(",\"text\":").append(org.json.JSONObject.quote(b.text))
             sb.append(",\"level\":").append(b.level)
             sb.append(",\"page\":").append(b.page)
+            /*
+              ⚠️ 包围盒（v0.1.17）。坐标是归一化的 0..1，小数位很多，
+                 直接 toString 会长得离谱（`0.123456789`）。
+                 **保留 4 位小数** —— 1600px 宽的页面上 1e-4 ≈ 0.16px，
+                 肉眼不可分辨，而体积能省掉约三分之一
+                 （一篇 300 块的文档，这里是几 KB 的差别）。
+            */
+            if (b.x1 > b.x0 && b.y1 > b.y0) {
+                sb.append(",\"x0\":").append(box2(b.x0))
+                sb.append(",\"y0\":").append(box2(b.y0))
+                sb.append(",\"x1\":").append(box2(b.x1))
+                sb.append(",\"y1\":").append(box2(b.y1))
+            }
             sb.append('}')
         }
         sb.append(']')
         return sb.toString()
     }
+
+    /** 归一化坐标保留 4 位小数（见 blocksToJson 里对体积的说明） */
+    private fun box2(v: Float): String =
+        String.format(java.util.Locale.US, "%.4f", v)
 
     /**
      * 把行元数据序列化成 JS 数组字面量。

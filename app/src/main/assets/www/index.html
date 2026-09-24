@@ -790,6 +790,25 @@
                 id="reader-view-toggle" aria-pressed="false"
                 aria-label="Raw View"></button>
             <!--
+              标注按钮（v0.1.17）：**只在原始视图（PDF）里出现**。
+
+              ⚠️ 它不在这里写死「隐藏」——
+                 用 `hidden` 属性，由 reader.js 的 syncViewToggle 统一管。
+                 与 view-toggle 同一条顶栏，且位置在它**右边**：
+                 左→右 = 返回 / 切视图 / 标注 / 详情。
+                 「切视图」比「标注」更常点，所以更靠外。
+
+              ⚠️ 图标是 **960 体系**的 `edit`（去 ICON_PATHS.annotateEdit 看
+                 为什么不用 24 体系的 editPencil）。由 JS 注入，
+                 路径只在 components.js 一处定义。
+
+              ⚠️ 语义是 toggle（进入/退出编辑模式），所以用 aria-pressed，
+                 不是 aria-haspopup。
+            -->
+            <button class="icon-button reader-annotate-btn" type="button"
+                id="reader-annotate" aria-pressed="false" hidden
+                aria-label="Annotate" data-i18n-aria-label="reader.annotate"></button>
+            <!--
               详情按钮。只在菜单展开时可见（与返回按钮同一条顶栏）。
               图标由 JS 用 ScholariusUI.icon('moreHoriz') 填 ——
               这样图标路径只有 components.js 一处定义，不在这里重复一遍。

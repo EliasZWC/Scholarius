@@ -120,6 +120,7 @@
     var backBtn = null;
     var detailBtn = null;
     var viewToggleBtn = null;
+    var annotateBtn = null;
     var bottomEl = null;
     var tocBtn = null;
     var settingsBtn = null;
@@ -155,6 +156,45 @@
      */
     var lastBlocks = null;
     var lastText = '';
+
+    /*
+      ══ 用户标注（v0.1.17）══
+
+      ⚠️⚠️ 两套机制，不能混为一谈。用户原话：
+          「标题、摘要、作者肯定都是文本啊，可以选中；我说的不是框，
+           而是类似选中的区域，框只能是方的，但区域可以根据文本来」
+
+      | | `textMarks`（文本） | `regionMarks`（矩形） |
+      |---|---|---|
+      | 内容 | 标题/作者/摘要/正文/章节标题/脚注/参考文献/关键词 | 公式/表格/图片 |
+      | 边界 | 由**文字自身**决定（行区间） | 手画**矩形** |
+      | 操作 | **选中文字** → 指定类型 | 拖矩形 → 指定类型 |
+      | 为什么 | 段落文本**不是矩形**，框不住 | 里面没有可选的文字 |
+
+      ⚠️ **不要给文本加矩形框** —— 段落是不规则形状（标题居中、
+         摘要两端对齐、正文有缩进），方框会框进旁边的栏/页眉。
+
+      ⚠️ 两份都是**原生为准**：进阅读页时向桥拉一次，改完写回。
+         localStorage 不存标注 —— 标注必须跟着 PDF 走（删文献一起删），
+         存两份会出现「删了文献重建同 id 结果旧标注还在」。
+    */
+    /** 矩形标注：[{x0,y0,x1,y1,page,type}]，坐标归一化 0..1 */
+    var regionMarks = [];
+    /** 文本标注：[{from,to,type,level}]，from/to 是 0 起的全局行号 */
+    var textMarks = [];
+    /** 是否处于标注编辑模式（PDF 视图专属） */
+    var annotating = false;
+    /**
+     * 本次编辑会话里**待保存**的改动是否非空。
+     *
+     * ⚠️ 退出编辑模式才写盘，不是每画一个框都写 ——
+     *    手机上连续画十几个框，每个都跨桥写文件会明显卡。
+     *    代价：进程被杀会丢未保存的改动。所以退出时必写，
+     *    且关闭阅读页时也要写一次（见 close()）。
+     */
+    var annotateDirty = false;
+    /** 编辑模式下当前选中的类型（'formula' / 'table' / 'figure'） */
+    var annotateType = 'formula';
 
     /**
      * 目录条目：[{ level, title, line }]
@@ -198,6 +238,7 @@
         backBtn = document.getElementById('reader-back');
         detailBtn = document.getElementById('reader-detail');
         viewToggleBtn = document.getElementById('reader-view-toggle');
+        annotateBtn = document.getElementById('reader-annotate');
         bottomEl = document.getElementById('reader-bottom');
         tocBtn = document.getElementById('reader-toc-btn');
         settingsBtn = document.getElementById('reader-settings-btn');
@@ -210,6 +251,7 @@
         mountBack();
         mountTapToToggle();
         mountViewToggle();
+        mountAnnotate();
         mountToc();
         mountSettings();
 
@@ -582,6 +624,22 @@
         img.className = 'pdf-page-img';
         img.alt = t('reader.rawView') + ' ' + page;
         img.decoding = 'async';
+        /*
+          ⚠️ 图片加载完要**重新对齐标注浮层**。
+
+             浮层的尺寸靠 `naturalWidth/naturalHeight` 算（见
+             positionAnnotateLayer），图没加载完时只能先铺满容器。
+             加载完不重算的话，在有留白的页上框会全部偏移。
+
+             ⚠️ 用 `load` 事件而不是在 appendChild 后同步调 ——
+                同步调时 naturalWidth 还是 0（解码是异步的）。
+        */
+        img.addEventListener('load', function () {
+            var slot = img.parentNode;
+            if (!slot) return;
+            var layer = slot.querySelector('.anno-layer');
+            if (layer) positionAnnotateLayer(layer);
+        });
         img.src = dataUrl;
         return img;
     }
@@ -711,6 +769,594 @@
         }
     }
 
+    // --- 用户标注（v0.1.17）-------------------------------------------------
+
+    /**
+     * 合法的**矩形**标注类型。
+     *
+     * ⚠️ 与 `AnnotationStore.kt` 里的 `REGION_*` **一一对应**，
+     *    改一处必须改两处。原生在读盘时会**再校验一遍**并丢掉
+     *    未知类型，所以这里漏改的症状是"框画了但重进就没了"。
+     *
+     * ⚠️ 不含任何文本类型 —— 文本用 [TEXT_TYPES]，机制完全不同
+     *    （见 reader.js 顶部 state 区的「两套机制」说明）。
+     */
+    var REGION_TYPES = ['formula', 'table', 'figure'];
+
+    /**
+     * 合法的**文本**标注类型。
+     *
+     * ⚠️ 与 `AnnotationStore.kt` 的 `TEXT_*` 一一对应。
+     *    这里是用户直接选的八类，`heading` 的层级由 level 字段表达。
+     */
+    var TEXT_TYPES = [
+        'title', 'author', 'abstract', 'body',
+        'heading', 'footnote', 'reference', 'keyword'
+    ];
+
+    /** 各类型对应的 i18n key（菜单文案） */
+    var TYPE_LABEL_KEY = {
+        formula: 'reader.typeFormula',
+        table: 'reader.typeTable',
+        figure: 'reader.typeFigure',
+        title: 'reader.typeTitle',
+        author: 'reader.typeAuthor',
+        abstract: 'reader.typeAbstract',
+        body: 'reader.typeBody',
+        heading: 'reader.typeHeading',
+        footnote: 'reader.typeFootnote',
+        reference: 'reader.typeReference',
+        keyword: 'reader.typeKeyword'
+    };
+
+    /**
+     * 类型 → 图标名。
+     *
+     * ⚠️ 全部对应 `components.js` 的 `ICON_PATHS` 里 `anno*` 那一组
+     *    （960 体系，已在 ICON_VIEWBOX 登记）。名字写错的话
+     *    `icon()` 返回空串 —— **界面不报错，只是没图标**，
+     *    所以改这里之后要看一眼类型条。
+     */
+    var TYPE_ICON = {
+        formula: 'annoFormula',
+        table: 'annoTable',
+        figure: 'annoFigure',
+        title: 'annoTitle',
+        author: 'annoAuthor',
+        abstract: 'annoAbstract',
+        body: 'annoBody',
+        heading: 'annoHeading',
+        footnote: 'annoFootnote',
+        reference: 'annoReference',
+        keyword: 'annoKeyword'
+    };
+
+    /** 顶栏「标注」按钮：绑事件 + 填图标 */
+    function mountAnnotate() {
+        if (!annotateBtn) {
+            return;
+        }
+
+        var ui = global.ScholariusUI;
+        if (ui && ui.icon) {
+            annotateBtn.innerHTML = ui.icon('annotateEdit');
+        }
+
+        annotateBtn.addEventListener('click', function () {
+            setAnnotating(!annotating);
+        });
+
+        syncAnnotate();
+    }
+
+    /** 刷新标注按钮的图标态与标签 */
+    function syncAnnotate() {
+        if (!annotateBtn) {
+            return;
+        }
+        annotateBtn.setAttribute('aria-pressed', annotating ? 'true' : 'false');
+        annotateBtn.setAttribute(
+            'aria-label',
+            t(annotating ? 'reader.annotateDone' : 'reader.annotate')
+        );
+        /*
+          ⚠️ 同 syncViewToggle：必须移除 data-i18n-aria-label，
+             否则语言切换会把文案刷回模板里的原值，
+             把我们算出来的「完成/标注」覆盖掉。
+        */
+        annotateBtn.removeAttribute('data-i18n-aria-label');
+    }
+
+    /**
+     * 从原生拉一次标注。
+     *
+     * ⚠️ 桥不可用（浏览器预览）时**静默留空** ——
+     *    预览里没有 PDF 也没有原生存储，报错只会干扰调试。
+     *
+     * ⚠️ 返回的一定是合法结构（原生那边保证），但这里仍然防一手：
+     *    `JSON.parse` 失败就留空，绝不抛出去把整页打断。
+     */
+    function loadAnnotations(id) {
+        regionMarks = [];
+        textMarks = [];
+
+        var bridge = global.ScholariusNative;
+        if (!bridge || typeof bridge.getAnnotations !== 'function') {
+            return;
+        }
+
+        var raw = '';
+        try {
+            raw = bridge.getAnnotations(String(id)) || '';
+        } catch (e) {
+            raw = '';
+        }
+        if (!raw) return;
+
+        try {
+            var doc = JSON.parse(raw);
+            if (doc && Object.prototype.toString.call(doc.regions) === '[object Array]') {
+                regionMarks = doc.regions;
+            }
+            if (doc && Object.prototype.toString.call(doc.texts) === '[object Array]') {
+                textMarks = doc.texts;
+            }
+        } catch (e) {
+            regionMarks = [];
+            textMarks = [];
+        }
+    }
+
+    /**
+     * 把标注写回原生。
+     *
+     * ⚠️ 只在**退出编辑模式 / 关闭阅读页**时调，不是每改一处都调
+     *    （见 annotateDirty 的说明）。
+     *
+     * @return 是否成功；失败时由调用方提示
+     */
+    function saveAnnotations() {
+        if (!currentDoc || !annotateDirty) return true;
+
+        var bridge = global.ScholariusNative;
+        if (!bridge || typeof bridge.setAnnotations !== 'function') {
+            return true; // 预览环境：当成功，不打扰
+        }
+
+        var payload = JSON.stringify({
+            regions: regionMarks,
+            texts: textMarks
+        });
+
+        var ok = false;
+        try {
+            ok = bridge.setAnnotations(String(currentDoc.id), payload) === true;
+        } catch (e) {
+            ok = false;
+        }
+
+        if (ok) {
+            annotateDirty = false;
+        } else {
+            trace('reader:annotate', 'save failed');
+        }
+        return ok;
+    }
+
+    /**
+     * 进入 / 退出标注编辑模式。
+     *
+     * ══ ⚠️ 编辑模式只能发生在**原始视图**（PDF）里 ══
+     *
+     * 因为要标注的对象（公式/表格/图片）在重排后的文本视图里
+     * 已经被"读"成一段段文字了，位置信息不再对应原版面 ——
+     * 在文本视图上画框会框到错误的区域。
+     *
+     * ══ 为什么退出时必写盘 ══
+     *
+     * 编辑期间的改动只在内存里（见 annotateDirty）。退出是一个明确的
+     * "我做完了"信号，此时写盘是自然的。若不写，用户以为存了，
+     * 下次进来全没了 —— 这个 bug 比"每画一框写一次"的卡顿糟得多。
+     */
+    function setAnnotating(on) {
+        var next = !!on;
+
+        // 只有原始视图能进编辑模式
+        if (next && view !== 'raw') {
+            return;
+        }
+        if (next === annotating) {
+            return;
+        }
+
+        if (!next) {
+            // 退出前先存。失败就提示，但不阻止退出
+            // （用户可能就想先出去，不想被卡住）
+            if (!saveAnnotations()) {
+                showError('saveFailed');
+            }
+        }
+
+        annotating = next;
+        syncAnnotate();
+
+        if (root) {
+            root.classList.toggle('is-annotating', annotating);
+        }
+
+        if (annotating) {
+            ensureAnnoBar();
+            syncAnnoChips();
+            mountAnnotateLayer();
+        } else {
+            unmountAnnotateLayer();
+        }
+
+        trace('reader:annotate', annotating ? 'enter' : 'exit');
+    }
+
+    /** 编辑模式下的浮层元素（每页一个），便于统一清理 */
+    var annotateLayers = [];
+    /** 编辑模式下的类型选择条（懒建，只建一次） */
+    var annoBarEl = null;
+    /** 编辑模式下的提示条 */
+    var annoTipEl = null;
+
+    /**
+     * 建类型选择条 + 提示条（**懒建，只建一次**）。
+     *
+     * ⚠️ 条上的按钮状态（aria-pressed）在 [syncAnnoChips] 里统一刷 ——
+     *    不要把"哪个被选中"写在建的时候，那样切类型要重建整条。
+     */
+    function ensureAnnoBar() {
+        if (annoBarEl || !root) return;
+
+        annoBarEl = document.createElement('div');
+        annoBarEl.className = 'anno-bar';
+        annoBarEl.setAttribute('role', 'toolbar');
+
+        for (var i = 0; i < REGION_TYPES.length; i++) {
+            annoBarEl.appendChild(makeAnnoChip(REGION_TYPES[i]));
+        }
+
+        annoTipEl = document.createElement('div');
+        annoTipEl.className = 'anno-tip';
+
+        /*
+          ⚠️ 挂在 root 上（阅读页那一层），不是挂在 contentEl 里 ——
+             contentEl 在切视图时会被整个清空（contentEl.textContent = ''），
+             类型条跟着被删的话，每次切到 PDF 都要重建一次。
+        */
+        root.appendChild(annoBarEl);
+        root.appendChild(annoTipEl);
+
+        syncAnnoChips();
+    }
+
+    /** 造类型条上的一个类型按钮 */
+    function makeAnnoChip(type) {
+        var chip = document.createElement('button');
+        chip.className = 'anno-chip';
+        chip.type = 'button';
+        chip.setAttribute('data-anno-type', type);
+        chip.setAttribute('aria-pressed', 'false');
+
+        var ui = global.ScholariusUI;
+        var iconName = TYPE_ICON[type];
+        if (ui && ui.icon && iconName) {
+            chip.innerHTML = ui.icon(iconName);
+        }
+
+        var label = document.createElement('span');
+        label.className = 'anno-chip-label';
+        label.textContent = t(TYPE_LABEL_KEY[type] || type);
+        chip.appendChild(label);
+
+        chip.addEventListener('click', function () {
+            annotateType = type;
+            syncAnnoChips();
+        });
+
+        return chip;
+    }
+
+    /** 刷新类型条：选中态 + 文案（语言可能已切换） */
+    function syncAnnoChips() {
+        if (!annoBarEl) return;
+
+        var chips = annoBarEl.querySelectorAll('.anno-chip');
+        for (var i = 0; i < chips.length; i++) {
+            var type = chips[i].getAttribute('data-anno-type');
+            chips[i].setAttribute(
+                'aria-pressed',
+                type === annotateType ? 'true' : 'false'
+            );
+            var label = chips[i].querySelector('.anno-chip-label');
+            if (label) {
+                label.textContent = t(TYPE_LABEL_KEY[type] || type);
+            }
+        }
+
+        if (annoTipEl) {
+            annoTipEl.textContent = t('reader.annotateTip');
+        }
+    }
+
+    /**
+     * 在每一页图上叠一层「可画框」的浮层。
+     *
+     * ══ ⚠️ 为什么不直接给 <img> 绑鼠标事件 ══
+     *
+     * <img> 的 `object-fit: contain` 会让图片**不铺满**容器
+     * （长宽比不符时上下或左右留白）。事件坐标是相对容器的，
+     * 而我们要存的是**相对图片**的归一化坐标 ——
+     * 直接绑 img 会在有留白时算错位置，且错得不多不少刚好是留白宽度，
+     * 极难发现。
+     *
+     * 所以浮层必须与**图片实际渲染区域**严格重合。做法是
+     * 每页一个绝对定位的 div，尺寸由 JS 按图片的实际 aspect 算好，
+     * 见 positionAnnotateLayer。
+     */
+    function mountAnnotateLayer() {
+        unmountAnnotateLayer();
+
+        for (var i = 0; i < pdfPageEls.length; i++) {
+            var slot = pdfPageEls[i];
+            var page = parseInt(slot.getAttribute('data-page'), 10) || 0;
+            if (page < 1) continue;
+
+            var layer = document.createElement('div');
+            layer.className = 'anno-layer';
+            layer.setAttribute('data-page', String(page));
+
+            // 已有的框先画出来（用户要继续改，得看得见现状）
+            drawRegionsOn(layer, page);
+
+            slot.appendChild(layer);
+            annotateLayers.push(layer);
+            positionAnnotateLayer(layer);
+
+            bindLayerDrawing(layer, page);
+        }
+    }
+
+    function unmountAnnotateLayer() {
+        for (var i = 0; i < annotateLayers.length; i++) {
+            var el = annotateLayers[i];
+            if (el && el.parentNode) {
+                el.parentNode.removeChild(el);
+            }
+        }
+        annotateLayers = [];
+    }
+
+    /**
+     * 把浮层对齐到**图片实际显示区域**。
+     *
+     * ⚠️ 必须等图片加载完再算（`naturalWidth` 才有值）。
+     *    所以这里既在 mount 时调一次，也在 img 的 load 事件里调一次。
+     *
+     * ⚠️ 用 `object-fit: contain` 的等效算法：
+     *    先按容器宽高比与图片宽高比比较，决定是"上下留白"还是"左右留白"。
+     */
+    function positionAnnotateLayer(layer) {
+        if (!layer) return;
+        var slot = layer.parentNode;
+        if (!slot) return;
+
+        var img = slot.querySelector('.pdf-page-img');
+        if (!img || !img.naturalWidth || !img.naturalHeight) {
+            /*
+              ⚠️ 图还没加载出来（懒加载尚未触发）—— 先铺满容器。
+                 等 img 的 load 事件到了会重算。铺满而不是隐藏，
+                 是为了让用户能立刻开始画（不要留一片点不到的区域）。
+            */
+            layer.style.left = '0';
+            layer.style.top = '0';
+            layer.style.width = '100%';
+            layer.style.height = '100%';
+            return;
+        }
+
+        var cw = slot.clientWidth;
+        var ch = slot.clientHeight;
+        if (!cw || !ch) return;
+
+        var imgRatio = img.naturalWidth / img.naturalHeight;
+        var boxRatio = cw / ch;
+
+        var w, h;
+        if (imgRatio > boxRatio) {
+            // 图更宽 → 以宽为准，上下留白
+            w = cw;
+            h = cw / imgRatio;
+        } else {
+            // 图更高 → 以高为准，左右留白
+            h = ch;
+            w = ch * imgRatio;
+        }
+
+        layer.style.width = w + 'px';
+        layer.style.height = h + 'px';
+        layer.style.left = Math.round((cw - w) / 2) + 'px';
+        layer.style.top = Math.round((ch - h) / 2) + 'px';
+    }
+
+    /** 在浮层上画出该页已有的矩形标注 */
+    function drawRegionsOn(layer, page) {
+        for (var i = 0; i < regionMarks.length; i++) {
+            var m = regionMarks[i];
+            if (m.page !== page) continue;
+            layer.appendChild(makeRegionBox(m, i));
+        }
+    }
+
+    /**
+     * 造一个矩形标注的 DOM。
+     *
+     * ⚠️ 坐标是归一化的，这里用**百分比**定位 ——
+     *    这样浮层尺寸怎么变（转屏/分屏）框都跟着对，
+     *    不需要监听 resize 重算每一个框。
+     */
+    function makeRegionBox(mark, index) {
+        var box = document.createElement('div');
+        box.className = 'anno-box anno-box-' + mark.type;
+        box.setAttribute('data-index', String(index));
+        box.style.left = (mark.x0 * 100) + '%';
+        box.style.top = (mark.y0 * 100) + '%';
+        box.style.width = ((mark.x1 - mark.x0) * 100) + '%';
+        box.style.height = ((mark.y1 - mark.y0) * 100) + '%';
+
+        var tag = document.createElement('span');
+        tag.className = 'anno-box-tag';
+        tag.textContent = t(TYPE_LABEL_KEY[mark.type] || mark.type);
+        box.appendChild(tag);
+
+        /*
+          ⚠️ 点已有的框 = **删除它**（编辑模式下的常见意图是"我刚才画错了"）。
+             不弹确认 —— 弹窗打断连续修正的节奏。删错了重画很快。
+        */
+        box.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            regionMarks.splice(index, 1);
+            annotateDirty = true;
+            refreshAnnotateLayer(mark.page);
+        });
+
+        return box;
+    }
+
+    /** 重画某页的标注框（删/加之后调） */
+    function refreshAnnotateLayer(page) {
+        for (var i = 0; i < annotateLayers.length; i++) {
+            var layer = annotateLayers[i];
+            if (parseInt(layer.getAttribute('data-page'), 10) !== page) continue;
+
+            // 只清框，保留浮层本身（不然事件绑定也一起没了）
+            var boxes = layer.querySelectorAll('.anno-box');
+            for (var k = 0; k < boxes.length; k++) {
+                if (boxes[k].parentNode) {
+                    boxes[k].parentNode.removeChild(boxes[k]);
+                }
+            }
+            drawRegionsOn(layer, page);
+            return;
+        }
+    }
+
+    /**
+     * 在浮层上绑定「拖拽画框」。
+     *
+     * ══ ⚠️ 用 Pointer Events，不用 mouse/touch 两套 ══
+     *
+     * `pointerdown/move/up` 在 WebView 里统一了鼠标与触摸，
+     * 而且自带 `setPointerCapture` —— 手指滑出浮层边界时仍然收到
+     * move 事件。用 mouse+touch 两套则要自己处理
+     * 「touchmove 期间滚动页面」这类冲突，代码量翻倍且容易漏。
+     *
+     * ⚠️ 坐标换算：`clientX - rect.left`，再除 `rect.width` 得归一化值。
+     *    用 getBoundingClientRect 而不是 offsetLeft 累加 ——
+     *    后者在有 transform/缩放时要自己算，前者已经是最终值。
+     */
+    function bindLayerDrawing(layer, page) {
+        /** 拖拽起点（归一化）。null = 当前没有正在拖的框 */
+        var start = null;
+        /** 拖拽中的虚线框 */
+        var ghost = null;
+
+        function normalised(ev, rect) {
+            var x = (ev.clientX - rect.left) / rect.width;
+            var y = (ev.clientY - rect.top) / rect.height;
+            return {
+                x: Math.min(1, Math.max(0, x)),
+                y: Math.min(1, Math.max(0, y))
+            };
+        }
+
+        /** 用两个归一化点更新一个元素的位置（百分比定位） */
+        function place(el, a, b) {
+            var x0 = Math.min(a.x, b.x);
+            var y0 = Math.min(a.y, b.y);
+            var x1 = Math.max(a.x, b.x);
+            var y1 = Math.max(a.y, b.y);
+            el.style.left = (x0 * 100) + '%';
+            el.style.top = (y0 * 100) + '%';
+            el.style.width = ((x1 - x0) * 100) + '%';
+            el.style.height = ((y1 - y0) * 100) + '%';
+            return { x0: x0, y0: y0, x1: x1, y1: y1 };
+        }
+
+        layer.addEventListener('pointerdown', function (ev) {
+            // 点在已有框上时交给框自己处理（那是删除）
+            if (ev.target && ev.target.classList.contains('anno-box')) return;
+
+            var rect = layer.getBoundingClientRect();
+            if (!rect.width || !rect.height) return;
+
+            ev.preventDefault();
+            start = normalised(ev, rect);
+            try {
+                layer.setPointerCapture(ev.pointerId);
+            } catch (e) { /* 个别 WebView 不支持 Pointer Capture，忽略 */ }
+
+            ghost = document.createElement('div');
+            ghost.className = 'anno-box anno-box-' + annotateType + ' is-ghost';
+            place(ghost, start, start);
+            layer.appendChild(ghost);
+        });
+
+        layer.addEventListener('pointermove', function (ev) {
+            if (!start || !ghost) return;
+            var rect = layer.getBoundingClientRect();
+            if (!rect.width || !rect.height) return;
+            place(ghost, start, normalised(ev, rect));
+        });
+
+        layer.addEventListener('pointerup', function (ev) {
+            if (!start) return;
+
+            var rect = layer.getBoundingClientRect();
+            var from = start;
+            start = null;
+
+            if (ghost && ghost.parentNode) {
+                ghost.parentNode.removeChild(ghost);
+            }
+            ghost = null;
+
+            if (!rect.width || !rect.height) return;
+
+            var box = place(document.createElement('div'), from, normalised(ev, rect));
+
+            /*
+              ⚠️ 太小的框视为误触，不生成标注。
+                 手机上轻点一下就冒出一个 2×2 像素的框，非常烦人。
+                 1.2% 大约相当于页宽的 1/80（1600px 页图上是 19px）。
+            */
+            var MIN = 0.012;
+            if (box.x1 - box.x0 < MIN || box.y1 - box.y0 < MIN) return;
+
+            regionMarks.push({
+                x0: box.x0,
+                y0: box.y0,
+                x1: box.x1,
+                y1: box.y1,
+                page: page,
+                type: annotateType
+            });
+            annotateDirty = true;
+            refreshAnnotateLayer(page);
+        });
+
+        layer.addEventListener('pointercancel', function () {
+            start = null;
+            if (ghost && ghost.parentNode) {
+                ghost.parentNode.removeChild(ghost);
+            }
+            ghost = null;
+        });
+    }
+
     /**
      * 刷新视图切换按钮：图标、状态、无障碍标签。
      *
@@ -755,6 +1401,22 @@
              i18n 刷新由 refreshChrome() 主动调本函数负责。
         */
         viewToggleBtn.removeAttribute('data-i18n-aria-label');
+
+        /*
+          ⚠️ 标注按钮**只在原始视图里出现**。
+             它是 PDF 专属功能：文本视图里段落本来就是可选的，
+             用不着画框（用户原话：「文本本身就可以选中」）。
+
+          ⚠️ 切回阅读视图时要**同时退出编辑模式** ——
+             否则 annotating 留着 true，下次进 PDF 视图会
+             直接是编辑态，而用户以为自己只是切了个视图。
+        */
+        if (annotateBtn) {
+            annotateBtn.hidden = !isRaw;
+        }
+        if (!isRaw && annotating) {
+            setAnnotating(false);
+        }
     }
 
     // --- 菜单 ---------------------------------------------------------------
@@ -830,6 +1492,22 @@
         syncViewToggle();
 
         /*
+          ⚠️ 标注也必须重置并重新拉。
+             不同文献的标注完全不同，留着上一篇的就是错的。
+
+          ⚠️ 先把上一份**未保存**的改动写掉再清 —— 否则
+             上篇的改动就跟着 regionMarks = [] 一起没了。
+        */
+        saveAnnotations();
+        annotating = false;
+        annotateDirty = false;
+        syncAnnotate();
+        if (root) root.classList.remove('is-annotating');
+        regionMarks = [];
+        textMarks = [];
+        loadAnnotations(doc.id);
+
+        /*
           ⚠️ 打开时重算一次颜色行的色块。
              主题可能在阅读页关闭期间被改过（比如在「设置」里切了夜间模式），
              此时正文颜色已随新主题变化，而色块还是上次的值。
@@ -852,6 +1530,15 @@
         root.classList.remove('is-open');
         setMenu(false);
         setPanel(false);
+
+        /*
+          ⚠️ 关闭阅读页时**必须**把未保存的标注写掉。
+             退出编辑模式时已经写了一次，但用户可能**在编辑模式下
+             直接按返回键**关掉阅读页 —— 那时 setAnnotating(false)
+             从未被调用，不写就全丢了。
+        */
+        saveAnnotations();
+
         global.setTimeout(function () {
             if (!root.classList.contains('is-open')) {
                 root.hidden = true;
@@ -865,6 +1552,10 @@
                 rawPageCount = 0;
                 lastBlocks = null;
                 lastText = '';
+                annotating = false;
+                annotateDirty = false;
+                regionMarks = [];
+                textMarks = [];
                 teardownPdfScroll();
             }
         }, 280);
@@ -927,6 +1618,22 @@
     /**
      * 把结构化块渲染成 DOM。
      *
+     * ══ ⚠️ 从这里开始是「文本分级」（v0.1.17）══
+     *
+     * 用户的要求（原话）：
+     *   「文本分级，先分作者、标题、摘要和各个一级大纲标题所表示的区域，
+     *     然后每个一级章节区域可以再分」
+     *   「分到哪一层由用户决定（可手动折叠/展开）」
+     *
+     * 于是渲染分两步：
+     *   ① [buildRegions] 把平坦的 blocks 切成**有层级的区域树**；
+     *   ② [renderRegions] 把它渲染成可折叠的 DOM。
+     *
+     * ⚠️ 为什么必须两步而不是边遍历边渲染：
+     *    折叠/展开要能作用于"整棵子树"，
+     *    而 DOM 一旦生成就成了树，再想按层级折叠就得反查父节点。
+     *    先在纯数据上把层级算清，渲染只是照着画。
+     *
      * ══ 为什么要分块（v0.1.6）══
      *
      * 纯文本流无法表达「这是标题 / 这是段落 / 这是公式」，
@@ -948,71 +1655,550 @@
      * @param {Array} blocks [{kind,text,level,page}]
      */
     function renderBlocks(blocks) {
-        var frag = document.createDocumentFragment();
+        var regions = buildRegions(blocks, textMarks);
+        if (!regions.length) {
+            // 没有任何可分区的内容：退回平坦渲染（保持旧行为，别白屏）
+            renderFlat(blocks);
+            return;
+        }
+        renderRegions(regions);
+    }
 
+    /**
+     * 把平坦的块序列切成**区域树**。
+     *
+     * ══ 区域类型（用户选定）══
+     *
+     * 首页区（各成一块）：
+     *     标题 / 作者 / 摘要 / 关键词
+     * 正文区：
+     *     一级章节开头 → 开一个 level 1 区域
+     *     其下遇到 level 2 标题 → 嵌一个 level 2 区域
+     *     再下 level 3 → 继续嵌
+     *
+     * ══ ⚠️ 用户标注优先，自动识别兜底 ══
+     *
+     * `marks` 是用户在文本视图里**选中文字后指定的类型**
+     * （注意：文本不用矩形框 —— 段落不是矩形，方框会框进
+     *  旁边的栏和页眉。见 reader.js 顶部 state 区的说明）。
+     * 一个块若落在某个 mark 的行区间内，就用 mark 的类型 ——
+     * 这覆盖自动判断的结果。没被标过的块仍按 [guessKind] 猜。
+     *
+     * ⚠️ 行号是**全局行号**（mark.from / mark.to），而 blocks 是
+     *    **块序列**，两者单位不同。这里用「累计块长度」估算每个块的
+     *    起始行 —— 这是近似：真实对应关系需要原生给块↔行的映射。
+     *    ⚠️ 近似必然有偏移，所以这一步**宁可少覆盖**：
+     *      只有当 mark 区间**完整包含**该块的估算范围时才生效，
+     *      部分重叠就忽略（避免把相邻块一起误标）。
+     *
+     * @param  {Array} blocks [{kind,text,level,page}]
+     * @param  {Array} marks  [{from,to,type,level}]
+     * @return {Array} 区域树 [{type, level, heading, blocks, children}]
+     */
+    function buildRegions(blocks, marks) {
+        var out = [];
+        if (!blocks || !blocks.length) return out;
+
+        // 估算每个块的全局行号区间（供 mark 匹配）
+        var rowAt = [];
+        var row = 0;
         for (var i = 0; i < blocks.length; i++) {
-            var b = blocks[i];
-            if (!b || !b.text) continue;
-
-            var kind = b.kind || 'paragraph';
-            var el;
-
-            if (kind === 'heading') {
-                /*
-                  ⚠️ 标题层级映射到 h2 / h3 / h4，**不用 h1** ——
-                     页面本身已有 h1 语义（应用标题），
-                     正文里再出 h1 会破坏文档大纲。
-
-                 层级来源（原生侧 PdfText.classifyBlock）：
-                    1 = 章（`3` / `Abstract`，字号最大）
-                    2 = 节（`3.1`，字号次之或粗体）
-                    3 = 更深层（`3.1.1`），原生侧封顶到 3
-
-                 ⚠️ 三档全部保留 —— 早先这里把 level>=2 一律压到 h3，
-                    于是「章」与「节」在视觉上分不出来，
-                    而 CSS 里本来就为三档各写了字号（见 styles.css）。
-                     映射：level 1 → h2，2 → h3，>=3 → h4
-                */
-                var lv = (b.level >= 3) ? 4 : ((b.level === 2) ? 3 : 2);
-                el = document.createElement('h' + lv);
-                el.className = 'reader-heading';
-
-            } else if (kind === 'formula') {
-                /*
-                  ⚠️ 公式块用等宽字体 + 独立背景。
-                     虽然不是真正的 LaTeX（那需要数学 OCR），
-                     但「单独成块 + 等宽」已经能让用户把它
-                     与正文区分开，不再混在一句话里。
-
-                     ⚠️ 不加 `overflow-x: auto` 之外的交互：
-                        本次不做公式识别，所以它仍是文本。
-                */
-                el = document.createElement('div');
-                el.className = 'reader-formula';
-
-            } else if (kind === 'figure') {
-                /*
-                  ⚠️ 目前**不会**产出 figure（抽取 PDF 图片是独立一项）。
-                     但这里先把渲染路径写好 —— 原生侧将来只要开始
-                     产出 figure，前端立刻就能正确显示，不用再改这里。
-                */
-                el = document.createElement('div');
-                el.className = 'reader-figure';
-                el.textContent = b.text || '';
-
-            } else {
-                el = document.createElement('p');
-                el.className = 'reader-para';
-            }
-
-            if (kind !== 'figure') {
-                el.textContent = b.text;
-            }
-            if (b.page) el.setAttribute('data-page', String(b.page));
-            frag.appendChild(el);
+            var b0 = blocks[i];
+            if (!b0 || !b0.text) { rowAt.push(null); continue; }
+            /*
+              ⚠️ 行数按 `\n` 个数 + 1 估。
+                 段落块内部的行数就是换行符个数 + 1，
+                 与原生 mergeParagraphs 的产物一致（段落用 \n 连接）。
+            */
+            var n = b0.text.split('\n').length;
+            rowAt.push({ from: row, to: row + n - 1 });
+            row += n;
         }
 
+        /** 查某个块被用户标成了什么；没标过返回 null */
+        function markFor(idx) {
+            var span = rowAt[idx];
+            if (!span) return null;
+            for (var k = 0; k < marks.length; k++) {
+                var m = marks[k];
+                if (!m || m.from > span.from || m.to < span.to) continue;
+                // 完整覆盖才认（见函数头的「宁可少覆盖」）
+                return m;
+            }
+            return null;
+        }
+
+        /*
+          ⚠️ 首页区只在**文章开头**认。
+             正文中间也可能出现 "Abstract" 字样（引用别人的摘要），
+             那时已经进入章节区了，不该再开一个"摘要区"。
+             用一个开关：一旦开出第一个章节区就不再回头。
+        */
+        var sawBody = false;
+        var stack = []; // 当前打开的章节区域栈（level 递增）
+        /*
+          ⚠️ 用来认「标题区」和「作者区」：
+             题目 = 首页的第一个块（无论它被判成什么）；
+             作者 = 紧随题目之后的那一段。见下面两处的说明。
+        */
+        var sawTitle = false;
+        var authorPending = false;
+        /*
+          ⚠️ 当前"敞开着的"首页区（title/author/abstract/keyword）。
+             摘要标题之后的正文要靠它归位 —— 见下面用到处的说明。
+             null = 首页已结束或还没开始。
+        */
+        var frontOpen = null;
+
+        for (var j = 0; j < blocks.length; j++) {
+            var blk = blocks[j];
+            if (!blk || !blk.text) continue;
+
+            var mark = markFor(j);
+            var type = mark ? mark.type : guessKind(blk, sawBody);
+            var level = mark
+                ? (mark.type === 'heading' ? (mark.level || blk.level || 1) : 0)
+                : blk.level;
+
+            /*
+              ⚠️ 标题区是**位置**判据：文章的**第一个块**就是题目。
+
+                 判据从"内容像不像标题"改成位置，是因为：
+                   · 原生的 heading 判据（字号大）在封面页可能失灵
+                     （整页字号都大）；
+                   · 反过来，题目有时被判成 paragraph
+                     （字号与正文相同、只是加粗居中）。
+                 而"第一个块"这个位置在所有论文里都成立。
+            */
+            if (!sawBody && !sawTitle && type !== 'abstract' && type !== 'keyword') {
+                type = 'title';
+            }
+
+            /*
+              ⚠️ 作者区同样是**位置**判据，不是内容判据。
+
+                 论文首页的排布是固定套路：
+                     题目 → 作者 → 单位/邮箱 → 摘要
+                 题目后面紧跟的是作者，**再后面**是单位/邮箱。
+
+                 ⚠️ 为什么不按"像人名"来认：
+                    人名判据（2-5 个首字母大写的词）会把单位、邮箱、
+                    会议名全部误判。位置判据在本场景下可靠得多 ——
+                    题目已经被认出来了，紧跟其后的就是作者。
+
+                 ⚠️ 单位/邮箱也要**并进作者区**，不能只认一段。
+                    只认一段的话，第二段（"Microsoft Research"）
+                    会掉进正文，变成一个没有标题的"本节"区域 ——
+                    实测就是这个症状。所以作者窗口开在
+                    **摘要/关键词之前**整段，靠"遇到 abstract/keyword
+                    就关窗"来收口。
+            */
+            if (!sawBody && authorPending && type === 'body') {
+                type = 'author';
+            }
+
+            /*
+              ══ 首页区：标题 / 作者 / 摘要 / 关键词 ══
+            */
+            if (!sawBody && (type === 'title' || type === 'author' ||
+                             type === 'abstract' || type === 'keyword')) {
+                pushFrontRegion(out, type, blk);
+                /*
+                  ⚠️ 记住"当前停在哪个首页区"。
+                     摘要标题之后紧跟的就是摘要正文 —— 它会被
+                     guessKind 判成 body，若没有这个记录就会掉进
+                     章节流程，凭空多出一个"本节"区域。
+                     实测就是这个症状：摘要区是空的，
+                     摘要正文变成了一个叫"本节"的章节。
+                */
+                frontOpen = type;
+                if (type === 'title') {
+                    sawTitle = true;
+                    authorPending = true;
+                } else if (type === 'author') {
+                    /*
+                      ⚠️ 作者区之后是单位/邮箱，仍属作者区；
+                         但再之后可能是正文（没有摘要的论文）。
+                         所以这里不关窗口，靠"遇到摘要/关键词/标题"收口。
+                    */
+                } else if (type === 'abstract' ||
+                           type === 'keyword') {
+                    authorPending = false;
+                }
+                continue;
+            }
+
+            /*
+              ⚠️ 首页区还没结束时的**正文块**（摘要正文、关键词列表）
+                 要并进刚开的那个首页区，不能去开章节。
+            */
+            if (!sawBody && frontOpen && type === 'body') {
+                pushFrontRegion(out, frontOpen, blk);
+                continue;
+            }
+
+            /*
+              ⚠️ 一旦出现章节标题，首页就结束了 —— 关掉首页窗口，
+                 后面所有内容都走章节流程。
+            */
+            if (type === 'heading') {
+                frontOpen = null;
+                authorPending = false;
+            }
+
+            /*
+              ══ 章节区 ══
+            */
+            if (type === 'heading' || blk.kind === 'heading') {
+                var lv = (level > 0) ? level : 1;
+                sawBody = true;
+                stack = openRegion(out, stack, lv, blk);
+                continue;
+            }
+
+            /*
+              ⚠️ 正文的第一块若还没开章节区（有的 PDF 直接从正文开始，
+                 没有一级标题），补一个"无标题的一级区"，
+                 否则这些内容会挂在顶层、无法折叠。
+            */
+            if (!sawBody) {
+                sawBody = true;
+                stack = openRegion(out, stack, 1, null);
+            }
+
+            appendToStack(stack, out, blk, type);
+        }
+
+        return out;
+    }
+
+    /** 把一个首页块并进 out 里对应的前区（没有就新建） */
+    function pushFrontRegion(out, type, blk) {
+        for (var i = 0; i < out.length; i++) {
+            if (out[i].type === type && out[i].level === 0) {
+                out[i].blocks.push(blk);
+                return;
+            }
+        }
+        out.push({ type: type, level: 0, heading: null, blocks: [blk], children: [] });
+    }
+
+    /**
+     * 开一个新的章节区并正确嵌套。
+     *
+     * ⚠️ 嵌套规则：level 比栈顶**大**就嵌进去；**小于等于**就先把
+     *    栈顶及更深的一路弹出，直到找到比自己浅的那一层。
+     *    这是解析标题层级的标准做法（与建目录树同理）。
+     */
+    function openRegion(out, stack, lv, headingBlock) {
+        // 弹出所有 >= 本层级的（它们已经结束了）
+        while (stack.length && stack[stack.length - 1].level >= lv) {
+            stack.pop();
+        }
+
+        var region = {
+            type: 'section',
+            level: lv,
+            heading: headingBlock,
+            blocks: [],
+            children: []
+        };
+
+        if (stack.length) {
+            stack[stack.length - 1].children.push(region);
+        } else {
+            out.push(region);
+        }
+
+        stack.push(region);
+        return stack;
+    }
+
+    /** 把内容块追加到当前最深的那一层区域里 */
+    function appendToStack(stack, out, blk, type) {
+        var target = stack.length
+            ? stack[stack.length - 1]
+            : (out[out.length - 1] || null);
+        if (!target) return;
+
+        /*
+          ⚠️ 把这个块被判定的文本类型带上（textType），
+             渲染时给不同样式 —— 脚注/参考文献不该混在正文段落里。
+        */
+        target.blocks.push({
+            kind: blk.kind,
+            text: blk.text,
+            page: blk.page,
+            textType: type
+        });
+    }
+
+    /**
+     * 猜一个块属于哪个文本类型（用户没标过时用）。
+     *
+     * ⚠️ 这里**故意只认首页那几类**，不去猜"脚注 / 参考文献"这类
+     *    需要语义理解的东西 —— 猜错比不猜更糟
+     *    （用户看到摘要被标成"参考文献"会完全不信任这个功能）。
+     *    猜不出的统一当正文。
+     *
+     * ══ ⚠️ 为什么摘要/关键词的检查要**先于** kind==='heading' ══
+     *
+     * 原生侧把 `Abstract` 判成 heading 是**对的** ——
+     * 它确实是标题（字号大、全大写、独立成行），
+     * 而且标题层级也是对的（它确实是一级）。
+     *
+     * 但在**区域划分**这个语境下，"Abstract 这一行"属于
+     * **首页的摘要区**，而不是一个正文章节。两者的区别是
+     * "它在文章结构里的位置"，不是"它长得像不像标题"。
+     *
+     * 实测症状：先判 heading 的话，摘要会变成一个
+     * 与 "1 Introduction" 平级的章节区，用户看到的是
+     * 一个"Abstract"章节 + 一段内容，而不是一个"摘要区"。
+     */
+    function guessKind(blk, sawBody) {
+        if (!sawBody) {
+            var txt = blk.text.trim();
+            /*
+              ⚠️ 摘要 / 关键词的提示词。中英文都列 ——
+                 两种写法在真实论文里都常见。
+
+              ⚠️ 用 `^`（行首）而不是 `contains` ——
+                 正文里引用别人的摘要也会出现 "abstract"，
+                 但不会在行首。行首匹配大幅降低误判。
+
+              ⚠️⚠️ **不能用 `\b` 收尾**。这条踩过坑：
+                   · `\b` 在中文后面**不成立**（中文字符在 JS 里
+                     算 word character），所以 `^(摘要)\b` 永远匹配不上
+                     `摘要：本文…`；
+                   · `Keywords` 后面是 `:`，而 `\b` 在 `s` 与 `:` 之间
+                     确实成立 —— 但 `^(keywords?)\b` 对
+                     `Keywords`（整行就这一个词，行尾即字符串尾）
+                     在 `s` 后面没有字符，`\b` 仍然成立，
+                     所以那条其实是对的；
+                     真正坏掉的是中文那条。
+
+                 改成**显式列举可接受的分隔符**：空白、行尾、
+                 中英文冒号、各种破折号。这样中英文都覆盖，
+                 且不会把 "Abstracting away..." 这类词误判
+                 （它后面是字母，不在分隔符集合里）。
+            */
+            if (/^(abstract|摘要)(\s|$|[:：—–-])/i.test(txt)) return 'abstract';
+            if (/^(keywords?|index terms|关键词)(\s|$|[:：—–-])/i.test(txt)) return 'keyword';
+        }
+
+        if (blk.kind === 'heading') return 'heading';
+        return 'body';
+    }
+
+    /** 平坦渲染（无区域时兜底，行为与 v0.1.16 一致） */
+    function renderFlat(blocks) {
+        var frag = document.createDocumentFragment();
+        for (var i = 0; i < blocks.length; i++) {
+            var el = makeBlockEl(blocks[i], null);
+            if (el) frag.appendChild(el);
+        }
         contentEl.appendChild(frag);
+    }
+
+    /**
+     * 造一个块的 DOM 元素。
+     *
+     * ⚠️ 这是**唯一**决定"某种块长什么样"的地方 ——
+     *    平原渲染与区域渲染都调它，避免两套样式各自演化。
+     *
+     * @param {Object} b        块 [{kind,text,level,page,textType}]
+     * @param {string|null} ttype 文本类型（用户标注或猜出来的）
+     * @return {Element|null}
+     */
+    function makeBlockEl(b, ttype) {
+        if (!b || !b.text) return null;
+
+        var kind = b.kind || 'paragraph';
+        var el;
+
+        if (kind === 'heading') {
+            /*
+              ⚠️ 标题层级映射到 h2 / h3 / h4，**不用 h1** ——
+                 页面本身已有 h1 语义（应用标题），
+                 正文里再出 h1 会破坏文档大纲。
+
+             层级来源（原生侧 PdfText.classifyBlock）：
+                1 = 章（`3` / `Abstract`，字号最大）
+                2 = 节（`3.1`，字号次之或粗体）
+                3 = 更深层（`3.1.1`），原生侧封顶到 3
+
+             ⚠️ 三档全部保留 —— 早先这里把 level>=2 一律压到 h3，
+                于是「章」与「节」在视觉上分不出来，
+                而 CSS 里本来就为三档各写了字号（见 styles.css）。
+                 映射：level 1 → h2，2 → h3，>=3 → h4
+            */
+            var lv = (b.level >= 3) ? 4 : ((b.level === 2) ? 3 : 2);
+            el = document.createElement('h' + lv);
+            el.className = 'reader-heading';
+
+        } else if (kind === 'formula') {
+            /*
+              ⚠️ 公式块用等宽字体 + 独立背景。
+                 虽然不是真正的 LaTeX（那需要数学 OCR），
+                 但「单独成块 + 等宽」已经能让用户把它
+                 与正文区分开，不再混在一句话里。
+            */
+            el = document.createElement('div');
+            el.className = 'reader-formula';
+
+        } else if (kind === 'figure') {
+            /*
+              ⚠️ 目前**不会**产出 figure（抽取 PDF 图片是独立一项）。
+                 但这里先把渲染路径写好 —— 原生侧将来只要开始
+                 产出 figure，前端立刻就能正确显示，不用再改这里。
+            */
+            el = document.createElement('div');
+            el.className = 'reader-figure';
+
+        } else {
+            el = document.createElement('p');
+            el.className = 'reader-para';
+        }
+
+        /*
+          ⚠️ 文本类型还要表达在 class 上（脚注/参考文献/关键词等），
+             这样各类可以有不同样式。CSS 里对应 .reader-text-<type>。
+             正文（body）不加 class —— 那是绝大多数，加了只是噪声。
+        */
+        if (ttype && ttype !== 'body' && ttype !== 'heading') {
+            el.className += ' reader-text-' + ttype;
+        }
+
+        el.textContent = b.text;
+        if (b.page) el.setAttribute('data-page', String(b.page));
+        return el;
+    }
+
+    /**
+     * 把区域树渲染成可折叠的 DOM。
+     *
+     * ══ 折叠 / 展开（用户要求「分到哪一层由用户决定」）══
+     *
+     * 每个章节区渲染成一个 `<section class="rd-region">`，
+     * 里面：
+     *   · 一个可点的头部（章节标题 + 展开箭头）
+     *   · 一个内容容器（下面直接的内容块 + 更深层的子区域）
+     *
+     * ⚠️ 折叠状态**不持久化**。理由：用户折叠多半是为了
+     *    "跳过这段看看后面"，不是长期偏好；存起来反而
+     *    会出现"我明明展开过怎么又是收着的"。
+     *    默认全展开 —— 用户的要求是"能手动折叠/展开"，
+     *    没说默认收起。
+     *
+     * ⚠️ 折叠只改 `hidden`，**不重建 DOM** ——
+     *    重建会让滚动位置跳到顶部，用户折叠一个远处的章节
+     *    结果视线被拽走，很烦。
+     */
+    function renderRegions(regions) {
+        var frag = document.createDocumentFragment();
+        for (var i = 0; i < regions.length; i++) {
+            frag.appendChild(makeRegionEl(regions[i]));
+        }
+        contentEl.appendChild(frag);
+    }
+
+    /** 首页区的区域小标签文案（与 TEXT_TYPES 的前四类对应） */
+    var FRONT_LABEL_KEY = {
+        title: 'reader.typeTitle',
+        author: 'reader.typeAuthor',
+        abstract: 'reader.typeAbstract',
+        keyword: 'reader.typeKeyword'
+    };
+
+    /** 造一个区域（首页区或章节区）的 DOM */
+    function makeRegionEl(region) {
+        var sec = document.createElement('section');
+        sec.className = 'rd-region rd-region-' + (region.type || 'section');
+        if (region.level) {
+            sec.className += ' rd-region-lv' + Math.min(region.level, 3);
+        }
+
+        /*
+          ⚠️ 首页区（标题/作者/摘要/关键词）**没有可折叠的头部** ——
+             它们本身就是一小段内容，折叠没意义，
+             多一个可点的标题反而让人以为漏了内容。
+
+          ⚠️ 但**要有一个小标签**说明"这段是摘要" ——
+             否则用户看到一段独立成块的文字，不知道它是被识别出来的
+             区域还是排版巧合。标签是纯视觉的，不接手势。
+
+          ⚠️ 标签用 .rd-region-titletext，
+             与论文题目（.rd-region-title 容器）区分开，见我 CSS 里的说明。
+        */
+        if (region.type === 'section') {
+            sec.appendChild(makeRegionHeader(region));
+        } else if (FRONT_LABEL_KEY[region.type]) {
+            var label = document.createElement('div');
+            label.className = 'rd-region-titletext';
+            label.textContent = t(FRONT_LABEL_KEY[region.type]);
+            sec.appendChild(label);
+        }
+
+        var body = document.createElement('div');
+        body.className = 'rd-region-body';
+
+        // 直接内容
+        for (var i = 0; i < region.blocks.length; i++) {
+            var b = region.blocks[i];
+            var el = makeBlockEl(b, b.textType);
+            if (el) body.appendChild(el);
+        }
+
+        // 更深层的子区域
+        for (var j = 0; j < region.children.length; j++) {
+            body.appendChild(makeRegionEl(region.children[j]));
+        }
+
+        sec.appendChild(body);
+        return sec;
+    }
+
+    /**
+     * 造章节区的头部（可点折叠）。
+     *
+     * ⚠️ 用 `<h2>/<h3>/<h4>` 包一层按钮，而不是给 h2 直接绑 click ——
+     *    可点的应该是 `<button>`（键盘可达、读屏能念出"按钮"）。
+     *    直接给标题绑 click 的话，键盘用户永远折叠不了（项目无障碍约定）。
+     */
+    function makeRegionHeader(region) {
+        var head = document.createElement('button');
+        head.className = 'rd-region-head';
+        head.type = 'button';
+        head.setAttribute('aria-expanded', 'true');
+
+        var lv = region.level >= 3 ? 4 : (region.level === 2 ? 3 : 2);
+        var title = document.createElement('h' + lv);
+        title.className = 'reader-heading rd-region-title';
+        /*
+          ⚠️ 没有标题的一级区（PDF 直接以正文开头）要有个占位文案，
+             否则会出现一个空白的可点条，用户不知道那是什么。
+        */
+        title.textContent = region.heading
+            ? region.heading.text
+            : t('reader.untitledSection');
+        head.appendChild(title);
+
+        head.addEventListener('click', function () {
+            var expanded = head.getAttribute('aria-expanded') === 'true';
+            head.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+            var body = head.parentNode
+                ? head.parentNode.querySelector('.rd-region-body')
+                : null;
+            if (body) body.hidden = expanded;
+
+            /*
+              ⚠️ 折叠状态变了要重算目录里已高亮的项 ——
+                 （当前实现没有"随滚动高亮目录"，所以这里只留接入点，
+                  不做多余动作。留着注释是为了说明为什么不处理。）
+            */
+        });
+
+        return head;
     }
 
     /**
@@ -2263,6 +3449,17 @@
              所以这里不补这一句，切语言后读屏标签就一直是旧语言。
         */
         syncViewToggle();
+        /*
+          ⚠️ 标注按钮与类型条同理：它们的文案都是 JS 填的
+             （类型名、提示语、"标注/完成"），
+             不刷的话切语言后这两处会一直停在旧语言。
+
+             ⚠️ syncAnnoChips 内部对 annoBarEl 做了空判 ——
+                没进过编辑模式时类型条还不存在，不能直接调它的
+                querySelectorAll（会 null 崩）。
+        */
+        syncAnnotate();
+        syncAnnoChips();
         if (tocOpen) {
             renderToc();
         }

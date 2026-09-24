@@ -50,6 +50,37 @@ class WebAppBridge(
     /** 取文献总页数；读不到返回 0 */
     private val onGetPdfPageCount: (String) -> Int,
     /**
+     * 取某篇文献的用户标注，返回 **JSON 对象**字符串。
+     *
+     * ⚠️ **同步返回**，理由同 [getPdfPage]：网页进编辑模式时要立刻
+     *    把已有框/已有区域标出来。标注文件很小（几 KB），同步读可接受。
+     *
+     * ⚠️ 返回的是**一个对象**，不是数组 —— 因为要同时带回两套标注
+     *    （见 [AnnotationStore] 文件头的「两套机制」）：
+     *
+     * ```json
+     * {
+     *   "regions": [{"x0":0.1,"y0":0.2,"x1":0.3,"y1":0.4,"page":1,"type":"table"}],
+     *   "texts":   [{"from":12,"to":13,"type":"heading","level":1}]
+     * }
+     * ```
+     *
+     * 读不到时返回 `{"regions":[],"texts":[]}`（不是空串）——
+     * 网页可以直接 `JSON.parse` 而不用判 null。
+     */
+    private val onGetAnnotations: (String) -> String,
+    /**
+     * 覆盖保存某篇文献的全部标注。
+     *
+     * ⚠️ 传**整份**而不是「增/删一条」：
+     *    用户在编辑模式里会连续改十几处再退出，
+     *    整份覆盖只有一次 IO，且不会有「增量操作乱序」的问题。
+     *
+     * @param json JSON 对象字符串，格式同 [onGetAnnotations]
+     * @return 是否成功（网页据此决定要不要提示失败）
+     */
+    private val onSetAnnotations: (String, String) -> Boolean,
+    /**
      * 改文献元数据。
      *
      * ⚠️ 第二个参数是 **JSON 对象字符串**（形如 `{"year":"2015"}`），
@@ -195,6 +226,23 @@ class WebAppBridge(
     /** 取文献总页数（网页据此显示「3 / 12」并限制翻页范围） */
     @JavascriptInterface
     fun getPdfPageCount(id: String): Int = onGetPdfPageCount(id)
+
+    /**
+     * 取用户对该文献的标注（JSON 对象字符串，见 [onGetAnnotations]）。
+     *
+     * ⚠️ 同步。网页进编辑模式 / 渲染文本视图时都要立刻拿到，
+     *    异步回调会让界面先按「无标注」渲染一帧再跳变。
+     */
+    @JavascriptInterface
+    fun getAnnotations(id: String): String = onGetAnnotations(id)
+
+    /**
+     * 覆盖保存用户对该文献的标注（JSON 对象字符串）。
+     *
+     * @return 是否成功；网页据此决定要不要提示"保存失败"
+     */
+    @JavascriptInterface
+    fun setAnnotations(id: String, json: String): Boolean = onSetAnnotations(id, json)
 
     /** 把 JSON 数组字符串解成 id 列表；解析失败返回空列表 */
     private fun parseIdArray(json: String): List<String> = try {

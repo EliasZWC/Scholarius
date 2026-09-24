@@ -201,6 +201,34 @@
             'reader.readingView': 'Reading View',
             'reader.pageUnavailable': 'Page Unavailable.',
 
+            /*
+              标注（v0.1.17）。
+
+              ⚠️ 文案风格遵守项目约定：
+                 · **短语**（按钮/标签）→ 每个词首字母大写：`Edit Regions`
+                 · **句子**（完整主谓）→ 只句首大写：`Tap A Box To Remove It.`
+                 判据是「有没有主语+谓语」。
+
+              ⚠️ annotateDone 是**按钮**（短语）→ 首字母大写。
+                 annotateTip 是**句子**（祈使句，有动词）→ 只句首大写。
+            */
+            'reader.annotate': 'Annotate',
+            'reader.annotateDone': 'Finish',
+            'reader.annotateTip': 'Drag on the page to mark a region; tap a box to remove it.',
+            'reader.untitledSection': 'Section',
+            // 标注类型（全是短语 → 首字母大写）
+            'reader.typeFormula': 'Formula',
+            'reader.typeTable': 'Table',
+            'reader.typeFigure': 'Figure',
+            'reader.typeTitle': 'Title',
+            'reader.typeAuthor': 'Author',
+            'reader.typeAbstract': 'Abstract',
+            'reader.typeBody': 'Body',
+            'reader.typeHeading': 'Heading',
+            'reader.typeFootnote': 'Footnote',
+            'reader.typeReference': 'Reference',
+            'reader.typeKeyword': 'Keyword',
+
             // 阅读设置：字体
             'reader.font': 'Font',
             'reader.fontSize': 'Font Size',
@@ -474,6 +502,25 @@
             'reader.rawView': '原始视图',
             'reader.readingView': '阅读视图',
             'reader.pageUnavailable': '无法显示该页。',
+
+            // 标注（v0.1.17）
+            'reader.annotate': '标注',
+            'reader.annotateDone': '完成',
+            'reader.annotateTip': '在页面上拖拽即可框选；点框可删除。',
+            'reader.untitledSection': '本节',
+
+            // 标注类型
+            'reader.typeFormula': '公式',
+            'reader.typeTable': '表格',
+            'reader.typeFigure': '图片',
+            'reader.typeTitle': '标题',
+            'reader.typeAuthor': '作者',
+            'reader.typeAbstract': '摘要',
+            'reader.typeBody': '正文',
+            'reader.typeHeading': '章节标题',
+            'reader.typeFootnote': '脚注',
+            'reader.typeReference': '参考文献',
+            'reader.typeKeyword': '关键词',
 
 
             // 阅读设置：字体

@@ -97,7 +97,41 @@ object PdfText {
         /** 该行所在页码，从 1 开始 */
         val page: Int,
         /** 是否在**段落起始位置**（前一个非空行是段落边界） */
-        val paragraphStart: Boolean
+        val paragraphStart: Boolean,
+        /**
+         * 该行在页面上的包围盒，**归一化到 0..1**：
+         * `x0, y0` 是左上角，`x1, y1` 是右下角；y 轴向下（与屏幕一致）。
+         *
+         * ══ 为什么需要坐标（v0.1.17）══
+         *
+         * 用户提议：「我们不自己分了，留给用户分」——
+         * 在 PDF 页图上画框，让用户标注每块是正文/标题/公式/表格/图片。
+         *
+         * 要能做到这件事，网页必须知道**这段文字在页面的哪个位置**，
+         * 才能把框画在正确的地方。而 `text` 本身没有任何位置信息。
+         *
+         * ══ 为什么是归一化的 0..1，不是 PDF 的原始磅值 ══
+         *
+         * ① 前端用 CSS 百分比定位（`left: 12%; top: 30%`），
+         *    归一化的值可以直接用，不需要前端知道页面尺寸；
+         * ② 页图是**缩放后**显示的（宽 1600px 的原生渲染图缩到屏宽），
+         *    用绝对磅值就要在前端重算缩放比，多一处容易错的地方；
+         * ③ 0..1 对"页面尺寸不同"的文档天然免疫 ——
+         *    A4 与 Letter、单栏与双栏混排都不用特判。
+         *
+         * ⚠️ y 轴方向：PDF 原生是**左下角原点、y 向上**，
+         *    而屏幕是**左上角原点、y 向下**。这里统一成屏幕方向
+         *    （用 PDFBox 的 `getYDirAdj()`，它已经做过这个翻转）。
+         *    不统一的话前端画出来的框会上下颠倒 ——
+         *    而且**在只有单页的测试里看不出来**，很隐蔽。
+         *
+         * ⚠️ 取不到坐标时四个值都是 0。前端要判 `x1 > x0` 才画框，
+         *    否则会画出一堆退化的零尺寸框。
+         */
+        val x0: Float = 0f,
+        val y0: Float = 0f,
+        val x1: Float = 0f,
+        val y1: Float = 0f
     )
 
     /**
@@ -145,7 +179,23 @@ object PdfText {
          */
         val level: Int,
         /** 该块起始页（从 1 开始），用于「跳转到原文位置」 */
-        val page: Int
+        val page: Int,
+        /**
+         * 该块在页面上的包围盒（归一化 0..1，屏幕方向：左上原点）。
+         *
+         * ══ 用途（v0.1.17）══
+         *
+         * 用户在 PDF 页图上改正我们的自动分块时，需要在**页面的对应位置**
+         * 画出可点击的框。没有这个包围盒，网页只能盲猜位置 ——
+         * 那就等于让用户从零画框，手机上极难操作。
+         *
+         * ⚠️ 取不到坐标时 x1 == x0（零尺寸）。前端必须判 `x1 > x0`
+         *    再画框，否则会得到一堆点状/反向的退化框。
+         */
+        val x0: Float = 0f,
+        val y0: Float = 0f,
+        val x1: Float = 0f,
+        val y1: Float = 0f
     )
 
     /** 提取结果：正文 + 行元数据 + PDF 自带大纲 */
@@ -165,7 +215,24 @@ object PdfText {
          *    两者由**同一次遍历**产出（见 mergeParagraphs），
          *    所以内容必然一致，不会出现"渲染的与复制的不同"。
          */
-        val blocks: List<Block> = emptyList()
+        val blocks: List<Block> = emptyList(),
+        /**
+         * **每页的宽高比**（`高 / 宽`），下标 0 对应第 1 页。
+         *
+         * ══ 用途（v0.1.17）══
+         *
+         * 网页要在 PDF 页图上叠分块框。框的位置用 [Block] 的归一化
+         * 坐标就够，**但容器本身需要知道页面的高宽比**才能正确排布 ——
+         * 否则框会画在一个高度不正确的容器里，纵向位置全偏。
+         *
+         * ⚠️ 原始视图的页图是原生渲染的 JPEG（宽 1600、高按比例），
+         *    它自带正确比例；但**文本视图**里没有页图 ——
+         *    那时如果也要显示标注框，就只能靠这个比例来铺一个
+         *    与页面等比的容器。
+         *
+         * ⚠️ 空列表表示"没读到"（加密/损坏）。前端退回 A4（1.414）。
+         */
+        val pageRatios: List<Float> = emptyList()
     )
 
     /**
@@ -315,6 +382,56 @@ object PdfText {
             */
             pageNo = getCurrentPageNo()
 
+            /*
+              ⚠️ 行包围盒：把该行所有 span 的矩形合并成一个。
+
+                 判据用 `getXDirAdj/getYDirAdj/getWidthDirAdj/getHeightDir`
+                 —— 它们都**已按文字方向做过旋转校正**，
+                 且 y 轴是「左上角原点、向下为正」，与屏幕一致。
+                 直接用 getX/getY 会拿到未校正的值（PDF 原生左下角原点），
+                 前端画出来的框会上下颠倒，且单页测试里看不出来。
+
+                 ⚠️ 然后归一化到 0..1（除以页宽/页高）。
+                    页面尺寸从第一个 span 取 —— 同一页里所有 span 的
+                    页宽页高必然相同，不必逐个比。
+            */
+            var bx0 = Float.MAX_VALUE
+            var by0 = Float.MAX_VALUE
+            var bx1 = -Float.MAX_VALUE
+            var by1 = -Float.MAX_VALUE
+            var pw = 0f
+            var ph = 0f
+            for (p in positions) {
+                if (p.unicode.isNullOrEmpty()) continue
+                val px = p.xDirAdj
+                val py = p.yDirAdj
+                val pr = px + p.widthDirAdj
+                val pb = py + p.heightDir
+                if (px < bx0) bx0 = px
+                if (py < by0) by0 = py
+                if (pr > bx1) bx1 = pr
+                if (pb > by1) by1 = pb
+                if (pw <= 0f) pw = p.pageWidth
+                if (ph <= 0f) ph = p.pageHeight
+            }
+
+            var nx0 = 0f
+            var ny0 = 0f
+            var nx1 = 0f
+            var ny1 = 0f
+            if (pw > 0f && ph > 0f && bx1 > bx0 && by1 > by0) {
+                /*
+                  ⚠️ 必须 clamp 到 0..1。
+                      少数 PDF 的文字会略微超出 CropBox（字体溢出、
+                      或用了更大的 MediaBox），不夹会得到 1.02 这种值，
+                      前端按百分比定位就会溢出容器、画出可见的错位框。
+                */
+                nx0 = (bx0 / pw).coerceIn(0f, 1f)
+                ny0 = (by0 / ph).coerceIn(0f, 1f)
+                nx1 = (bx1 / pw).coerceIn(0f, 1f)
+                ny1 = (by1 / ph).coerceIn(0f, 1f)
+            }
+
             raw.add(
                 Line(
                     text = line,
@@ -327,7 +444,11 @@ object PdfText {
                          上一行是否句末、本行是否标题）。
                          这里没有上下文，硬猜只会给出错的标记。
                     */
-                    paragraphStart = false
+                    paragraphStart = false,
+                    x0 = nx0,
+                    y0 = ny0,
+                    x1 = nx1,
+                    y1 = ny1
                 )
             )
             prevBlank = false
@@ -797,7 +918,44 @@ object PdfText {
                     kept
                 }
 
-                Result(body, merged.lines, readOutline(document), blocks)
+                /*
+                  ⚠️ 每页的宽高比。
+
+                     用途：网页要在页面上叠「标注框」（v0.1.17）。
+                     框的位置用归一化坐标就够，但**容器**需要知道
+                     页面的高宽比才能正确排布 —— 否则框会落在一个
+                     高度不对的容器里，纵向位置全部偏掉。
+
+                     ⚠️ 从文档对象直接读页面尺寸，不从 TextPosition 推 ——
+                         有些页可能一行文字都没有（整页是图），
+                         那时 TextPosition 里拿不到页宽页高，
+                         而这一页恰恰最需要用户标注（是图片页）。
+                */
+                val ratios = ArrayList<Float>(document.numberOfPages)
+                for (i in 0 until document.numberOfPages) {
+                    try {
+                        val box = document.getPage(i).cropBox ?: document.getPage(i).mediaBox
+                        val w = box.width
+                        val h = box.height
+                        /*
+                          ⚠️ 有些 PDF 的 CropBox 是**旋转过**的（横向页写成
+                             竖的 + 一个 /Rotate 90）。这时宽高要对调，
+                             否则网页画出来是躺着的。
+
+                             ⚠️ 对调判据用 `/Rotate` 是 90 或 270 度。
+                        */
+                        val rot = document.getPage(i).rotation
+                        val swapped = (rot == 90 || rot == 270)
+                        val rw = if (swapped) h else w
+                        val rh = if (swapped) w else h
+                        ratios.add(if (rw > 0f) rh / rw else 0f)
+                    } catch (t: Throwable) {
+                        // 单页读失败不影响整篇；前端拿到 0 会退回 A4
+                        ratios.add(0f)
+                    }
+                }
+
+                Result(body, merged.lines, readOutline(document), blocks, ratios)
             }
         } catch (t: Throwable) {
             /*
@@ -898,6 +1056,33 @@ object PdfText {
             }
         }
 
+        /**
+         * 把新行的包围盒并入当前段落。
+         *
+         * ⚠️ 一个段落跨多行，用户看到的框应该是**整段的外接矩形**，
+         *    而不是首行那一行的。只留首行的话，标注时会发现框只盖住了
+         *    段落的第一行 —— 完全没法用来划定范围（实测这就是
+         *    "框画出来对不上"的原因）。
+         *
+         * ⚠️ 只在**同一页**内合并。跨页的段落（极少见）取第一页的范围 ——
+         *    因为页图是按页显示的，跨页的框在单页图上没有意义。
+         */
+        fun mergeBox(base: Line?, add: Line): Line {
+            if (base == null) return add
+            if (base.page != add.page) return base
+            // 任一侧没有有效坐标（0 尺寸）就不参与合并
+            if (add.x1 <= add.x0 || add.y1 <= add.y0) return base
+            if (base.x1 <= base.x0 || base.y1 <= base.y0) {
+                return base.copy(x0 = add.x0, y0 = add.y0, x1 = add.x1, y1 = add.y1)
+            }
+            return base.copy(
+                x0 = minOf(base.x0, add.x0),
+                y0 = minOf(base.y0, add.y0),
+                x1 = maxOf(base.x1, add.x1),
+                y1 = maxOf(base.y1, add.y1)
+            )
+        }
+
         /*
           ⚠️ 判断"这一行本身看起来是不是标题"，用来**在它之前**断开段落。
 
@@ -948,7 +1133,8 @@ object PdfText {
                 continue
             }
 
-            val flat = Line(t, line.font, line.size, line.page, false)
+            val flat = Line(t, line.font, line.size, line.page, false,
+                line.x0, line.y0, line.x1, line.y1)
 
             /*
               ⚠️ **最优先：整行只有一个章节号**（`3` / `3.1`）。
@@ -977,6 +1163,7 @@ object PdfText {
             if (para.isNotEmpty() && BARE_NUMBER.matches(para.toString())) {
                 if (needsSpaceBetween(para, t)) para.append(' ')
                 para.append(t)
+                paraMeta = mergeBox(paraMeta, flat)
                 continue
             }
 
@@ -1017,7 +1204,7 @@ object PdfText {
                 */
                 if (needsSpaceBetween(para, t)) para.append(' ')
                 para.append(t)
-                if (paraMeta == null) paraMeta = flat
+                if (paraMeta == null) paraMeta = flat else paraMeta = mergeBox(paraMeta, flat)
                 continue
             }
 
@@ -1077,8 +1264,9 @@ object PdfText {
                     if (needsSpaceBetween(para, t)) para.append(' ')
                     para.append(t)
                 }
-                // 元数据保留**第一行**的（段落首行决定排版属性）
-                if (paraMeta == null) paraMeta = flat
+                // 元数据保留**第一行**的字体字号（段落首行决定排版属性），
+                // 但包围盒要**并上这一行**（整段的外接矩形）
+                if (paraMeta == null) paraMeta = flat else paraMeta = mergeBox(paraMeta, flat)
             }
         }
         flush()
@@ -1166,7 +1354,7 @@ object PdfText {
 
         // ① 公式：整块几乎没有普通词，且数学符号密度高
         if (looksLikeFormula(t)) {
-            return Block("formula", t, 0, meta.page)
+            return Block("formula", t, 0, meta.page, meta.x0, meta.y0, meta.x1, meta.y1)
         }
 
         /*
@@ -1191,7 +1379,7 @@ object PdfText {
                    HEADING_NUM_PREFIX 覆盖，那才是主导形态。
         */
         if (looksLikePageArtifact(t)) {
-            return Block("paragraph", t, 0, meta.page)
+            return Block("paragraph", t, 0, meta.page, meta.x0, meta.y0, meta.x1, meta.y1)
         }
 
         /*
@@ -1200,7 +1388,7 @@ object PdfText {
              放在标题判据**之前**。
         */
         if (looksLikeTableRow(t)) {
-            return Block("paragraph", t, 0, meta.page)
+            return Block("paragraph", t, 0, meta.page, meta.x0, meta.y0, meta.x1, meta.y1)
         }
 
         /*
@@ -1211,7 +1399,7 @@ object PdfText {
              `\d+\s+\S`）。真标题不会长到 90 字符以上。
         */
         if (t.length > TITLE_MAX_CHARS) {
-            return Block("paragraph", t, 0, meta.page)
+            return Block("paragraph", t, 0, meta.page, meta.x0, meta.y0, meta.x1, meta.y1)
         }
 
         /*
@@ -1232,7 +1420,7 @@ object PdfText {
         val allCaps = UPPER_HEAD.matches(t) && t.length >= 3
 
         if (hasNumberedTitle || allCaps) {
-            return Block("heading", t, headingLevel(t), meta.page)
+            return Block("heading", t, headingLevel(t), meta.page, meta.x0, meta.y0, meta.x1, meta.y1)
         }
 
         /*
@@ -1259,10 +1447,11 @@ object PdfText {
         */
         val styleEvidence = isHeadingByStyle(meta.size, meta.font, bodySize)
         if (styleEvidence && !looksLikeProse(t)) {
-            return Block("heading", t, headingLevelByStyle(t, meta.size, bodySize), meta.page)
+            return Block("heading", t, headingLevelByStyle(t, meta.size, bodySize), meta.page,
+                meta.x0, meta.y0, meta.x1, meta.y1)
         }
 
-        return Block("paragraph", t, 0, meta.page)
+        return Block("paragraph", t, 0, meta.page, meta.x0, meta.y0, meta.x1, meta.y1)
     }
 
     /**
