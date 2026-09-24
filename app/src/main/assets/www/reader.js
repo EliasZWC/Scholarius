@@ -76,27 +76,33 @@
     var DEFAULT_SIZE = 17;
 
     /**
-     * 字体颜色候选（v0.1.4 重做）。
+     * 字体颜色候选。
      *
-     * ⚠️ 用户反馈上一版「换了几个颜色发现没有什么改变」——
-     *    两个原因，都已修：
-     *    ① 那段 CSS **根本不存在**（被区间替换脚本连带删掉了），
-     *       所以 data-reader-color 换了值但没有任何样式响应它；
-     *    ② 上一版用语义名（default / soft / sepia），
-     *       用户看不出「默认」和「浅灰」的区别。
+     * ══ ⚠️ 为什么用「深浅档位」而不是颜色名（v0.1.4 重做）══
      *
-     *    现在改为四个**具体色**，名字即颜色，且每行右侧有色块预览。
-     *    色块用 background: currentColor + JS 设 inline color 驱动，
-     *    保证预览永远与正文实际颜色一致（不两处写死）。
+     * 上一版用 black / white 这类颜色名，结果自相矛盾：
+     * 夜间模式下选「黑色」，正文实际渲染成白色（黑底上黑字看不见），
+     * 于是用户看到「用的是白字，标签却写黑色」—— 实测反馈就是这个。
      *
-     *    色值定义见 styles.css 的 .reader[data-reader-color="..."] 段，
-     *    每种色都有亮/暗两套 —— 同一个「深灰」在白底清楚、黑底看不见。
+     * 根因是**用颜色名描述了一个随主题变化的抽象量**。
+     * 一个「看起来显眼」的色，在白底上是深色、在黑底上必须是浅色，
+     * 它根本没有固定的颜色名可用。
+     *
+     * 现在改为描述**对比度档位**：
+     *     Strong   与背景强对比（默认，最清楚）
+     *     Medium   中等对比
+     *     Soft     低对比（省眼，长时间读）
+     *     Warm     暖色调（类似护眼纸）
+     * 每档在亮/暗主题下各取一套具体色值（见 styles.css），
+     * 所以标签在任何主题下都成立，不会自相矛盾。
+     *
+     * 色块预览不在这里写死 —— 直接读正文实际颜色（见 actualContentColor）。
      */
     var COLORS = [
-        { value: 'black', preview: '#1B1B1B' },
-        { value: 'grey', preview: '#6E6E6E' },
-        { value: 'sepia', preview: '#8A6A3B' },
-        { value: 'white', preview: '#F2F2F0' }
+        { value: 'strong' },
+        { value: 'medium' },
+        { value: 'soft' },
+        { value: 'warm' }
     ];
 
     /** 字体族 */
@@ -825,16 +831,9 @@
         return COLORS.map(function (c) { return c.value; });
     }
 
-    function colorPreview(name) {
-        for (var i = 0; i < COLORS.length; i++) {
-            if (COLORS[i].value === name) return COLORS[i].preview;
-        }
-        return COLORS[0].preview;
-    }
-
     function getColor() {
-        var v = readStore(COLOR_KEY, 'black');
-        return colorValues().indexOf(v) >= 0 ? v : 'black';
+        var v = readStore(COLOR_KEY, 'strong');
+        return colorValues().indexOf(v) >= 0 ? v : 'strong';
     }
 
     function getFont() {
@@ -855,23 +854,6 @@
 
     function colorValues() {
         return COLORS.map(function (c) { return c.value; });
-    }
-
-    function colorPreview(name) {
-        for (var i = 0; i < COLORS.length; i++) {
-            if (COLORS[i].value === name) return COLORS[i].preview;
-        }
-        return COLORS[0].preview;
-    }
-
-    function getColor() {
-        var v = readStore(COLOR_KEY, 'black');
-        return colorValues().indexOf(v) >= 0 ? v : 'black';
-    }
-
-    function getFont() {
-        var v = readStore(FONT_KEY, DEFAULT_FONT);
-        return FONTS.indexOf(v) >= 0 ? v : DEFAULT_FONT;
     }
 
     /**
@@ -923,26 +905,37 @@
         var dot = document.getElementById('reader-font-color-swatch');
         if (dot) {
             /*
-              ⚠️ 色块用 inline color 驱动 background: currentColor。
-                 这样预览色与正文实际用色同源，不会两处写死不同步。
-                 但要注意暗色主题下正文用的是**另一套**值（更亮），
-                 所以这里也按当前主题取对应预览。
+              ⚠️ 直接读**正文实际算出的颜色**，不自己推算。
+                 踩过的坑：原来按「语义名 + 当前主题」硬算预览值，
+                 结果是夜间模式下选「黑色」，正文渲染成白色（CSS 里
+                 暗色下 black 对应 #ECECEA），而色块仍显示黑色 ——
+                 用户看到「用的是白字，却标着黑色」。
+                 自己维护一张映射表必然与 CSS 脱节，索性直接量。
             */
-            dot.style.color = previewForTheme(name);
+            dot.style.color = actualContentColor();
         }
     }
 
-    /** 取该颜色在**当前主题**下实际生效的值，用于色块预览 */
-    function previewForTheme(name) {
-        var isDark = global.ScholariusTheme
-            ? global.ScholariusTheme.resolve() === 'dark'
-            : false;
-        if (!isDark) return colorPreview(name);
-        // 暗色下的对应值，与 styles.css 里的规则保持一致
-        if (name === 'black') return '#ECECEA';
-        if (name === 'grey') return '#A8A8A6';
-        if (name === 'sepia') return '#C9A870';
-        return '#F2F2F0';
+    /**
+     * 取正文**当前实际生效**的颜色。
+     *
+     * ⚠️ 用 getComputedStyle 而不是查自己的表。
+     *    CSS 里每种颜色都有亮/暗两套值，且随 data-theme 与系统偏好变化，
+     *    JS 无法可靠地重算它 —— 唯一可靠的来源就是渲染结果本身。
+     *    色块与正文因此永远一致。
+     *
+     * ⚠️ 有回退：若正文元素不存在（阅读页没打开时同步设置），
+     *     退回用 CSS 变量 --on-surface（正文的默认前景色），
+     *     它是主题相关的，比硬编码一个色值靠谱。
+     */
+    function actualContentColor() {
+        if (contentEl) {
+            var c = global.getComputedStyle(contentEl).color;
+            if (c) return c;
+        }
+        var root = document.documentElement;
+        return global.getComputedStyle(root).getPropertyValue('--on-surface')
+            || 'currentColor';
     }
 
     function setRowValue(id, text) {
@@ -969,6 +962,33 @@
      *    用户明确要求：行内菜单高度有限，选项一多就排不开；
      *    而字号/颜色/字体/主题这些设置项只会越来越多，必须能滚动容纳。
      */
+    /**
+     * 实测某个颜色候选在当前主题下的**真实渲染色**。
+     *
+     * ⚠️ 为什么要"探测"而不是查表：
+     *    颜色值定义在 CSS 里、且随主题（data-theme + 系统偏好）分两套，
+     *    JS 复制一份必然与 CSS 脱节 —— v0.1.4 初版就是这个错误，
+     *    夜间模式下选「黑色」时正文渲染成白色，而预览还是黑色。
+     *
+     *     做法：临时把该值写到 .reader 上 → 让浏览器算 color → 还原。
+     *     代价只有一次同步重排，且只在打开表单时执行（不在滚动/resize 路径上）。
+     *
+     * @return CSS 颜色字符串；正文元素不存在时返回 null（调用方会跳过色块）
+     */
+    function probeColor(value) {
+        if (!root || !contentEl) return null;
+        var saved = root.getAttribute('data-reader-color');
+        root.setAttribute('data-reader-color', value);
+        var color = global.getComputedStyle(contentEl).color;
+        // 还原，避免探测污染当前显示
+        if (saved === null) {
+            root.removeAttribute('data-reader-color');
+        } else {
+            root.setAttribute('data-reader-color', saved);
+        }
+        return color || null;
+    }
+
     function mountRows() {
         var ui = global.ScholariusUI;
         if (!ui || !ui.createRowSheetPicker) return;
@@ -983,6 +1003,12 @@
           字体颜色：仍是行式 + 底部表单，但每个选项带色块预览。
           ⚠️ 用户要求「给出提示颜色让用户能看到这是什么颜色」，
              所以 label 前面要插一个 currentColor 色块。
+
+          ⚠️ 色块颜色**不能自己写一张映射表**（我 v0.1.4 初版就是那么做的，
+             结果夜间模式下选「黑色」显示黑色、正文却是白色，自相矛盾）。
+             这里用 probeColor() 实测：临时套上每个候选值，
+             让浏览器算出该主题下的真实颜色，量完立刻还原。
+             这样预览与「选中后正文会变成什么样」严格一致。
         */
         bindRow('reader-font-color-row', 'reader-font-color-text', {
             getOptions: function () {
@@ -990,7 +1016,7 @@
                     return {
                         value: c.value,
                         label: t('reader.color.' + c.value),
-                        swatch: c.preview
+                        swatch: probeColor(c.value)
                     };
                 });
             },

@@ -1190,56 +1190,75 @@ body {
      教训：用区间替换改 CSS 时，替换前必须把区间内的**所有**选择器
      列出来核对，不能只看头尾两行。已改用逐段替换。
 
-  ══ 颜色值的选择（用户要求「给出提示颜色让用户能看到这是什么颜色」）══
+  ══ 颜色档位的设计（v0.1.4 定稿）══
 
-     上一版用语义名（default / soft / sepia），用户反馈看不到区别。
-     现在改为**四个具体色**，名字就是颜色本身，且每行右侧有色块预览
-     （见 .reader-setting-swatch）。
+     ⚠️ 用**对比度档位**而不是颜色名（Strong / Medium / Soft / Warm）。
 
-     ⚠️ 每色都要给亮/暗两套值：同一个「深灰」在白底上清楚，
-        在黑底上就看不见了。这里按主题分别赋值。
+     上一版用 black / white 这类颜色名，结果自相矛盾：
+     夜间模式下选「黑色」，正文为了在暗底上可见而渲染成白色，
+     用户看到「用的是白字，标签却写黑色」。
+
+     根因是**用颜色名描述了一个随主题变化的抽象量** ——
+     一个「显眼的字色」在白底上必须是深色、在黑底上必须是浅色，
+     它没有固定的颜色名。
+
+     四档的含义（都与当前主题的背景相对而言）：
+        Strong   与背景强对比，最清楚（默认）
+        Medium   中等对比
+        Soft     低对比，省眼，适合长时间读
+        Warm     暖色调，类似护眼纸
+
+     每档给亮 / 暗两套具体值，切主题时自动跟随。
 */
-.reader[data-reader-color="black"] .reader-content {
+.reader[data-reader-color="strong"] .reader-content {
     color: #1B1B1B;
 }
 
-.reader[data-reader-color="grey"] .reader-content {
-    color: #6E6E6E;
+.reader[data-reader-color="medium"] .reader-content {
+    color: #4A4A48;
 }
 
-.reader[data-reader-color="sepia"] .reader-content {
-    color: #8A6A3B;
+.reader[data-reader-color="soft"] .reader-content {
+    color: #767674;
 }
 
-.reader[data-reader-color="white"] .reader-content {
+.reader[data-reader-color="warm"] .reader-content {
+    color: #6B5230;
+}
+
+/* 暗色下整套换成「与暗背景相对」的值 */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .reader[data-reader-color="strong"] .reader-content {
+        color: #F2F2F0;
+    }
+
+    :root:not([data-theme="light"]) .reader[data-reader-color="medium"] .reader-content {
+        color: #C8C8C6;
+    }
+
+    :root:not([data-theme="light"]) .reader[data-reader-color="soft"] .reader-content {
+        color: #949492;
+    }
+
+    :root:not([data-theme="light"]) .reader[data-reader-color="warm"] .reader-content {
+        color: #D8B98A;
+    }
+}
+
+:root[data-theme="dark"] .reader[data-reader-color="strong"] .reader-content {
     color: #F2F2F0;
 }
 
-/* 暗色下把浅色调整亮，否则在黑底上读不出来 */
-@media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .reader[data-reader-color="black"] .reader-content {
-        color: #ECECEA;
-    }
-
-    :root:not([data-theme="light"]) .reader[data-reader-color="grey"] .reader-content {
-        color: #A8A8A6;
-    }
-
-    :root:not([data-theme="light"]) .reader[data-reader-color="sepia"] .reader-content {
-        color: #C9A870;
-    }
+:root[data-theme="dark"] .reader[data-reader-color="medium"] .reader-content {
+    color: #C8C8C6;
 }
 
-:root[data-theme="dark"] .reader[data-reader-color="black"] .reader-content {
-    color: #ECECEA;
+:root[data-theme="dark"] .reader[data-reader-color="soft"] .reader-content {
+    color: #949492;
 }
 
-:root[data-theme="dark"] .reader[data-reader-color="grey"] .reader-content {
-    color: #A8A8A6;
-}
-
-:root[data-theme="dark"] .reader[data-reader-color="sepia"] .reader-content {
-    color: #C9A870;
+:root[data-theme="dark"] .reader[data-reader-color="warm"] .reader-content {
+    color: #D8B98A;
 }
 
 /*
