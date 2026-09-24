@@ -1595,79 +1595,19 @@ body {
     padding-left: 10px;
 }
 
-/* 章节区的可折叠头部 */
-.rd-region-head {
+/* 章节区的标题 */
+.rd-region-title {
     /*
-      ⚠️ 重置按钮默认样式（它是 <button>，为了键盘可达性）。
-         见 reader.js makeRegionHeader 的说明：
-         可点的必须是 <button>，不能给 <h2> 直接绑 click。
-    */
-    display: block;
-    width: 100%;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    text-align: left;
-    cursor: pointer;
-    font: inherit;
-    color: inherit;
-    /*
-      ⚠️ 折叠把手要看得出来 —— 用左侧一个小三角。
-         用伪元素而不是插一个 SVG：省一次 DOM 创建，
-         且图标在折叠/展开时要旋转，伪元素更好控制。
-    */
-    position: relative;
-}
-
-/*
-  ⚠️ 三角指示符。
-     用一个旋转 45° 的方块两条边（CSS 的 chevron 画法），
-     比用字符 "▶" 好 —— 字符在各平台字形差异大，且基线下沉。
-
-     ⚠️ 位置：**标题左侧**，不是标题上面。
-       手机上横向空间紧，左侧一个小三角不占地方。
-*/
-.rd-region-head::before {
-    content: '';
-    position: absolute;
-    left: 2px;
-    top: 0.75em;
-    width: 5px;
-    height: 5px;
-    border-right: 1.5px solid currentColor;
-    border-bottom: 1.5px solid currentColor;
-    /* 指向右下 = "展开着，可以收起" */
-    transform: rotate(45deg);
-    transition: transform 150ms ease;
-    opacity: 0.55;
-}
-
-/* 收起时三角转向右（"可以展开"） */
-.rd-region-head[aria-expanded="false"]::before {
-    transform: rotate(-45deg);
-}
-
-/*
-  ⚠️ 头部里的标题要**让出三角的位置**。
-     标题本身有 margin（见 .reader-heading），
-     这里不动它的 margin，只用 padding 给三角留位。
-*/
-.rd-region-head .rd-region-title {
-    padding-left: 16px;
-    /*
-      ⚠️ 覆盖 .reader-heading 的 `margin-top: 1.6em`。
-         在区域头部里，标题是**独立一行**，
-         顶栏与它之间不需要再拉 1.6em（那会让每个章节看起来
-         上面空了一大块，而且折叠后更明显）。
-
-         ⚠️ 但也不能完全去掉上边距：连续两个章节之间需要呼吸感。
-            取 0.9em 折中。
+      ⚠️ 上边距 0.9em：比 .reader-heading 默认的 1.6em 小。
+         区域标题是**独立一行**，1.6em 会让每个章节看起来
+         上面空了一大块。但也不能完全去掉 —— 连续两个章节之间
+         需要呼吸感。
     */
     margin: 0.9em 0 0.35em;
 }
 
-/* 整篇的第一个区域头部不要上边距（否则正文顶部多一块空白） */
-.rd-region:first-child > .rd-region-head > .rd-region-title {
+/* 整篇的第一个区域标题不要上边距（否则正文顶部多一块空白） */
+.rd-region:first-child > .rd-region-title {
     margin-top: 0;
 }
 
@@ -1737,7 +1677,7 @@ body {
      区域标题已经给了下边距，段落再顶 1em 会双倍留白。
 */
 .rd-region-body > .reader-para:first-child,
-.rd-region-body > .rd-region:first-child > .rd-region-head > .rd-region-title {
+.rd-region-body > .rd-region:first-child > .rd-region-title {
     margin-top: 0;
 }
 
@@ -2043,96 +1983,247 @@ body {
     display: none;
 }
 
+/* --------------------------------------------------------------------------
+   阅读页 · 编辑模式可以点的「文字块」（v0.1.17）
+   -------------------------------------------------------------------------- */
+
 /*
-  编辑模式下的类型选择条。
+  ⚠️ 这些块**不是用户画的**，是从 `PdfText` 算出的文字包围盒来的。
 
-  ⚠️ 位置：**贴顶栏下方**，不是贴底。
-     本项目踩过坑：诊断浮层贴 `bottom: 0` + 高 z-index，
-     把所有从底部升起的弹层（设置面板、目录）全盖住了。
-     类型条虽然不常驻，但同一条纪律：**别贴底**。
+     为什么需要它们：原始视图里的页是**位图**，位图里没有可选的文字，
+     `document.getSelection()` 在页面上永远返回空 ——
+     所以"在 PDF 上拖选文字"在物理上做不到。
+     但原生已经算出了每段文字在页面上的包围盒（v0.1.17 加的坐标管道），
+     把它叠在页图上就是一个**可点的"文字区域"**：点一下即选中。
 
-  ⚠️ 只在编辑模式下出现（由 .reader.is-annotating 控制）。
+     ⚠️ 注意这**仍然符合**用户「框只能是方的，但区域可以根据文本来」——
+        这里的框不是用户拖的方块，是从文字自身范围算出来的，
+        所以它贴合文字本身。
 */
-.anno-bar {
+
+.anno-block {
     position: absolute;
-    z-index: 12;
+    z-index: 2;
+    box-sizing: border-box;
     /*
-      ⚠️ 顶栏高度是 `calc(64px + var(--safe-top))`（见 .reader-top），
-         这里必须用同一个算式，否则类型条会与顶栏错开或重叠。
-         项目里没有 --reader-top-h 这种变量 —— 不要凭空引入，
-         那样两边就会各自演化。
+      ⚠️ 默认**几乎透明** —— 一页上有几十个文字块，
+         全都描边会让页面看起来像网格纸，读不出原文。
+         只在指针悬停/按下时给出可见的反馈。
     */
-    top: calc(64px + var(--safe-top));
-    left: 0;
-    right: 0;
-    display: none;
-    /*
-      ⚠️ 横向可滚（类型多，窄屏放不下），
-         但不显示滚动条 —— 手机上滚动条很碍眼。
-    */
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    gap: 6px;
-    padding: 8px calc(12px + var(--safe-right)) 8px calc(12px + var(--safe-left));
-    background: var(--nav-bg);
-    border-bottom: 1px solid var(--outline);
-    white-space: nowrap;
-}
-
-.anno-bar::-webkit-scrollbar {
-    display: none;
-}
-
-.reader.is-annotating .anno-bar {
-    display: flex;
-}
-
-/* 类型条里的一个类型按钮 */
-.anno-chip {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 5px 10px;
-    border: 1px solid var(--outline);
-    border-radius: 999px;
     background: transparent;
-    color: var(--on-surface);
-    font-size: 12px;
-    font-weight: 600;
+    border: 1px solid transparent;
+    border-radius: 2px;
     cursor: pointer;
 }
 
 /*
-  ⚠️ 选中态用**深色实心底 + 反色文字**，与本项目的
-     --fab-bg / --fab-fg（主按钮）同一种反色思路。
-
-     ⚠️ 这里**没有** --primary / --primary-weak 这两个变量
-        （本项目不设主色，主按钮一律用 nav-active 反色），
-        所以不要写 var(--primary) —— 那会让整条规则静默失效。
+  ⚠️ 悬停/按下才显出边框。
+     WebView 里没有真正的 hover，所以主要靠 `:active`
+     （手指按下的那一下）。`@media (hover: hover)` 只为
+     桌面预览/外接鼠标准备。
 */
-.anno-chip[aria-pressed="true"] {
-    border-color: var(--nav-active);
-    background: var(--nav-active);
-    color: var(--bg);
+.anno-block:active {
+    background: rgba(33, 150, 243, 0.18);
+    border-color: #2196F3;
 }
 
-/* 类型按钮里的图标 */
-.anno-chip svg {
-    width: 15px;
-    height: 15px;
-    fill: currentColor;
+@media (hover: hover) {
+    .anno-block:hover {
+        background: rgba(33, 150, 243, 0.12);
+        border-color: rgba(33, 150, 243, 0.7);
+    }
+}
+
+/*
+  ⚠️ 已标过的块要**看得出已经标过** ——
+     否则用户不知道哪些改过、又要重新点一遍。
+     用左侧一条色条 + 淡底，比整块描边轻。
+*/
+.anno-block:not(.anno-block-body) {
+    background: rgba(33, 150, 243, 0.1);
+    border-left: 3px solid #2196F3;
+}
+
+/* 各文本类型用不同颜色（与类型弹层里的图标语义一致） */
+.anno-block-title,
+.anno-block-heading {
+    border-left-color: #7B1FA2;
+    background: rgba(123, 31, 162, 0.1);
+}
+
+.anno-block-author {
+    border-left-color: #00897B;
+    background: rgba(0, 137, 123, 0.1);
+}
+
+.anno-block-abstract,
+.anno-block-keyword {
+    border-left-color: #F57C00;
+    background: rgba(245, 124, 0, 0.1);
+}
+
+.anno-block-footnote,
+.anno-block-reference {
+    border-left-color: #757575;
+    background: rgba(117, 117, 117, 0.1);
+}
+
+/*
+  ⚠️ 块上的类型标签**只在已标过时显示** ——
+     正文块（body）是绝大多数，每个都挂个"正文"标签纯属噪声。
+*/
+.anno-block-tag {
+    position: absolute;
+    top: 0;
+    left: 0;
+    padding: 1px 5px;
+    font-size: 10px;
+    line-height: 1.5;
+    font-weight: 600;
+    color: #FFFFFF;
+    background: rgba(0, 0, 0, 0.62);
+    border-bottom-right-radius: 3px;
+    white-space: nowrap;
+    /* 标签是视觉标记，不接手势（否则会挡住块本身的点击） */
+    pointer-events: none;
+}
+
+.anno-block.anno-block-body .anno-block-tag {
+    display: none;
+}
+
+/* --------------------------------------------------------------------------
+   阅读页 · 编辑模式的底部选项栏
+   -------------------------------------------------------------------------- */
+
+/*
+  ⚠️⚠️ 位置：**底部选项栏**，不是顶栏下方（用户 2026-09-24 修正）。
+     用户原话：「位置不对，应该在下面的选项栏：因为下面的选项栏
+     的都是为阅读视图准备的，切换到原始视图就不需要了，
+     所以下面的选项栏直接换成编辑的这四种选项就可以了」
+
+  ⚠️ 所以这里**没有独立的定位** —— 它是 .reader-bottom 的子元素，
+     靠父级的 flex 布局排在原来的位置。不自己写 absolute/left/right，
+     那样会与父级的布局打架。
+*/
+.reader-editbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    gap: 6px;
+    width: 100%;
+}
+
+/*
+  ⚠️⚠️ **必须显式给 [hidden] 写 display: none**。
+
+     踩过的坑（2026-09-24 实测）：`hidden` 属性只对应 UA 样式表的
+     `display: none`，而**任何作者样式里的 display 都会覆盖它**。
+     `.reader-action` 有 `display: flex`，于是底栏里
+     「目录 / 设置」虽然 `hidden="true"`，却**依然显示** ——
+     结果是编辑模式下底栏出现**六个**选项（目录、设置 + 四类），
+     挤成两排。
+
+     ⚠️ 这个 bug 的隐蔽之处：`element.hidden` 读到的是 `true`，
+     看起来"已经隐藏了"；只有 `getComputedStyle().display`
+     或看截图才发现还在。**判断"藏没藏"要看 display，不是看属性。**
+
+     ⚠️ 不要靠 JS 去设 `style.display = 'none'` 来绕 ——
+        那会把"该元素默认怎么显示"这个信息从 CSS 搬到 JS 里，
+        以后改样式要两处找。
+*/
+.reader-bottom [hidden] {
+    display: none !important;
+}
+
+/*
+  ⚠️ 编辑选项按钮 = `.reader-action` + 本类。
+     所以**不要在这里重复写 flex-direction / gap / min-height** ——
+     那些全由 .reader-action 给，两边重复写会各自演化。
+     这里只写"与目录/设置不同的地方"。
+*/
+.reader-edit-tab {
+    /*
+      ⚠️ 四个选项比两个宽，去掉 .reader-action 的 max-width: 96px ——
+         不然四个挤在中间、两边留一大片空白。
+    */
+    max-width: none;
+}
+
+/*
+  ⚠️⚠️ 选中态：**图标填充 + 强调色**，与底部导航栏（.nav-item）同一套。
+
+     用户明确要求：「就和导航栏一样，切换到哪个编辑选项，
+     图标就填充然后强调就可以了」。
+
+     ⚠️ 所以**不要**用背景块 / 边框 / 圆角胶囊那种"chip"式选中效果 ——
+        那与导航栏不是一套视觉语言。
+
+     ⚠️ 「图标填充」怎么实现：这些图标是 Material **Symbols**，
+        同一段 path 在 FILL=1 时才是填充形态。但我们的 icon()
+        只输出固定 path，不切换字体轴。
+        所以这里用 `fill: currentColor` 的实心效果近似 ——
+        实际上靠的是**颜色强调 + 字重**：
+
+        · 未选中 → --nav-inactive（与导航栏未选中同色）
+        · 选中   → --nav-active  （与导航栏选中同色）+ 加粗
+
+        这与 .nav-item 的表达力一致（导航栏也只靠颜色区分）。
+*/
+.reader-edit-tab[aria-pressed="true"] {
+    color: var(--nav-active);
+}
+
+.reader-edit-tab[aria-pressed="true"] .reader-action-label {
+    font-weight: 700;
+}
+
+/*
+  ⚠️ 编辑选项按钮**不要点击特效**（背景变化）。
+     .reader-action:active 会给背景色，那是"目录/设置"需要的
+     （它们是展开式按钮）。而编辑选项是**状态开关**，
+     状态由图标亮度表达，再点一次就切走了 ——
+     加背景反而像"这个按钮被按住了"。
+*/
+.reader-edit-tab:active {
+    background: transparent;
+}
+
+/*
+  ⚠️ 编辑按钮（顶栏那个铅笔）**不要点击特效与阴影**。
+
+     用户 2026-09-24 明确：「edit 也不应该有点击特效和阴影，
+     而是通过切换图标来显示是否处于编辑模式」。
+
+     这与 .reader-view-toggle 的处理**完全同源** ——
+     两者都是"一个状态的两个面"，都靠切图标表达。
+     所以这里照抄那条规则（见 .reader-view-toggle 的注释）。
+*/
+.reader-annotate-btn:active,
+.reader-annotate-btn[aria-pressed="true"] {
+    background: transparent;
+}
+
+/*
+  ⚠️ 图标尺寸与 .reader-top 里其他按钮一致（24x24）。
+     .icon-button 已经给了，这里只兜住"两个 span 叠加"这个结构。
+*/
+.reader-annotate-btn .reader-annotate-icon {
     display: block;
+    line-height: 0;
 }
 
-/* 编辑模式下的提示条（告诉用户"点框可删"） */
+/* 编辑模式下的提示条（告诉用户当前该做什么） */
 .anno-tip {
     position: absolute;
     z-index: 12;
     left: 50%;
     transform: translateX(-50%);
-    bottom: calc(12px + var(--safe-bottom));
+    /*
+      ⚠️ 贴在**底部选项栏之上**（选项栏高度 + 一点空隙）。
+         写死 12px 会让提示叠在选项栏上（实测）。
+    */
+    bottom: calc(72px + var(--safe-bottom));
     padding: 6px 12px;
     border-radius: 999px;
     background: rgba(0, 0, 0, 0.7);
@@ -2150,6 +2241,79 @@ body {
 }
 
 .reader.is-annotating .anno-tip {
+    display: block;
+}
+
+/* --------------------------------------------------------------------------
+   阅读页 · 文字类型选择弹层（八类）
+   -------------------------------------------------------------------------- */
+
+.anno-typebackdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 99;
+    background: rgba(0, 0, 0, 0.35);
+}
+
+/*
+  ⚠️ z-index 100 —— 与全站弹层同一档（见项目里 z-index 的集中说明）。
+     这里的父级是 .reader（8），所以实际叠在阅读页之上、
+     但在登录页(50)之外 —— 阅读页打开时登录页不可能同时开着。
+*/
+.anno-typesheet {
+    position: absolute;
+    z-index: 100;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 16px calc(16px + var(--safe-right))
+        calc(16px + var(--safe-bottom)) calc(16px + var(--safe-left));
+    background: var(--surface);
+    border-top-left-radius: 16px;
+    border-top-right-radius: 16px;
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.18);
+    max-height: 70%;
+    overflow-y: auto;
+}
+
+.anno-typesheet-title {
+    margin: 0 0 12px;
+}
+
+/* 八类排成网格（窄屏两列，宽屏更多） */
+.anno-typegrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.anno-typeopt {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-height: 68px;
+    padding: 8px 4px;
+    border: 1px solid var(--outline);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--on-surface);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.anno-typeopt:active {
+    background: var(--surface-raised);
+}
+
+.anno-typeopt svg {
+    width: 22px;
+    height: 22px;
+    fill: currentColor;
     display: block;
 }
 

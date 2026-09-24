@@ -954,6 +954,28 @@
         annotateEdit: 'M200-200h57l391-391-57-57-391 391v57Zm-80 80v-170l528-527q12-11 26.5-17t30.5-6q16 0 31 6t26 18l55 56q12 11 17.5 26t5.5 30q0 16-5.5 30.5T817-647L290-120H120Zm640-584-56-56 56 56Zm-141 85-28-29 57 57-29-28Z',
 
         /*
+          Material Symbols: edit_off（铅笔 + 一道斜杠）—— 960 体系。
+
+          ⚠️ 与 `annotateEdit` 是**一对**，用途与
+             visibility / visibility_off 完全同构：
+
+                edit_off  = 当前**不在**编辑模式（点它进入）
+                edit      = 当前**在**编辑模式（点它退出）
+
+             ⚠️ 用户 2026-09-24 明确：「默认应该处于 edit off 的状态，
+                点击进入编辑模式，图标变成 edit」。
+                所以**默认必须是 edit_off**，不要弄反。
+
+             ⚠️ 与 visibility 那对同理：靠**切图标**表达状态，
+                不要给按钮加点击特效 / 阴影 / 选中底色。
+                见 styles.css 里 `.reader-annotate-btn` 对
+                :active 与 [aria-pressed] 的覆盖。
+
+          ⚠️ 逐字取自官方，**不要手写**：tools/fetch_icon.py edit_off
+        */
+        annotateEditOff: 'm622-453-56-56 82-82-57-57-82 82-56-56 195-195q12-12 26.5-17.5T705-840q16 0 31 6t26 18l55 56q12 11 17.5 26t5.5 30q0 16-5.5 30.5T817-647L622-453ZM200-200h57l195-195-28-29-29-28-195 195v57ZM792-56 509-338 290-120H120v-169l219-219L56-792l57-57 736 736-57 57Zm-32-648-56-56 56 56Zm-169 56 57 57-57-57ZM424-424l-29-28 57 57-28-29Z',
+
+        /*
           ══ 标注类型图标（v0.1.17）══
 
           用在标注模式下的类型选择条上，一个类型一个图标。
@@ -969,9 +991,21 @@
              语义最近且 13px 下轮廓清楚。
         */
         // formula：`functions`（Σ 求和号，数学）
-        annoFormula: 'M240-160v-80l260-240-260-240v-80h480v120H431l215 200-215 200h289v120H240Z',
-        // table：`table_chart`（表格）
+        annoFormula: 'M240-160v-80l260-240-260-240v-80h480v120H431l215 200-215 200h289v120H240Z',        // table：`table_chart`（表格）
         annoTable: 'M760-120H200q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120ZM200-640h560v-120H200v120Zm100 80H200v360h100v-360Zm360 0v360h100v-360H660Zm-80 0H380v360h200v-360Z',
+        /*
+          ⚠️ 编辑模式的四类之一：「文本」。
+
+             前三个（公式/表格/图片）都对应**手画矩形**；
+             文本不同 —— 矩形框不住段落（标题居中、摘要两端对齐、
+             正文有缩进），所以选「文本」时的操作是
+             **选中文字 → 指定类型**，不是拖框。
+
+             图标用 `text_fields`（两个大小 T），比 `subject`
+             （四条等长横线，像列表）更明确是「文字」。
+             ⚠️ 逐字取自官方：tools/fetch_icon.py text_fields
+        */
+        annoText: 'M280-160v-520H80v-120h520v120H400v520H280Zm360 0v-320H520v-120h360v120H760v320H640Z',
         // figure：`image`（相框 + 山）
         annoFigure: 'M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h560v-560H200v560Zm40-80h480L570-480 450-320l-90-120-120 160Zm-40 80v-560 560Z',
         // title：`title`（一个带衬线的 T，正是标题的意象）
@@ -1041,7 +1075,9 @@
         visibilityOff: SYMBOLS_VIEWBOX,
         // 阅读页的「标注」入口，同样是 960 体系（见 ICON_PATHS 里的说明）
         annotateEdit: SYMBOLS_VIEWBOX,
-        // 标注类型图标——十一条全部 960 体系，见 ICON_PATHS 里的分组说明
+        annotateEditOff: SYMBOLS_VIEWBOX,
+        // 标注类型图标——十二条全部 960 体系，见 ICON_PATHS 里的分组说明
+        annoText: SYMBOLS_VIEWBOX,
         annoFormula: SYMBOLS_VIEWBOX,
         annoTable: SYMBOLS_VIEWBOX,
         annoFigure: SYMBOLS_VIEWBOX,

@@ -216,7 +216,12 @@
             'reader.annotateDone': 'Finish',
             'reader.annotateTip': 'Drag on the page to mark a region; tap a box to remove it.',
             'reader.untitledSection': 'Section',
+            'reader.annotateTextTip': 'Tap a text region to reclassify it.',
+            'reader.pickTextType': 'Reclassify As',
+            'reader.annotateNoLine': 'This Region Has No Line Data.',
+
             // 标注类型（全是短语 → 首字母大写）
+            'reader.typeText': 'Text',
             'reader.typeFormula': 'Formula',
             'reader.typeTable': 'Table',
             'reader.typeFigure': 'Figure',
@@ -508,8 +513,12 @@
             'reader.annotateDone': '完成',
             'reader.annotateTip': '在页面上拖拽即可框选；点框可删除。',
             'reader.untitledSection': '本节',
+            'reader.annotateTextTip': '点一下文字区域即可重新归类。',
+            'reader.pickTextType': '改为哪一类',
+            'reader.annotateNoLine': '该区域没有行号数据，无法标注。',
 
             // 标注类型
+            'reader.typeText': '文本',
             'reader.typeFormula': '公式',
             'reader.typeTable': '表格',
             'reader.typeFigure': '图片',

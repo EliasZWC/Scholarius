@@ -193,8 +193,8 @@
      *    且关闭阅读页时也要写一次（见 close()）。
      */
     var annotateDirty = false;
-    /** 编辑模式下当前选中的类型（'formula' / 'table' / 'figure'） */
-    var annotateType = 'formula';
+    /** 编辑模式当前选中的**操作**（'text' | 'formula' | 'table' | 'figure'） */
+    var annotateMode = 'text';
 
     /**
      * 目录条目：[{ level, title, line }]
@@ -772,23 +772,37 @@
     // --- 用户标注（v0.1.17）-------------------------------------------------
 
     /**
-     * 合法的**矩形**标注类型。
+     * 编辑模式下的四个选项（用户 2026-09-24 定）。
      *
-     * ⚠️ 与 `AnnotationStore.kt` 里的 `REGION_*` **一一对应**，
-     *    改一处必须改两处。原生在读盘时会**再校验一遍**并丢掉
+     * ══ ⚠️ 顺序与分组很重要 ══
+     *
+     * 前三个是**矩形**标注（手画框），最后一个「文本」是
+     * **选中文字**，两者的操作方式完全不同：
+     *
+     *   text    → 选中文字 → 指定为哪类文本（标题/摘要/脚注…）
+     *   formula → 拖矩形框
+     *   table   → 拖矩形框
+     *   figure  → 拖矩形框
+     *
+     * ⚠️ 为什么「文本」要单独放第一个而不是混在中间：
+     *    它是默认选项 —— 用户打开编辑模式时最常做的是
+     *    "这段被认错了，改一下"，而不是频繁画框。
+     *    放在最左边（拇指最容易够到的位置）也符合这个默认。
+     */
+    var EDIT_MODES = ['text', 'formula', 'table', 'figure'];
+
+    /**
+     * 走**矩形**路径的三个类型。
+     *
+     * ⚠️ 与 `AnnotationStore.kt` 的 `REGION_*` 一一对应，
+     *    改一处必须改两处。原生读盘时会**再校验一遍**并丢掉
      *    未知类型，所以这里漏改的症状是"框画了但重进就没了"。
      *
-     * ⚠️ 不含任何文本类型 —— 文本用 [TEXT_TYPES]，机制完全不同
-     *    （见 reader.js 顶部 state 区的「两套机制」说明）。
+     * ⚠️ 不含 `text` —— 文本不用矩形，见 EDIT_MODES 的说明。
      */
     var REGION_TYPES = ['formula', 'table', 'figure'];
 
-    /**
-     * 合法的**文本**标注类型。
-     *
-     * ⚠️ 与 `AnnotationStore.kt` 的 `TEXT_*` 一一对应。
-     *    这里是用户直接选的八类，`heading` 的层级由 level 字段表达。
-     */
+    /** 「文本」模式下可选的文本类型（用户选定八类） */
     var TEXT_TYPES = [
         'title', 'author', 'abstract', 'body',
         'heading', 'footnote', 'reference', 'keyword'
@@ -796,6 +810,7 @@
 
     /** 各类型对应的 i18n key（菜单文案） */
     var TYPE_LABEL_KEY = {
+        text: 'reader.typeText',
         formula: 'reader.typeFormula',
         table: 'reader.typeTable',
         figure: 'reader.typeFigure',
@@ -815,9 +830,10 @@
      * ⚠️ 全部对应 `components.js` 的 `ICON_PATHS` 里 `anno*` 那一组
      *    （960 体系，已在 ICON_VIEWBOX 登记）。名字写错的话
      *    `icon()` 返回空串 —— **界面不报错，只是没图标**，
-     *    所以改这里之后要看一眼类型条。
+     *    所以改这里之后要看一眼选项栏。
      */
     var TYPE_ICON = {
+        text: 'annoText',
         formula: 'annoFormula',
         table: 'annoTable',
         figure: 'annoFigure',
@@ -831,7 +847,20 @@
         keyword: 'annoKeyword'
     };
 
-    /** 顶栏「标注」按钮：绑事件 + 填图标 */
+    /**
+     * 顶栏「编辑」按钮：绑事件 + 预置两只图标。
+     *
+     * ══ ⚠️ 靠**切图标**表达状态，不做点击特效（用户 2026-09-24）══
+     *
+     * 用户明确：「edit 也不应该有点击特效和阴影，而是通过切换图标来
+     * 显示是否处于编辑模式」，并给了两个图标（edit / edit_off）。
+     *
+     * 这与「阅读/原始」视图切换按钮**完全同构**，
+     * 所以做法也一样（照抄 mountViewToggle）：
+     *   · 两只图标**一次性预置**在按钮里，切换时只切 `hidden`；
+     *   · **不重建 innerHTML** —— 重建会让图标闪一下
+     *     （浏览器要重新解析 SVG）。
+     */
     function mountAnnotate() {
         if (!annotateBtn) {
             return;
@@ -839,7 +868,11 @@
 
         var ui = global.ScholariusUI;
         if (ui && ui.icon) {
-            annotateBtn.innerHTML = ui.icon('annotateEdit');
+            annotateBtn.innerHTML =
+                '<span class="reader-annotate-icon" data-anno-icon="idle">' +
+                ui.icon('annotateEditOff') + '</span>' +
+                '<span class="reader-annotate-icon" data-anno-icon="editing">' +
+                ui.icon('annotateEdit') + '</span>';
         }
 
         annotateBtn.addEventListener('click', function () {
@@ -849,11 +882,32 @@
         syncAnnotate();
     }
 
-    /** 刷新标注按钮的图标态与标签 */
+    /**
+     * 刷新编辑按钮的图标、状态、无障碍标签。
+     *
+     * ══ ⚠️ 图标与标签都描述**动作**，不是"当前状态" ══
+     *
+     * 与 syncViewToggle 同一条纪律：两者必须同向
+     * （图标说"点了会去哪"，标签也说"点了会去哪"）。
+     *
+     * 图标（用户选定，默认 edit_off）：
+     *   未编辑 → edit_off（点它进入编辑模式）
+     *   编辑中 → edit    （点它退出）
+     */
     function syncAnnotate() {
         if (!annotateBtn) {
             return;
         }
+
+        /*
+          ⚠️ 两图标预置在按钮里，靠 hidden 切显示。
+             不重建 innerHTML —— 那会让图标闪一下。
+        */
+        var iconIdle = annotateBtn.querySelector('[data-anno-icon="idle"]');
+        var iconEditing = annotateBtn.querySelector('[data-anno-icon="editing"]');
+        if (iconIdle) iconIdle.hidden = annotating;
+        if (iconEditing) iconEditing.hidden = !annotating;
+
         annotateBtn.setAttribute('aria-pressed', annotating ? 'true' : 'false');
         annotateBtn.setAttribute(
             'aria-label',
@@ -978,15 +1032,27 @@
         }
 
         annotating = next;
-        syncAnnotate();
 
-        if (root) {
-            root.classList.toggle('is-annotating', annotating);
-        }
-
+        /*
+          ⚠️ 进/出编辑模式时底部选项栏要**换内容**
+             （用户要求：下面的选项栏直接换成这四个编辑选项）。
+             见 syncBottomBar。
+        */
         if (annotating) {
-            ensureAnnoBar();
-            syncAnnoChips();
+            ensureEditBar();
+        }
+        syncAnnotate();
+        syncBottomBar();
+        syncEditBar();
+
+        /*
+          ⚠️ 进编辑模式时**强制回到「文本」模式**。
+             上次退出时可能停在「图片」，直接留着会让用户
+             以为一进来就是画框模式 —— 而默认意图通常是改文字归类。
+        */
+        if (annotating) {
+            annotateMode = 'text';
+            syncEditBar();
             mountAnnotateLayer();
         } else {
             unmountAnnotateLayer();
@@ -997,95 +1063,182 @@
 
     /** 编辑模式下的浮层元素（每页一个），便于统一清理 */
     var annotateLayers = [];
-    /** 编辑模式下的类型选择条（懒建，只建一次） */
-    var annoBarEl = null;
-    /** 编辑模式下的提示条 */
+    /** 编辑模式的底部选项栏（懒建，只建一次） */
+    var editBarEl = null;
+    /** 编辑模式下的操作提示 */
     var annoTipEl = null;
+    /** 文本类型选择弹层的元素（打开时非空），便于统一清理 */
+    var textPickerEls = [];
 
     /**
-     * 建类型选择条 + 提示条（**懒建，只建一次**）。
+     * 建编辑选项栏 + 提示条（**懒建，只建一次**）。
      *
-     * ⚠️ 条上的按钮状态（aria-pressed）在 [syncAnnoChips] 里统一刷 ——
-     *    不要把"哪个被选中"写在建的时候，那样切类型要重建整条。
+     * ══ ⚠️ 位置：**底部选项栏**，不是顶栏下方（用户 2026-09-24 修正）══
+     *
+     * 用户原话：
+     *   「位置不对，应该在下面的选项栏：因为下面的选项栏的都是为
+     *     阅读视图准备的，切换到原始视图就不需要了，所以下面的选项栏
+     *     直接换成编辑的这四种选项就可以了」
+     *
+     * 所以**不新建一条栏** —— 复用 `.reader-bottom` 那个位置：
+     * 进编辑模式时把原来的「目录 / 设置」藏掉、把编辑选项放上去；
+     * 退出时换回来。见 [syncBottomBar]。
+     *
+     * ⚠️ 理由（用户给的）很实在：底部那条栏是**视图专属**的。
+     *    「目录 / 设置」对原始视图没有意义（原始视图里没有重排正文，
+     *    也就没有目录可跳、没有字号可调）。与其让它们留在那里点了没反应，
+     *    不如整条换成当前视图真正能做的事。
      */
-    function ensureAnnoBar() {
-        if (annoBarEl || !root) return;
+    function ensureEditBar() {
+        if (editBarEl || !root) return;
 
-        annoBarEl = document.createElement('div');
-        annoBarEl.className = 'anno-bar';
-        annoBarEl.setAttribute('role', 'toolbar');
+        editBarEl = document.createElement('div');
+        editBarEl.className = 'reader-editbar';
+        editBarEl.setAttribute('role', 'toolbar');
 
-        for (var i = 0; i < REGION_TYPES.length; i++) {
-            annoBarEl.appendChild(makeAnnoChip(REGION_TYPES[i]));
+        for (var i = 0; i < EDIT_MODES.length; i++) {
+            editBarEl.appendChild(makeEditTab(EDIT_MODES[i]));
         }
 
         annoTipEl = document.createElement('div');
         annoTipEl.className = 'anno-tip';
 
         /*
-          ⚠️ 挂在 root 上（阅读页那一层），不是挂在 contentEl 里 ——
-             contentEl 在切视图时会被整个清空（contentEl.textContent = ''），
-             类型条跟着被删的话，每次切到 PDF 都要重建一次。
+          ⚠️ 挂在底部选项栏（#reader-bottom）**内部**，不是挂 root。
+             挂 root 的话它不会跟着选项栏的高度/安全区走，
+             实测会与选项栏重叠。
         */
-        root.appendChild(annoBarEl);
+        if (bottomEl) {
+            bottomEl.appendChild(editBarEl);
+        } else {
+            root.appendChild(editBarEl);
+        }
         root.appendChild(annoTipEl);
 
-        syncAnnoChips();
+        syncEditBar();
     }
 
-    /** 造类型条上的一个类型按钮 */
-    function makeAnnoChip(type) {
-        var chip = document.createElement('button');
-        chip.className = 'anno-chip';
-        chip.type = 'button';
-        chip.setAttribute('data-anno-type', type);
-        chip.setAttribute('aria-pressed', 'false');
+    /**
+     * 造一个编辑选项按钮。
+     *
+     * ⚠️ 结构与 `.reader-action` **完全一致**（图标在上、文字在下），
+     *    这样它与「目录 / 设置」在视觉上是同一种元素 ——
+     *    用户看到的是"底栏换了内容"，而不是"冒出一条新栏"。
+     */
+    function makeEditTab(mode) {
+        var tab = document.createElement('button');
+        tab.className = 'reader-action reader-edit-tab';
+        tab.type = 'button';
+        tab.setAttribute('data-edit-mode', mode);
+        tab.setAttribute('aria-pressed', 'false');
 
         var ui = global.ScholariusUI;
-        var iconName = TYPE_ICON[type];
+        var iconName = TYPE_ICON[mode];
         if (ui && ui.icon && iconName) {
-            chip.innerHTML = ui.icon(iconName);
+            tab.innerHTML = ui.icon(iconName);
         }
 
         var label = document.createElement('span');
-        label.className = 'anno-chip-label';
-        label.textContent = t(TYPE_LABEL_KEY[type] || type);
-        chip.appendChild(label);
+        label.className = 'reader-action-label';
+        label.textContent = t(TYPE_LABEL_KEY[mode] || mode);
+        tab.appendChild(label);
 
-        chip.addEventListener('click', function () {
-            annotateType = type;
-            syncAnnoChips();
+        tab.addEventListener('click', function () {
+            if (annotateMode === mode) return;
+            annotateMode = mode;
+            /*
+              ⚠️ 切到/切离「文本」模式时要重建浮层：
+                 矩形模式下浮层接手势（画框），
+                 文本模式下浮层必须**不接手势**（要让文字能被选中）。
+                 见 mountAnnotateLayer 的说明。
+            */
+            syncEditBar();
+            if (annotating) {
+                mountAnnotateLayer();
+            }
         });
 
-        return chip;
+        return tab;
     }
 
-    /** 刷新类型条：选中态 + 文案（语言可能已切换） */
-    function syncAnnoChips() {
-        if (!annoBarEl) return;
+    /**
+     * 刷新编辑选项栏：选中态 + 文案。
+     *
+     * ⚠️ 选中态用 `aria-pressed` + 图标**填充**来表达，
+     *    与底部导航栏（.nav-item）**同一套**（用户明确要求
+     *    「就和导航栏一样，切换到哪个编辑选项，图标就填充然后强调就可以了」）。
+     *
+     * ⚠️ 所以这里**不能**用背景块/边框那种"chip"式选中效果 ——
+     *    那与导航栏不是一套语言。
+     */
+    function syncEditBar() {
+        if (!editBarEl) return;
 
-        var chips = annoBarEl.querySelectorAll('.anno-chip');
-        for (var i = 0; i < chips.length; i++) {
-            var type = chips[i].getAttribute('data-anno-type');
-            chips[i].setAttribute(
+        var tabs = editBarEl.querySelectorAll('.reader-edit-tab');
+        for (var i = 0; i < tabs.length; i++) {
+            var mode = tabs[i].getAttribute('data-edit-mode');
+            tabs[i].setAttribute(
                 'aria-pressed',
-                type === annotateType ? 'true' : 'false'
+                mode === annotateMode ? 'true' : 'false'
             );
-            var label = chips[i].querySelector('.anno-chip-label');
+            var label = tabs[i].querySelector('.reader-action-label');
             if (label) {
-                label.textContent = t(TYPE_LABEL_KEY[type] || type);
+                label.textContent = t(TYPE_LABEL_KEY[mode] || mode);
             }
         }
 
         if (annoTipEl) {
-            annoTipEl.textContent = t('reader.annotateTip');
+            /*
+              ⚠️ 提示语随模式变 —— 两种模式的操作完全不同，
+                 提示必须说清当前该做什么。
+                 否则用户在「文本」模式下看到"拖拽框选"的提示会照着做，
+                 结果框出一堆没用的矩形。
+            */
+            annoTipEl.textContent = (annotateMode === 'text')
+                ? t('reader.annotateTextTip')
+                : t('reader.annotateTip');
         }
     }
 
     /**
-     * 在每一页图上叠一层「可画框」的浮层。
+     * 切换底部选项栏的内容：阅读视图的（目录/设置）↔ 编辑模式的（四类）。
      *
-     * ══ ⚠️ 为什么不直接给 <img> 绑鼠标事件 ══
+     * ⚠️ 用 CSS 类 + `hidden` 而不是删/建 DOM ——
+     *    「目录 / 设置」是常驻元素，删了再建会丢事件绑定。
+     */
+    function syncBottomBar() {
+        if (!bottomEl) return;
+
+        var normal = bottomEl.querySelectorAll('.reader-action:not(.reader-edit-tab)');
+        for (var i = 0; i < normal.length; i++) {
+            normal[i].hidden = annotating;
+        }
+
+        var editbar = bottomEl.querySelector('.reader-editbar');
+        if (editbar) {
+            editbar.hidden = !annotating;
+        }
+
+        if (root) {
+            root.classList.toggle('is-annotating', annotating);
+        }
+    }
+
+    /**
+     * 在每一页图上叠一层浮层。
+     *
+     * ══ ⚠️ 两种模式，浮层职责完全不同 ══
+     *
+     * **矩形模式**（公式/表格/图片）：
+     *   浮层接手势（画框）。浮层必须与图片实际显示区域**严格重合**，
+     *   因为坐标是相对图片归一化的。
+     *
+     * **文本模式**：
+     *   ⚠️ 浮层**不能接手势** —— 否则用户没法选中文字。
+     *   但浮层仍然要存在：它负责**承载已有的框**（让用户看得见
+     *   之前画过什么），只是 `pointer-events: none`。
+     *
+     * ══ ⚠️ 为什么矩形模式下不直接给 <img> 绑事件 ══
      *
      * <img> 的 `object-fit: contain` 会让图片**不铺满**容器
      * （长宽比不符时上下或左右留白）。事件坐标是相对容器的，
@@ -1100,6 +1253,8 @@
     function mountAnnotateLayer() {
         unmountAnnotateLayer();
 
+        var isTextMode = (annotateMode === 'text');
+
         for (var i = 0; i < pdfPageEls.length; i++) {
             var slot = pdfPageEls[i];
             var page = parseInt(slot.getAttribute('data-page'), 10) || 0;
@@ -1109,16 +1264,271 @@
             layer.className = 'anno-layer';
             layer.setAttribute('data-page', String(page));
 
-            // 已有的框先画出来（用户要继续改，得看得见现状）
+            // 已有的矩形框先画出来（用户要继续改，得看得见现状）
             drawRegionsOn(layer, page);
 
             slot.appendChild(layer);
             annotateLayers.push(layer);
             positionAnnotateLayer(layer);
 
-            bindLayerDrawing(layer, page);
+            if (isTextMode) {
+                mountTextBlocksOn(layer, page);
+            } else {
+                bindLayerDrawing(layer, page);
+            }
         }
     }
+
+    /**
+     * 文本模式：把该页**自动识别出的文本块**画成可点区域。
+     *
+     * ══ ⚠️ 为什么必须这样做（一个绕不过去的事实）══
+     *
+     * 原始视图里的页是**位图**（原生把 PDF 渲染成 JPEG 再给网页的，
+     * 见 PdfPages）。位图里**没有可选的文字** ——
+     * `document.getSelection()` 在页面上永远返回空。
+     *
+     * 所以"在原始视图里选中文字来指定类型"在物理上做不到。
+     * 但用户的要求是可实现的，只要换个手法：
+     *
+     *   我们的 `PdfText` **已经算出了每个块在页面上的包围盒**
+     *   （`Block.x0/y0/x1/y1`，归一化 0~1，见 v0.1.17 加的坐标管道）。
+     *   把它叠在页图上，就是一个**可点的"文字区域"** ——
+     *   点它 = 选中那段文字，然后给它指定类型。
+     *
+     * 这同时满足了用户的两个说法：
+     *   · 「文本…可以选中」      → 点一下即选中（比拖选省事）
+     *   · 「框只能是方的，但区域可以根据文本来」
+     *                            → 这里的框**不是用户画的**，
+     *                              是从文字自身的范围算出来的，
+     *                              所以它贴合文字，而不是用户拖的方块
+     *
+     * ⚠️ 只有**文字块**走这条路。公式/表格/图片里没有可点的文字，
+     *    所以那三类仍然是用户手画矩形 —— 那是真正需要人判断的。
+     */
+    function mountTextBlocksOn(layer, page) {
+        var blocks = lastBlocks || [];
+        for (var i = 0; i < blocks.length; i++) {
+            var b = blocks[i];
+            if (!b || !b.text) continue;
+            if (b.page !== page) continue;
+            // 没有包围盒的块画不出来（原生取不到坐标时）
+            if (!(b.x1 > b.x0) || !(b.y1 > b.y0)) continue;
+
+            layer.appendChild(makeTextBlockEl(b, page));
+        }
+    }
+
+    /**
+     * 造一个"可点的文字块"。
+     *
+     * ⚠️ 坐标用**百分比**（与矩形标注一致），转屏/分屏自动跟着对。
+     */
+    function makeTextBlockEl(block, page) {
+        var el = document.createElement('div');
+        el.className = 'anno-block';
+
+        /*
+          ⚠️ 已被用户标过的块要显示出来（否则用户不知道哪些改过了）。
+             类型从 textMarks 里查；查不到用原生判的 kind。
+        */
+        var ttype = textTypeOf(block);
+        el.className += ' anno-block-' + ttype;
+        el.setAttribute('data-text-type', ttype);
+        el.setAttribute('data-block-line', String(block.line == null ? -1 : block.line));
+
+        el.style.left = (block.x0 * 100) + '%';
+        el.style.top = (block.y0 * 100) + '%';
+        el.style.width = ((block.x1 - block.x0) * 100) + '%';
+        el.style.height = ((block.y1 - block.y0) * 100) + '%';
+
+        var tag = document.createElement('span');
+        tag.className = 'anno-block-tag';
+        tag.textContent = t(TYPE_LABEL_KEY[ttype] || ttype);
+        el.appendChild(tag);
+
+        /*
+          ⚠️ 点一下 = 打开类型选择（不是直接删）。
+             文本块的常见操作是"改类型"，不是"删掉"。
+        */
+        el.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            openTextTypePicker(el, block, page);
+        });
+
+        return el;
+    }
+
+    /** 查一个块当前的文本类型（用户标过的优先，否则用原生判的） */
+    function textTypeOf(block) {
+        if (block.textType) return block.textType;
+        if (block.kind === 'heading') return 'heading';
+        return 'body';
+    }
+
+    /**
+     * 弹出文本类型选择（八类）。
+     *
+     * ⚠️ 用底部**弹出层**而不是原生的 `<select>` ——
+     *    原生 select 在 Android WebView 里会拉起系统滚轮，
+     *    样式完全不受我们控制，与阅读页的视觉语言断裂。
+     */
+    function openTextTypePicker(anchorEl, block, page) {
+        closeTextTypePicker();
+
+        var sheet = document.createElement('div');
+        sheet.className = 'anno-typesheet';
+        sheet.setAttribute('role', 'dialog');
+
+        var title = document.createElement('div');
+        title.className = 'anno-typesheet-title title-text';
+        title.textContent = t('reader.pickTextType');
+        sheet.appendChild(title);
+
+        var grid = document.createElement('div');
+        grid.className = 'anno-typegrid';
+
+        for (var i = 0; i < TEXT_TYPES.length; i++) {
+            grid.appendChild(makeTextTypeOption(TEXT_TYPES[i], block, page));
+        }
+        sheet.appendChild(grid);
+
+        var cancel = document.createElement('button');
+        cancel.className = 'btn';
+        cancel.type = 'button';
+        cancel.textContent = t('action.cancel');
+        cancel.addEventListener('click', closeTextTypePicker);
+
+        var actions = document.createElement('div');
+        actions.className = 'form-actions';
+        actions.appendChild(cancel);
+        sheet.appendChild(actions);
+
+        var backdrop = document.createElement('div');
+        backdrop.className = 'anno-typebackdrop';
+        backdrop.addEventListener('click', closeTextTypePicker);
+
+        if (root) {
+            root.appendChild(backdrop);
+            root.appendChild(sheet);
+        }
+        textPickerEls = [backdrop, sheet];
+    }
+
+    /** 造类型选择里的一个选项 */
+    function makeTextTypeOption(type, block, page) {
+        var btn = document.createElement('button');
+        btn.className = 'anno-typeopt';
+        btn.type = 'button';
+
+        var ui = global.ScholariusUI;
+        if (ui && ui.icon && TYPE_ICON[type]) {
+            btn.innerHTML = ui.icon(TYPE_ICON[type]);
+        }
+
+        var label = document.createElement('span');
+        label.textContent = t(TYPE_LABEL_KEY[type] || type);
+        btn.appendChild(label);
+
+        btn.addEventListener('click', function () {
+            applyTextType(block, type);
+            closeTextTypePicker();
+        });
+
+        return btn;
+    }
+
+    /**
+     * 把一段文字标成某个类型。
+     *
+     * ⚠️ 存的是**行号区间**（TextMark.from/to），不是坐标 ——
+     *    文本区域由文字自身界定，行号才是稳定的表示。
+     *    见 AnnotationStore.TextMark 的说明。
+     *
+     * ⚠️ 同类型的旧标注要先**替换**，不能叠加 ——
+     *    同一个块被标两次会留下两条记录，渲染时谁生效取决于顺序，
+     *    那是不可预期的。
+     */
+    function applyTextType(block, type) {
+        var from = (block.line == null) ? null : block.line;
+
+        /*
+          ⚠️ 块没有行号时无法存（见 AnnotationStore.TextMark 的说明）。
+             这是数据缺失而不是用户错误，所以**静默不改**并记一条日志，
+             而不是弹一个用户看不懂的错误。
+        */
+        if (from == null || from < 0) {
+            trace('reader:annotate', 'block has no line number, skip');
+            showError('annotateNoLine');
+            return;
+        }
+
+        // 行数按 \n 数估，与 buildRegions 的口径一致
+        var n = block.text.split('\n').length;
+        var to = from + n - 1;
+
+        // 先删掉与该区间重叠的旧标注
+        var kept = [];
+        for (var i = 0; i < textMarks.length; i++) {
+            var m = textMarks[i];
+            var overlaps = !(m.to < from || m.from > to);
+            if (!overlaps) kept.push(m);
+        }
+        kept.push({
+            from: from,
+            to: to,
+            type: type,
+            level: type === 'heading' ? (block.level || 1) : 0
+        });
+        textMarks = kept;
+        annotateDirty = true;
+
+        /*
+          ⚠️ 改完立刻局部重画 —— 用户要看到"这块现在被标成摘要了"。
+             只重画那一个块的样式，不整页重建（重建会把滚动位置抖动）。
+        */
+        refreshTextBlockStyles();
+
+        trace('reader:annotate', 'text ' + type + ' @' + from + '-' + to);
+    }
+
+    /** 关掉类型选择弹层 */
+    function closeTextTypePicker() {
+        for (var i = 0; i < textPickerEls.length; i++) {
+            var el = textPickerEls[i];
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+        }
+        textPickerEls = [];
+    }
+
+    /** 按新的 textMarks 刷新页上文字块的类型样式与标签 */
+    function refreshTextBlockStyles() {
+        for (var i = 0; i < annotateLayers.length; i++) {
+            var layer = annotateLayers[i];
+            var blocks = layer.querySelectorAll('.anno-block');
+            for (var k = 0; k < blocks.length; k++) {
+                var el = blocks[k];
+                var line = parseInt(el.getAttribute('data-block-line'), 10);
+                if (isNaN(line) || line < 0) continue;
+
+                var ttype = typeAtLine(line);
+                el.className = 'anno-block anno-block-' + ttype;
+                el.setAttribute('data-text-type', ttype);
+                var tag = el.querySelector('.anno-block-tag');
+                if (tag) tag.textContent = t(TYPE_LABEL_KEY[ttype] || ttype);
+            }
+        }
+    }
+
+    /** 查某一行属于哪个文本类型（用户标过优先） */
+    function typeAtLine(line) {
+        for (var i = 0; i < textMarks.length; i++) {
+            var m = textMarks[i];
+            if (line >= m.from && line <= m.to) return m.type;
+        }
+        return 'body';
+    }
+
 
     function unmountAnnotateLayer() {
         for (var i = 0; i < annotateLayers.length; i++) {
@@ -1300,7 +1710,7 @@
             } catch (e) { /* 个别 WebView 不支持 Pointer Capture，忽略 */ }
 
             ghost = document.createElement('div');
-            ghost.className = 'anno-box anno-box-' + annotateType + ' is-ghost';
+            ghost.className = 'anno-box anno-box-' + annotateMode + ' is-ghost';
             place(ghost, start, start);
             layer.appendChild(ghost);
         });
@@ -1342,7 +1752,7 @@
                 x1: box.x1,
                 y1: box.y1,
                 page: page,
-                type: annotateType
+                type: annotateMode
             });
             annotateDirty = true;
             refreshAnnotateLayer(page);
@@ -1712,6 +2122,13 @@
             */
             var n = b0.text.split('\n').length;
             rowAt.push({ from: row, to: row + n - 1 });
+            /*
+              ⚠️ 把估算出来的**起始行号写回块本身**。
+                 编辑模式（原始视图）要用它把"点中的文字块"
+                 映射成 TextMark 的 from/to —— 那里拿不到
+                 buildRegions 的局部变量，只能靠这个字段。
+            */
+            b0.line = row;
             row += n;
         }
 
@@ -2159,46 +2576,39 @@
     }
 
     /**
-     * 造章节区的头部（可点折叠）。
+     * 造章节区的头部。
      *
-     * ⚠️ 用 `<h2>/<h3>/<h4>` 包一层按钮，而不是给 h2 直接绑 click ——
-     *    可点的应该是 `<button>`（键盘可达、读屏能念出"按钮"）。
-     *    直接给标题绑 click 的话，键盘用户永远折叠不了（项目无障碍约定）。
+     * ══ ⚠️ 这里**故意没有折叠功能**（用户 2026-09-24 明确要求）══
+     *
+     * 用户原话：「阅读视图不许折叠，无法修改，想修改必须去原始视图（pdf）中修改分区」
+     *
+     * 道理：阅读视图是**结果**，不是编辑界面。
+     * 它显示的是「我们（或用户）判定出来的分区」，
+     * 用户在这里唯一该做的是**读**。要改分区就去原始视图，
+     * 那里能看到版面、能画框、能选中文本 —— 那才是改的地方。
+     *
+     * ⚠️ 所以上一版做的这些全部**删掉**，不要加回来：
+     *    · `<button class="rd-region-head">` + aria-expanded
+     *    · 点击折叠逻辑
+     *    · 左侧那个旋转三角（CSS 的 .rd-region-head::before）
+     *    留一个可点的标题会让用户以为"点一下能改什么"，
+     *    而点了没反应比没有这个交互更让人困惑。
+     *
+     * ⚠️ 因此这里返回的是**纯 `<h2>/<h3>/<h4>`**，
+     *    不带任何交互语义（不是按钮、没有 tabindex、没有 cursor:pointer）。
      */
     function makeRegionHeader(region) {
-        var head = document.createElement('button');
-        head.className = 'rd-region-head';
-        head.type = 'button';
-        head.setAttribute('aria-expanded', 'true');
-
         var lv = region.level >= 3 ? 4 : (region.level === 2 ? 3 : 2);
         var title = document.createElement('h' + lv);
         title.className = 'reader-heading rd-region-title';
         /*
           ⚠️ 没有标题的一级区（PDF 直接以正文开头）要有个占位文案，
-             否则会出现一个空白的可点条，用户不知道那是什么。
+             否则会出现一片没有归属的正文，用户不知道那属于哪一节。
         */
         title.textContent = region.heading
             ? region.heading.text
             : t('reader.untitledSection');
-        head.appendChild(title);
-
-        head.addEventListener('click', function () {
-            var expanded = head.getAttribute('aria-expanded') === 'true';
-            head.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-            var body = head.parentNode
-                ? head.parentNode.querySelector('.rd-region-body')
-                : null;
-            if (body) body.hidden = expanded;
-
-            /*
-              ⚠️ 折叠状态变了要重算目录里已高亮的项 ——
-                 （当前实现没有"随滚动高亮目录"，所以这里只留接入点，
-                  不做多余动作。留着注释是为了说明为什么不处理。）
-            */
-        });
-
-        return head;
+        return title;
     }
 
     /**
@@ -2249,20 +2659,17 @@
           ⚠️ 没有 blocks 时**退回纯文本**（老数据 / 提取层未升级）。
             不能因为拿不到 blocks 就白屏 —— 那比排版差严重得多。
         */
-        if (blocks && blocks.length) {
-            renderBlocks(blocks);
-        } else {
-            /*
-              ⚠️ 用 textContent + CSS pre-wrap，不用 innerHTML。
-                 正文是从 PDF 提取的任意文本，里面可能有 < > & 之类字符；
-                 用 innerHTML 会破坏页面结构（甚至注入）。
-            */
-            contentEl.textContent = text;
-        }
-
         /*
           ⚠️ 缓存一份，供「从原始视图切回阅读视图」时重放
-             （见 restoreReadingContent）。
+             （见 restoreReadingContent），
+             以及供编辑模式在页图上画出"可点的文字块"
+             （见 mountTextBlocksOn）。
+
+          ⚠️ **必须在 renderBlocks 之前赋值**！——
+             renderBlocks 内部的 buildRegions 会把行号写回块
+             （block.line），而编辑模式靠它把点中的块映射成
+             TextMark 的 from/to。晚赋值的话 lastBlocks 里
+             的块**没有 line 字段**，文字块会全部点不动。
 
           ⚠️ 两者只会有一个非空，所以要**显式清掉另一个** ——
              不清的话，上一篇的 blocks 会残留在 lastBlocks 里，
@@ -2274,6 +2681,17 @@
         } else {
             lastBlocks = null;
             lastText = text;
+        }
+
+        if (blocks && blocks.length) {
+            renderBlocks(blocks);
+        } else {
+            /*
+              ⚠️ 用 textContent + CSS pre-wrap，不用 innerHTML。
+                 正文是从 PDF 提取的任意文本，里面可能有 < > & 之类字符；
+                 用 innerHTML 会破坏页面结构（甚至注入）。
+            */
+            contentEl.textContent = text;
         }
 
         if (bodyEl) {
@@ -3450,16 +3868,16 @@
         */
         syncViewToggle();
         /*
-          ⚠️ 标注按钮与类型条同理：它们的文案都是 JS 填的
+          ⚠️ 编辑按钮与编辑选项栏同理：它们的文案都是 JS 填的
              （类型名、提示语、"标注/完成"），
              不刷的话切语言后这两处会一直停在旧语言。
 
-             ⚠️ syncAnnoChips 内部对 annoBarEl 做了空判 ——
-                没进过编辑模式时类型条还不存在，不能直接调它的
+             ⚠️ syncEditBar 内部对 editBarEl 做了空判 ——
+                没进过编辑模式时选项栏还不存在，不能直接调它的
                 querySelectorAll（会 null 崩）。
         */
         syncAnnotate();
-        syncAnnoChips();
+        syncEditBar();
         if (tocOpen) {
             renderToc();
         }
