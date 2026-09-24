@@ -31,6 +31,13 @@
             'vault.importFailed': 'Could not import this file. Is it a valid PDF?',
             'vault.readerSoon': 'Reader coming soon',
 
+            // --- 阅读页 ---
+            'reader.loading': 'Extracting text...',
+            'reader.extractFailed': 'Could not extract text from this PDF.',
+            'selection.cancel': 'Cancel selection',
+            'selection.delete': 'Delete selected',
+            'selection.count': '{n} selected',
+
             'action.cancel': 'Cancel',
             'action.confirm': 'Confirm',
             'action.copy': 'Copy',
@@ -124,6 +131,13 @@
             'vault.deleteOneMessage': '将从本机移除《{title}》，此操作不可撤销。',
             'vault.importFailed': '无法导入该文件，请确认是有效的 PDF。',
             'vault.readerSoon': '阅读页即将推出',
+
+            // --- 阅读页 ---
+            'reader.loading': '正在提取文本…',
+            'reader.extractFailed': '无法从这份 PDF 提取文本。',
+            'selection.cancel': '取消选择',
+            'selection.delete': '删除所选',
+            'selection.count': '已选 {n} 项',
 
             'action.cancel': '取消',
             'action.confirm': '确定',

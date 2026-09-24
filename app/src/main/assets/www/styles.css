@@ -460,37 +460,177 @@ body {
 }
 
 /*
-  批量操作条：固定在底部导航之上。
-  z-index 5 —— 高于内容、低于弹层（11+），
-  这样批量删除的确认框能盖住它。
+  多选操作栏（照搬 Livolog 的 selection-bar）。
+  在**顶部**、从上方滑入，盖住标题栏。
+  z-index 7 —— 高于内容与导航栏，低于登录页（50）与弹层（100）。
 */
-.bulk-bar {
+.selection-bar {
     position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 5;
+    top: var(--safe-top);
+    left: var(--safe-left);
+    right: var(--safe-right);
+    z-index: 7;
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 12px 16px calc(12px + var(--safe-bottom));
-    background: var(--nav-bg);
-    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.18);
+    justify-content: space-between;
+    gap: 8px;
+    height: 56px;
+    padding: 0 8px;
+    background: var(--bg);
+    transform: translateY(-100%);
+    transition: transform 220ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-.bulk-bar[hidden] {
+.selection-bar[hidden] {
     display: none;
 }
 
-.bulk-count {
-    font-size: 14px;
-    font-weight: 700;
+.selection-bar.is-open {
+    transform: translateY(0);
+}
+
+.selection-count {
+    font-size: 15px;
+    font-weight: 600;
     color: var(--on-surface);
     font-variant-numeric: tabular-nums;
 }
 
-.bulk-spacer {
+/* --------------------------------------------------------------------------
+   阅读页（全屏覆盖层）
+   -------------------------------------------------------------------------- */
+
+.reader {
+    position: fixed;
+    inset: 0;
+    /*
+      z-index 8 —— 高于多选栏（7）与导航栏，低于登录页（50）与弹层（100）。
+      阅读页是从文库进去的，进入时多选栏已关闭，所以不需要比它更高。
+    */
+    z-index: 8;
+    display: flex;
+    flex-direction: column;
+    padding-top: var(--safe-top);
+    padding-right: var(--safe-right);
+    padding-bottom: var(--safe-bottom);
+    padding-left: var(--safe-left);
+    background: var(--bg);
+    /* 从右侧滑入，与账户详情页同一套动作 */
+    transform: translateX(100%);
+    transition: transform 280ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.reader[hidden] {
+    display: none;
+}
+
+.reader.is-open {
+    transform: translateX(0);
+}
+
+/*
+  顶部栏与底部选项栏：菜单显示时滑入，隐藏时滑出。
+
+  ⚠️ 用 transform 而不是 display —— 否则高度会突然塌掉，
+     正文区跟着跳动，阅读位置会错位。
+*/
+.reader-top,
+.reader-bottom {
+    flex: 0 0 auto;
+    /* 与底部导航同高，视觉厚度一致 */
+    height: 56px;
+    background: var(--nav-bg);
+    transition: transform 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.reader-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 8px;
+    /* 藏起来时整体上移出自己的高度 */
+    transform: translateY(-100%);
+}
+
+.reader-bottom {
+    /* 底部选项栏现在没有内容，先只留高度与背景 */
+    padding: 0 8px;
+    /* 藏起来时整体下移 */
+    transform: translateY(100%);
+}
+
+/* 菜单可见时两条都归位 */
+.reader.is-menu-open .reader-top,
+.reader.is-menu-open .reader-bottom {
+    transform: translateY(0);
+}
+
+.reader-title {
     flex: 1 1 auto;
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 22px;
+    text-align: center;
+    color: var(--on-surface);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 与返回按钮等宽，保证标题居中 */
+.reader-top-spacer {
+    flex: 0 0 auto;
+    width: 40px;
+    height: 40px;
+}
+
+/*
+  正文区。可滚动，点它切换菜单。
+
+  ⚠️ 菜单滑出时正文**不跟着移动** —— 与主流阅读器一致：
+     菜单是浮在内容之上的，内容位置不动，阅读进度不会跳。
+     所以这里不能用 padding 给菜单腾位，而是让菜单覆盖上去。
+*/
+.reader-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+
+.reader-content {
+    /* 正文左右留白，接近纸质阅读的版心宽度 */
+    padding: 20px 24px 40px;
+    font-size: 17px;
+    line-height: 1.75;
+    color: var(--on-surface);
+    /*
+      正文可能是从 PDF 提取的纯文本，长行要能换行；
+      中文还要避免行首标点（hanging punctuation 由浏览器处理）。
+    */
+    word-break: normal;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.reader-content:empty::before {
+    content: '';
+}
+
+/* 正文里的占位提示（还在解析中 / 提取失败） */
+.reader-hint {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 40vh;
+    color: var(--on-surface-variant);
+    font-size: 14px;
+    text-align: center;
 }
 
 /* --------------------------------------------------------------------------

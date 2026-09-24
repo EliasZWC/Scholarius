@@ -36,6 +36,8 @@ class WebAppBridge(
     private val onUpdateDoc: (String, String?, String?, String?) -> Unit,
     /** 刷新文献列表（网页主动拉一次） */
     private val onRequestLibrary: () -> Unit,
+    /** 请求某篇文献的正文文本（阅读页用） */
+    private val onRequestDocText: (String) -> Unit,
     // --- 临时诊断（v0.0.6，定位完删）---
     private val onTrace: (String) -> Unit,
 ) {
@@ -115,6 +117,19 @@ class WebAppBridge(
     @JavascriptInterface
     fun requestLibrary() {
         onRequestLibrary()
+    }
+
+    /**
+     * 请求某篇文献的正文文本。
+     *
+     * ⚠️ 异步入参 —— 提取要解压并扫描整个 PDF，可能几百毫秒到几秒。
+     *    本方法立即返回，结果由原生调
+     *    `ScholariusShell.readerText(id, text)` 推回。
+     *    同步返回会让 WebView 的 JavaBridge 线程堵住，界面卡死。
+     */
+    @JavascriptInterface
+    fun requestDocText(id: String) {
+        onRequestDocText(id)
     }
 
     /** 把 JSON 数组字符串解成 id 列表；解析失败返回空列表 */

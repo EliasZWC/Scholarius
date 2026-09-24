@@ -208,6 +208,19 @@
             return 'no-vault-module';
         },
         /*
+          阅读页正文。text 为 null 表示提取失败或无文本。
+          ⚠️ 必须 return，理由同上面几个转发函数。
+        */
+        readerText: function (id, text) {
+            if (!window.ScholariusReader) {
+                return 'no-reader-module';
+            }
+            if (text === null || text === undefined) {
+                return window.ScholariusReader.onExtractFailed(id);
+            }
+            return window.ScholariusReader.setText(id, text);
+        },
+        /*
           原生 → 网页的诊断日志入口。
           原生日志只会进 logcat，手机上根本看不到；
           这个接口让原生把关键信息直接画到屏幕上。
@@ -336,6 +349,9 @@
         }
         if (window.ScholariusVault) {
             window.ScholariusVault.init();
+        }
+        if (window.ScholariusReader) {
+            window.ScholariusReader.init();
         }
         if (window.ScholariusUpdate) {
             window.ScholariusUpdate.init();
@@ -687,7 +703,19 @@
      *    （账户页是最底层的覆盖层，所以最后关）
      */
     function handleBack() {
-        // ① 行内选择菜单（语言 / 主题 / Logger 弹出的那个）
+        /*
+          ① 阅读页最先处理。
+             它的逻辑是「菜单开着就先关菜单，否则关阅读页」，
+             即返回键要按两次才退出阅读页 —— 与主流阅读器一致。
+        */
+        if (window.ScholariusReader && window.ScholariusReader.isOpen &&
+            window.ScholariusReader.isOpen()) {
+            window.ScholariusReader.handleBack();
+            trace('back', 'reader handled');
+            return true;
+        }
+
+        // ② 行内选择菜单（语言 / 主题 / Logger 弹出的那个）
         if (window.ScholariusUI &&
             typeof window.ScholariusUI.hasOpenRowMenu === 'function' &&
             window.ScholariusUI.hasOpenRowMenu()) {
@@ -696,7 +724,7 @@
             return true;
         }
 
-        // ② 底部弹层（更新 / 退出登录 / 通用确认）
+        // ③ 底部弹层（更新 / 退出登录 / 通用确认）
         if (window.ScholariusUI &&
             typeof window.ScholariusUI.isSheetOpen === 'function' &&
             window.ScholariusUI.isSheetOpen()) {
@@ -705,7 +733,15 @@
             return true;
         }
 
-        // ③ 账户详情页（全屏覆盖层）
+        // ④ 文库的多选模式
+        if (window.ScholariusVault && window.ScholariusVault.isSelecting &&
+            window.ScholariusVault.isSelecting()) {
+            window.ScholariusVault.exitSelection();
+            trace('back', 'exited selection');
+            return true;
+        }
+
+        // ⑤ 账户详情页（全屏覆盖层）
         var detail = document.getElementById('account-detail');
         if (detail && !detail.hidden) {
             if (window.ScholariusAccount &&

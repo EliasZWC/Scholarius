@@ -28,10 +28,10 @@
     var searchClearEl = null;
     var importBtn = null;
     var fileInput = null;
-    var bulkBar = null;
-    var bulkCountEl = null;
-    var bulkCancelEl = null;
-    var bulkDeleteEl = null;
+    var selectionBar = null;
+    var selectionCountEl = null;
+    var selectionCloseEl = null;
+    var selectionDeleteEl = null;
 
     /** 全部文献（原生推过来的，未过滤） */
     var docs = [];
@@ -57,10 +57,10 @@
         searchClearEl = document.getElementById('vault-search-clear');
         importBtn = document.getElementById('vault-import');
         fileInput = document.getElementById('vault-file-input');
-        bulkBar = document.getElementById('bulk-bar');
-        bulkCountEl = document.getElementById('bulk-count');
-        bulkCancelEl = document.getElementById('bulk-cancel');
-        bulkDeleteEl = document.getElementById('bulk-delete');
+        selectionBar = document.getElementById('selection-bar');
+        selectionCountEl = document.getElementById('selection-count');
+        selectionCloseEl = document.getElementById('selection-close');
+        selectionDeleteEl = document.getElementById('selection-delete');
 
         if (!listEl) {
             return;
@@ -148,24 +148,35 @@
     // --- 多选与删除 ---------------------------------------------------------
 
     function mountBulk() {
-        if (bulkCancelEl) {
-            bulkCancelEl.addEventListener('click', exitSelection);
+        if (selectionCloseEl) {
+            selectionCloseEl.addEventListener('click', exitSelection);
         }
-        if (bulkDeleteEl) {
-            bulkDeleteEl.addEventListener('click', confirmDeleteSelected);
+        if (selectionDeleteEl) {
+            selectionDeleteEl.addEventListener('click', confirmDeleteSelected);
         }
     }
 
     function enterSelection(id) {
         selection = selection || {};
         selection[id] = true;
-        updateBulkBar();
+        updateSelectionBar();
     }
 
     function exitSelection() {
         selection = null;
-        if (bulkBar) {
-            bulkBar.hidden = true;
+        if (selectionBar) {
+            /*
+              ⚠️ 先移除 is-open（滑出动画），再等动画结束设 hidden。
+                 直接 hidden 会让它「啪」地消失，与滑入动画不对称。
+                 220ms 与 .selection-bar 的 transition 时长一致。
+            */
+            selectionBar.classList.remove('is-open');
+            global.setTimeout(function () {
+                // 期间用户可能又进了多选，必须复查
+                if (!selection && selectionBar) {
+                    selectionBar.hidden = true;
+                }
+            }, 220);
         }
         render();
     }
@@ -176,22 +187,43 @@
         }) : [];
     }
 
-    function updateBulkBar() {
-        var ids = selectedIds();
-        if (!bulkBar) {
+    /**
+     * 刷新多选操作栏（顶部）。
+     *
+     * ⚠️ 显示用「hidden + is-open」两段式：
+     *    hidden 控制是否参与布局，is-open 控制位移动画。
+     *    先 hidden=false 再加 is-open，否则 transition 不触发（元素从未渲染过）。
+     */
+    function updateSelectionBar() {
+        if (!selectionBar) {
             return;
         }
+
         if (!selection) {
-            bulkBar.hidden = true;
+            selectionBar.classList.remove('is-open');
+            selectionBar.hidden = true;
             return;
         }
-        bulkBar.hidden = false;
-        if (bulkCountEl) {
-            bulkCountEl.textContent = String(ids.length);
+
+        var ids = selectedIds();
+        if (selectionBar.hidden) {
+            selectionBar.hidden = false;
+            // 强制一次布局，保证下面的 is-open 能触发 transition
+            if (selectionBar.offsetWidth < 0) return;
         }
-        if (bulkDeleteEl) {
-            bulkDeleteEl.disabled = ids.length === 0;
+        selectionBar.classList.add('is-open');
+
+        if (selectionCountEl) {
+            selectionCountEl.textContent = t('selection.count').replace('{n}', String(ids.length));
         }
+        if (selectionDeleteEl) {
+            /*
+              一条都没选时禁用删除。
+              ⚠️ 用 disabled 而不是隐藏 —— 位置固定，按钮不会跳。
+            */
+            selectionDeleteEl.disabled = ids.length === 0;
+        }
+
         // 同步每张卡片的选中样式
         var cards = listEl ? listEl.querySelectorAll('.doc-card') : [];
         Array.prototype.forEach.call(cards, function (card) {
@@ -311,7 +343,7 @@
             }
         }
 
-        updateBulkBar();
+        updateSelectionBar();
     }
 
     /** 组装一张文献卡片 */
@@ -451,7 +483,7 @@
                 } else {
                     // 已在多选模式：长按 = 切换该项
                     selection[doc.id] = !selection[doc.id];
-                    updateBulkBar();
+                    updateSelectionBar();
                 }
             });
         }
@@ -466,7 +498,7 @@
             if (selection) {
                 // 多选模式：点卡片 = 切换选中
                 selection[doc.id] = !selection[doc.id];
-                updateBulkBar();
+                updateSelectionBar();
                 return;
             }
 
@@ -478,7 +510,7 @@
                 event.preventDefault();
                 if (selection) {
                     selection[doc.id] = !selection[doc.id];
-                    updateBulkBar();
+                    updateSelectionBar();
                 } else {
                     openReader(doc);
                 }
@@ -486,12 +518,10 @@
         });
     }
 
-    /** 进阅读页。阅读页本身下个版本做，这里先留入口 */
+    /** 进阅读页 */
     function openReader(doc) {
-        if (global.Scholarius && typeof global.Scholarius.openReader === 'function') {
-            global.Scholarius.openReader(doc.id);
-        } else {
-            global.ScholariusUI.toast(t('vault.readerSoon'));
+        if (global.ScholariusReader) {
+            global.ScholariusReader.open(doc);
         }
     }
 
@@ -514,6 +544,11 @@
         setLibrary: setLibrary,
         onImportFailed: onImportFailed,
         onLeave: onLeave,
+        /** 系统返回键用：是否处于多选模式 */
+        isSelecting: function () {
+            return !!selection;
+        },
+        exitSelection: exitSelection,
         /** 供原生/其它模块查当前篇数 */
         count: function () {
             return docs.length;

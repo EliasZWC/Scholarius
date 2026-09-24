@@ -392,6 +392,7 @@ class MainActivity : AppCompatActivity() {
                     runOnUiThread { updateDoc(id, title, author, venue) }
                 },
                 onRequestLibrary = { runOnUiThread { pushLibraryToWeb() } },
+                onRequestDocText = { id -> requestDocText(id) },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,
@@ -1093,6 +1094,48 @@ class MainActivity : AppCompatActivity() {
             val ok = LibraryStore.update(this, id, title, author, venue)
             runOnUiThread {
                 if (ok) pushLibraryToWeb()
+            }
+        }
+    }
+
+    /**
+     * 提取某篇文献的正文并推给阅读页。
+     *
+     * ⚠️ 必须在后台线程：要读整个 PDF、解压内容流、扫描字符串，
+     *    几十兆的文献在低端机上可能几百毫秒到几秒。
+     *
+     * ⚠️ 不缓存提取结果。理由：正文可能很大（几十万字符），
+     *    常驻内存不划算；而重复打开的代价只是再解析一次。
+     *    若将来发现打开太慢，再引入一个「只缓存最近一篇」的 LRU。
+     */
+    private fun requestDocText(id: String) {
+        debugLog("[reader] extracting text for $id")
+
+        thread {
+            val file = LibraryStore.pdfFile(this, id)
+            val text = if (file.exists()) PdfText.extract(file) else null
+
+            runOnUiThread {
+                /*
+                  ⚠️ 用 JSON 字符串字面量包装文本，而不是自己拼引号。
+                    PDF 提取出的正文可能含换行、引号、反斜杠、控制字符 ——
+                    手写转义几乎必错（早期 debugLog 的 quote() 就踩过）。
+                    用 JSONObject.quote() 是唯一可靠的方式。
+                */
+                if (text == null) {
+                    debugLog("[reader] no text for $id")
+                    evaluateInWeb(
+                        "window.ScholariusShell && window.ScholariusShell.readerText(" +
+                            "${org.json.JSONObject.quote(id)}, null);"
+                    )
+                } else {
+                    debugLog("[reader] pushing ${text.length} chars for $id")
+                    evaluateInWeb(
+                        "window.ScholariusShell && window.ScholariusShell.readerText(" +
+                            "${org.json.JSONObject.quote(id)}, " +
+                            "${org.json.JSONObject.quote(text)});"
+                    )
+                }
             }
         }
     }
