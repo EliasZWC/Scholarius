@@ -198,12 +198,38 @@
             global.ScholariusI18n.onChange(refreshChrome);
         }
         /*
-          ⚠️ 订阅主题变化：阅读设置里的主题行与「设置 → 主题」共用同一个值，
-             所以从设置页改了主题，阅读页这行的文字也要跟着更新，
-             否则两处显示不一致。
+          ⚠️ 订阅主题变化，要做**两件事**，不能只做一件：
+            ① 主题行的右侧文字（Light / Dark / Follow System）
+            ② 颜色行的色块
+               字体颜色在亮/暗下是两套不同的值（见 styles.css），
+               主题一变正文颜色就变，色块必须跟着重算 ——
+               否则会出现「暗色下正文是白字，设置项色块却是黑的」。
+               实测就是这个 bug：原来只订阅了 ①，漏了 ②。
         */
         if (global.ScholariusTheme && global.ScholariusTheme.onChange) {
-            global.ScholariusTheme.onChange(syncThemeRow);
+            global.ScholariusTheme.onChange(function () {
+                syncThemeRow();
+                syncColorRowDeferred();
+            });
+        }
+    }
+
+    /**
+     * 按当前主题重算颜色行的色块。
+     *
+     * ⚠️ 必须等**下一帧**再量，不能在 onChange 里同步量。
+     *    主题切换的流程是：ScholariusTheme 改 <html data-theme> → 通知订阅者。
+     *    通知发出时样式可能还没重算完，此时 getComputedStyle 读到的
+     *    仍是旧主题的颜色 —— 色块会落后一次主题切换。
+     *    requestAnimationFrame 保证在浏览器应用完样式之后再读。
+     */
+    function syncColorRowDeferred() {
+        if (global.requestAnimationFrame) {
+            global.requestAnimationFrame(function () {
+                syncColorRow();
+            });
+        } else {
+            syncColorRow();
         }
     }
 
@@ -318,6 +344,13 @@
         // 初始不显示菜单，纯正文
         setMenu(false);
         setPanel(false);
+
+        /*
+          ⚠️ 打开时重算一次颜色行的色块。
+             主题可能在阅读页关闭期间被改过（比如在「设置」里切了夜间模式），
+             此时正文颜色已随新主题变化，而色块还是上次的值。
+        */
+        syncColorRowDeferred();
 
         requestText(doc.id);
     }
