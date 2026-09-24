@@ -805,6 +805,37 @@
             return true;
         }
 
+        /*
+          ④.5 发表物简称页（设置项的子页）。
+
+          ⚠️⚠️ 漏了这一层会**直接退出应用**（用户 2026-09-25 实测）。
+
+             这就是函数头那段"为什么必须由网页来判定"说的问题：
+             WebView.canGoBack() 永远是 false，所以只要网页说
+             "我没事可做"（return false），原生就退出。
+             简称页是个全屏覆盖层，视觉上明显"还能退一层"，
+             但网页没认领这一下 —— 于是用户按返回，
+             App 直接没了。
+
+          ⚠️ 顺序：必须排在 ③ 底部弹层**之后**。
+
+             因为简称页里还能弹一个「编辑表单」（也是 .sheet）——
+             编辑表单开着时按返回应该先关表单、而不是整个关掉简称页。
+             .sheet 那一条在上面管着，所以这里只管"表单已关，剩简称页本身"。
+
+          ⚠️ 判据与 ⑤ 账户详情页一样用 hidden 而不是自己的 isOpen() ——
+             少一层间接，也不怕两者状态不同步。
+        */
+        var shortcutPage = document.getElementById('shortcut-page');
+        if (shortcutPage && !shortcutPage.hidden) {
+            if (window.ScholariusShortcut &&
+                typeof window.ScholariusShortcut.close === 'function') {
+                window.ScholariusShortcut.close();
+            }
+            trace('back', 'closed shortcut page');
+            return true;
+        }
+
         // ⑤ 账户详情页（全屏覆盖层）
         var detail = document.getElementById('account-detail');
         if (detail && !detail.hidden) {

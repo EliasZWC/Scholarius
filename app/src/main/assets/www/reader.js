@@ -2895,18 +2895,60 @@
 
                  所以判定必须**全部在 layer 里做**。
             */
+            var hit = boxAt(ev.clientX, ev.clientY);
+
             pending = {
                 pointerId: ev.pointerId,
                 clientX: ev.clientX,
                 clientY: ev.clientY,
                 startNorm: normalised(ev, rect),
-                hitBox: boxAt(ev.clientX, ev.clientY)
+                hitBox: hit,
+                /*
+                  ══ ⚠️⚠️ 意图在**按下的一瞬间**就定下来 ══
+
+                     用户 2026-09-25 第二次反馈「框依旧无法删除」。
+
+                     上一版是按**位移**分流的：
+                       · 位移没超阈值 → 点击（可能删除）
+                       · 位移超了阈值 → 拖拽（画框）
+                     起点在框上时还把阈值放宽到 2 倍。
+
+                     还是在真机上不行。因为真机"点一下"产生的
+                     pointermove 序列累积位移能轻松超过 2 倍阈值
+                     （手指压在屏幕上本身就有微动，加上滚动惯性），
+                     于是被判成"拖拽" → 走画框分支 →
+                     框和新框完全重合，看上去就是"点了没反应"。
+
+                     ❌ 错的根源：**用一把尺子（位移）去量两件不同的事**。
+
+                     ✅ 正解：**按下的位置本身就已经表达了意图**：
+                       · 按在已有框上 → 他想处理这个框（删除），
+                         绝不是"在同一位置再画一个重合的框" ——
+                         后者没有任何使用价值。
+                       · 按在空白处 → 才可能是画新框。
+
+                     所以 `onBox` 为 true 时，这一次手势**只走删除判定**，
+                     位移多少都不画框。
+                */
+                onBox: !!hit
             };
             dragging = false;
         });
 
         layer.addEventListener('pointermove', function (ev) {
             if (!pending) return;
+
+            /*
+              ══ ⚠️⚠️ 按在已有框上 → 这一次手势**永不画框** ══
+
+                 位移多少都不画。理由见 pointerdown 里的长注释：
+                 用户按在框上就是想处理这个框，"再画一个重合的框"
+                 没有使用价值；而真机上"点一下"的微动足以骗过位移阈值。
+
+                 ⚠️ 直接从 pointermove 里退出，连鬼框都不建 ——
+                    建了会闪一下虚线框，用户以为要画框了。
+            */
+            if (pending.onBox) return;
 
             /*
               还没确认成拖拽 —— 看位移够不够。
@@ -2925,19 +2967,6 @@
                 */
                 var moved = Math.sqrt(dx * dx + dy * dy);
                 if (moved < DRAG_SLOP) return;
-
-                /*
-                  ⚠️⚠️ 起点在已有框上、且移动不大时，**不当作画新框**。
-
-                     场景：用户想删掉一个框，按下去时手指抖了一下。
-                     如果他"按在框上 + 没走远"，意图几乎肯定是删除，
-                     而不是"在框正上方画一个几乎重合的新框"——
-                     后者没有任何使用价值。
-
-                     ⚠️ 判据用 DRAG_SLOP 的 2 倍：再多就说明用户的确是
-                        想从这儿拖出去画新框（比如想把框改大）。
-                */
-                if (pending.hitBox && moved < DRAG_SLOP * 2) return;
 
                 /*
                   确认是拖拽了 —— 现在才真正开始：
@@ -2991,21 +3020,51 @@
             }
 
             /*
-              ══ 情况一：没到拖拽阈值 = 一次点击 ══
+              ══ 情况一：按下的位置就在一个已有框上 ══
 
-                 按在已有框上 → 删除它（这就是"点击删除"的实现，
-                 不再依赖被 touch-action 掐掉的 click 事件）。
-                 没按在框上 → 什么都不做，让 click 冒泡去切菜单
-                              （顶部/底部的文字因此可以正常选中）。
+                 不管位移多少，这一次手势都只处理这个框 —— 删除它。
+                 位移多少都不画框（理由见 pointerdown 的长注释）。
+
+                 ⚠️ 这就是"点击删除"的实现。不再依赖 click 事件 ——
+                    `touch-action: none` 之下真机不派发 click，
+                    框自己那个监听形同虚设（桌面能跑、手机不能）。
             */
-            if (!dragging) {
+            if (pend.onBox || !dragging) {
                 dragging = false;
                 if (pend.hitBox) {
                     var idx = parseInt(pend.hitBox.getAttribute('data-index'), 10);
                     if (!isNaN(idx) && idx >= 0 && idx < regionMarks.length) {
-                        regionMarks.splice(idx, 1);
-                        annotateDirty = true;
-                        refreshAnnotateLayer(page);
+                        /*
+                          ⚠️ 复查一次：确认这个下标指向的确实是**这一页**的框。
+
+                             防的是"DOM 上的 data-index 与 regionMarks 的下标
+                             因多页/重绘而错位" —— 错位就会删掉别的页的框，
+                             而这种 bug 很难复现（要恰好两页都有框）。
+                             ⚠️ 代价是每次删一个框多两次属性读，可忽略。
+                        */
+                        if (regionMarks[idx].page === page) {
+                            regionMarks.splice(idx, 1);
+                            annotateDirty = true;
+                            refreshAnnotateLayer(page);
+
+                            /*
+                              ⚠️ 删完也要"吃掉随后的 click"。
+
+                                 框被删掉之后，`bodyEl` 的切菜单监听里那句
+                                 `event.target.closest('.anno-box')` 就失效了 ——
+                                 因为那个框已经不在 DOM 里，event.target 变成了
+                                 底下的 .anno-layer。于是这一次点击会
+                                 顺带把菜单切一下（用户看到"删个框菜单乱跳"）。
+
+                                 复用 markDragged 这个标志：它本来就是
+                                 "刚刚发生过一次版面操作，别把补发的 click
+                                  当作用户想切菜单"。
+                            */
+                            if (global.ScholariusUI &&
+                                typeof global.ScholariusUI.markDragged === 'function') {
+                                global.ScholariusUI.markDragged();
+                            }
+                        }
                     }
                 }
                 return;
