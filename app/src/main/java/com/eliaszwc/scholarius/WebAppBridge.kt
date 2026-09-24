@@ -37,14 +37,18 @@ class WebAppBridge(
     /** 请求某篇文献的正文文本（阅读页用） */
     private val onRequestDocText: (String) -> Unit,
     /**
-     * 把某篇文献的 PDF 装入 WebView（原始视图）。
+     * 取某篇文献某页的图片，返回 `data:image/jpeg;base64,...`。
      *
-     * ⚠️ 为什么是「原生接管」而不是网页里 iframe：
-     *    Android WebView 的内置 PDF 查看器只为**顶层文档**工作，
-     *    塞进子框架（iframe）会是空白。所以网页只能把 id 交上来，
-     *    由原生做一次顶层 loadUrl。
+     * ⚠️ **同步返回**，理由同 [getThumbnail]：网页 `img.src` 要立即拿到值。
+     *    渲染一页约 100-300ms（首次），之后命中缓存是读一个文件 ——
+     *    在 JavaBridge 线程上同步做是可接受的。
+     *
+     * @param page **从 1 开始**（对用户友好；内部转成 PdfRenderer 的 0 基）
+     * @return 图片 data URL；PDF 不存在/加密/页码越界都返回空串
      */
-    private val onOpenRawPdf: (String) -> Unit,
+    private val onGetPdfPage: (String, Int) -> String,
+    /** 取文献总页数；读不到返回 0 */
+    private val onGetPdfPageCount: (String) -> Int,
     /**
      * 改文献元数据。
      *
@@ -161,19 +165,36 @@ class WebAppBridge(
     }
 
     /**
-     * 把某篇文献的 PDF 装入 WebView（阅读页的「原始视图」）。
+     * 取某篇文献某页的图片（阅读页的「原始视图」）。
      *
-     * ⚠️ 只传 id，**不传 URL** —— URL 的拼法（主机名、`/pdf/` 前缀）
-     *    是原生侧知识，让网页自己拼等于把它复制两份。
+     * ══ ⚠️ 为什么是「取图片」而不是「打开 PDF」══
      *
-     * ⚠️ 这是**顶层导航**，调用后网页就不再是当前文档了。
-     *    回到网页由原生处理（见 MainActivity 的返回键逻辑）：
-     *    PDF 查看器里按返回 → 原生 goBack() 回网页 → 再按才关阅读页。
+     * 这个功能试过三种做法，前两种都失败了：
+     *
+     *  ① 网页里 `<iframe src=".../pdf/<id>">`
+     *     → 空白。内置 PDF 查看器只在顶层文档工作。
+     *
+     *  ② 原生对 WebView 顶层 `loadUrl(pdfUrl)`
+     *     → 能渲染，但整块界面被替换：顶栏消失、切不回来，
+     *       我们自己的菜单也全没了；在覆盖层方案下更是直接**黑屏**
+     *       （查看器要发 Range 请求，shouldInterceptRequest 给不出 206 分片）。
+     *
+     *  ③ 现在：原生把页**渲染成图片**交给网页。
+     *     PDF 于是只是网页里的**一块内容** —— 顶栏、底栏、面板
+     *     天然在它**上面**，这是我们真正想要的结构。
+     *
+     * ⚠️ 因此这里**不再有「顶层导航」**，也不会离开网页。
+     *    返回键由网页自己处理（与关闭阅读页同一条路径）。
+     *
+     * @param id   文献 id
+     * @param page 页码，**从 1 开始**
      */
     @JavascriptInterface
-    fun openRawPdf(id: String) {
-        onOpenRawPdf(id)
-    }
+    fun getPdfPage(id: String, page: Int): String = onGetPdfPage(id, page)
+
+    /** 取文献总页数（网页据此显示「3 / 12」并限制翻页范围） */
+    @JavascriptInterface
+    fun getPdfPageCount(id: String): Int = onGetPdfPageCount(id)
 
     /** 把 JSON 数组字符串解成 id 列表；解析失败返回空列表 */
     private fun parseIdArray(json: String): List<String> = try {

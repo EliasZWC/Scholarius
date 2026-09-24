@@ -1197,14 +1197,8 @@ body {
 */
 
 /*
-  PDF 视图。
-
-  ⚠️ 网页里**没有** PDF 容器 —— 原始视图由原生在**另一个 WebView**
-     （覆盖层）里显示，PDF 是那个 WebView 的顶层文档。
-     两个原因：① Android WebView 的内置 PDF 查看器只在顶层文档工作，
-     塞进 iframe 是空白；② 若让主 WebView 自己导航过去，
-     我们的界面（含顶栏）就被替换掉，用户切不回来。
-     详见 reader.js setView 的长注释与 MainActivity.configureRawView。
+  ⚠️ 原始视图（PDF）的样式在**下面「阅读页 · 原始视图」那一节**，
+     不在这里 —— 它属于正文区的内容，与顶栏这个切换按钮无关。
 */
 
 /*
@@ -1553,6 +1547,116 @@ body {
     color: var(--on-surface-variant);
     font-size: 14px;
     text-align: center;
+}
+
+/* --------------------------------------------------------------------------
+   阅读页 · 原始视图（PDF 页图）
+   -------------------------------------------------------------------------- */
+
+/*
+  ⚠️ 这里是**网页里的普通内容**，不是独立的一层。
+
+     这个功能试过「顶层导航」和「覆盖层 WebView」两种做法，都失败了：
+       · 顶层导航 → 整个界面被替换，顶栏消失、切不回来；
+       · 覆盖层   → 盖住我们自己的菜单，而且直接黑屏
+                    （内置查看器要 206 分片，shouldInterceptRequest 给不出）。
+     用户为此反馈了三次，最后一句是「但唤起菜单应该在 pdf 上面啊」——
+     那就是本方案：PDF 只是 .reader-content 里的一块内容，
+     顶栏(11)、底栏(11)、面板(60) 天然在它上面，**不需要任何 z-index 技巧**。
+
+  ⚠️ 因此这里**故意不写 z-index**。
+     一旦给 PDF 容器写了 z-index，就会重新引入"它和菜单谁在上面"的问题 ——
+     而正确的层级关系应该由 DOM 结构决定（PDF 在 .reader-body 里，
+     菜单在 .reader-body 外面），不该靠数值对抗。
+*/
+
+/*
+  ⚠️ 原始视图要**撑满 .reader-body 并去掉正文的内边距**。
+
+     正文有 24px 左右留白 + 状态栏让位，对文字是必要的；
+     但 PDF 页图贴边显示更好看（纸就是纸，不需要再套一层内边距），
+     而且能多出几十像素的宽度给内容。
+
+     所以这里负外边距"吃掉" .reader-content 的 padding ——
+     因为 .pdf-page 是 .reader-content 的子元素，不这样做就只能在
+     JS 里给 .reader-content 加/去一个类，切换时会有一次重排闪烁。
+     负 margin 是纯样式的手段，切换是瞬时的。
+*/
+.pdf-page {
+    margin: calc(-1 * (var(--safe-top) + 12px)) calc(-1 * (24px + var(--safe-right)))
+        calc(-1 * (var(--safe-bottom) + 16px)) calc(-1 * (24px + var(--safe-left)));
+    display: flex;
+    flex-direction: column;
+    /* PDF 页与页之间、以及页与翻页条之间的底色 */
+    background: var(--bg);
+    min-height: 100%;
+}
+
+/*
+  ⚠️ `width: 100%` + `height: auto` 是必须的：
+     页图的实际像素尺寸由原生决定（宽 1600，高按比例），
+     在手机上必须缩到容器宽度。写死 px 会在不同屏宽下溢出或缩太小。
+
+  ⚠️ `display: block` 去掉 <img> 的基线空隙 ——
+     行内元素下方会有几像素的"descender 空隙"，
+     深色底上表现为页图下缘露出一条背景色，很明显。
+*/
+.pdf-page-img {
+    display: block;
+    width: 100%;
+    height: auto;
+    /* 页图本身已经是白底，这里给个白底兜住解码前的空档 */
+    background: #FFFFFF;
+}
+
+/*
+  翻页条。
+
+  ⚠️ 只出现在原始视图里，且**贴在内容末尾**而不是固定在屏幕上。
+     固定在屏幕底部会和阅读页自己的底部选项栏（目录/设置）叠在一起，
+     两条栏挤在同一条边上非常难看。
+     跟着内容走就没这个冲突：翻到页尾自然看到它。
+*/
+.pdf-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 14px 16px calc(14px + var(--safe-bottom));
+    background: var(--bg);
+}
+
+.pdf-pager-btn {
+    flex: 0 0 auto;
+    min-width: 72px;
+    padding: 9px 14px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface-raised);
+    color: var(--on-surface);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+/*
+  ⚠️ 禁用态必须**明显**。翻到第一页时"上一页"若还能按，
+     用户会以为翻页坏了（点了没反应）。
+     这里降到 38% 不透明度 + 去掉指针，一眼看出不可用。
+*/
+.pdf-pager-btn:disabled {
+    opacity: 0.38;
+    cursor: default;
+}
+
+.pdf-pager-label {
+    min-width: 64px;
+    text-align: center;
+    color: var(--on-surface-variant);
+    font-size: 13px;
+    /* 等宽数字：翻页时"1 / 12"→"2 / 12"宽度不变，标签不会左右抖 */
+    font-variant-numeric: tabular-nums;
 }
 
 /* --------------------------------------------------------------------------

@@ -139,13 +139,20 @@
     var tocOpen = false;
     /** 当前视图：'reading' | 'raw' */
     var view = 'reading';
+    /** 原始视图当前显示的页码（**从 1 开始**） */
+    var rawPage = 1;
+    /** 文献总页数。0 表示还没问到 / 问不到 —— 此时翻页条只显示当前页码 */
+    var rawPageCount = 0;
     /**
-     * 是否正在等原生把 PDF 装进来。
+     * 阅读视图的正文缓存。
      *
-     * ⚠️ 用来防止重复请求（用户连点两下会发起两次 loadUrl，
-     *    查看器会闪）。也用来在原生回报失败时判断该不该回退。
+     * ⚠️ **必须缓存**：切到原始视图时 contentEl 的内容被图片顶掉了，
+     *    切回来要能立刻恢复，不能重新向原生要一遍（那等于把整个 PDF
+     *    再解析一次，几百毫秒到几秒）。
+     *    两者只会有一个非空：有结构化块时存 blocks，否则存纯文本。
      */
-    var rawViewRequested = false;
+    var lastBlocks = null;
+    var lastText = '';
 
     /**
      * 目录条目：[{ level, title, line }]
@@ -375,9 +382,9 @@
     /**
      * 切换视图。
      *
-     * ══ ⚠️ 关键：原始视图由一个**覆盖在主 WebView 上的独立 WebView** 承载 ══
+     * ══ ⚠️ 原始视图是**网页里的一块内容**，不是另一层界面 ══
      *
-     * 这个过程踩了两次坑，都记在这里，别再走回头路：
+     * 这个功能试过三种做法，前两种都失败了，全部记在这里别再走回头路：
      *
      * ① 网页里放 `<iframe src="https://.../pdf/<id>">`
      *    实测（用户 2026-09-24：「看不见 pdf」）：iframe 尺寸正常、
@@ -385,71 +392,229 @@
      *    根因：Android WebView 的内置 PDF 查看器是为**顶层文档**设计的，
      *    在子框架里不渲染。这是查看器的行为，不是我们代码错。
      *
-     * ② 让**主 WebView** 自己 loadUrl(PDF)（顶层，确实能渲染）
-     *    但整个网页被替换掉了 —— 顶栏一起消失，
-     *    用户**没法切回阅读视图**（反馈：「没有成功转换视图」）。
+     * ② 让原生对 WebView 顶层 loadUrl(PDF)（含另开一个覆盖层 WebView）
+     *    用户反馈：「没有成功转换视图」→「转换视图直接黑屏了」
+     *    →「但唤起菜单应该在 pdf 上面啊」。
+     *    两次反馈指明了同一个结构性问题：
+     *      · 顶层导航会把**整个界面**换掉，顶栏消失、切不回来；
+     *      · 覆盖层 WebView 同样盖住我们自己的菜单，
+     *        所以「在 PDF 里点中间唤起菜单」永远不可能实现。
+     *    另外黑屏还有一层原因：内置查看器要发 **Range 请求**才能渲染，
+     *    而 shouldInterceptRequest 只能给一整段流，给不出 206 分片。
      *
-     * ③ 现在：原生另开一个 WebView（`raw_view`）盖在上面，
-     *    PDF 是**它**的顶层文档 → 查看器肯渲染；
-     *    我们的网页与顶栏原封不动（只是被盖住），随时能切回来。
+     * ③ 现在（正确）：**原生把页渲染成图片**（系统 PdfRenderer，见 PdfPages），
+     *    网页把图片放进 `reader-content`。
+     *    PDF 于是只是网页里的一块内容 ——
+     *    **顶栏、底栏、设置面板、目录弹窗天然在它上面**，
+     *    点中间唤起菜单也照常工作（bodyEl 的点击分区逻辑不用改）。
      *
-     * ⚠️ 因此网页侧**不改变自己的可见性**，只做两件事：
-     *      ① 把按钮图标切过去（让用户知道"已经在原始视图了"）
-     *      ② 请原生显示覆盖层
-     *    顶栏被盖住期间用户看不见按钮 —— 无所谓，
-     *    原生的返回键会把覆盖层收掉，那时状态自动归位。
+     * ⚠️ 关键收益：不再有「离开网页」这回事 ——
+     *    返回键、菜单、主题、i18n 全部沿用原有路径，不需要任何特例分支。
      *
      * @param {string} next 'reading' | 'raw'
      */
     function setView(next) {
         var want = (next === 'raw') ? 'raw' : 'reading';
 
-        /*
-          ⚠️ 已经在原始视图时不重复发起 ——
-             连续两次 loadUrl 会让查看器闪一下。
-        */
-        if (want === 'raw' && view === 'raw') return;
-
+        if (want === view) return;
         view = want;
+        syncViewToggle();
 
         if (want === 'raw') {
-            syncViewToggle();
-            rawViewRequested = true;
-
-            var bridge = global.ScholariusNative;
-            if (bridge && typeof bridge.openRawPdf === 'function' && currentDoc) {
-                /*
-                  ⚠️ 只传 id（不是 URL）—— URL 由原生拼。
-                     理由：id → URL 的规则（主机名、前缀）属于原生侧知识，
-                     网页自己拼等于把这份知识复制两份，改一处就错。
-                */
-                bridge.openRawPdf(String(currentDoc.id));
-            } else {
-                /*
-                  ⚠️ 桥不可用（浏览器预览）→ 回退到阅读视图并提示，
-                     不能停在一个永远不出现的原始视图上。
-                     实测：预览里点这个按钮却什么都不发生最让人迷惑。
-                */
-                view = 'reading';
-                rawViewRequested = false;
-                syncViewToggle();
-                showError('no-bridge');
-            }
+            showPdfPage(1);
             return;
         }
 
         /*
-          回到阅读视图。
+          回到阅读视图：把正文重新渲染出来。
 
-          ⚠️ 正常路径下用户**不必**点这里 ——
-             PDF 是全屏覆盖层，顶栏被盖住，用户是用原生的返回键
-             关掉覆盖层的（`onRawClosed` 会把状态归位）。
-
-             这条路径留着是因为：覆盖层还可能被非返回键的方式关掉，
-             以及状态归位逻辑要有一处统一入口。
+          ⚠️ 这里**必须重新渲染**，不能只把图片藏起来 ——
+             原始视图把 contentEl 的内容整个换成了图片。
+             用缓存的 blocks/text 重放一次最省事，
+             不必再向原生要一遍文本（那要重新解析整个 PDF）。
         */
-        rawViewRequested = false;
-        syncViewToggle();
+        restoreReadingContent();
+    }
+
+    /**
+     * 显示某一页 PDF。
+     *
+     * ══ 为什么要自己控制翻页 ══
+     *
+     * 内置查看器那条路已经证明走不通（见 setView 的长注释），
+     * 所以翻页现在是我们自己的事：一次只显示一页，
+     * 上下页由底部的翻页条控制。
+     *
+     * ⚠️ 一次只渲染一页，**不是偷懒**：
+     *    一页 1600px 宽的位图 base64 后约 400KB 字符串。
+     *    一篇 12 页的论文若一次全取，就是 5MB 字符串跨桥传递 ——
+     *    必然卡顿甚至 OOM。按需取当前页是唯一可行的做法。
+     *
+     * @param {number} page 页码，**从 1 开始**
+     */
+    function showPdfPage(page) {
+        if (!contentEl || !currentDoc) {
+            return;
+        }
+
+        var bridge = global.ScholariusNative;
+        if (!bridge || typeof bridge.getPdfPage !== 'function') {
+            /*
+              ⚠️ 桥不可用（浏览器预览）→ 回退到阅读视图并提示。
+                 不能停在一个永远不出现的原始视图上 ——
+                 实测：预览里点这个按钮却什么都不发生最让人迷惑。
+            */
+            view = 'reading';
+            syncViewToggle();
+            showError('no-bridge');
+            return;
+        }
+
+        var id = String(currentDoc.id);
+
+        // 首次进入时问一次总页数（之后有缓存）
+        if (!rawPageCount) {
+            try {
+                rawPageCount = bridge.getPdfPageCount(id) | 0;
+            } catch (e) {
+                rawPageCount = 0;
+            }
+        }
+        if (rawPageCount > 0 && page > rawPageCount) page = rawPageCount;
+        if (page < 1) page = 1;
+        rawPage = page;
+
+        contentEl.textContent = '';
+
+        /*
+          ⚠️ 页图用 <img>，并且**给出正确的宽高比**（width:100% + height:auto）。
+             若不给，图片解码前高度是 0，内容区会先"塌一下"再撑开 ——
+             翻页时观感是抖动的。
+        */
+        var wrap = document.createElement('div');
+        wrap.className = 'pdf-page';
+
+        var img = document.createElement('img');
+        img.className = 'pdf-page-img';
+        img.alt = t('reader.rawView') + ' ' + page;
+        img.decoding = 'async';
+
+        var dataUrl = '';
+        try {
+            dataUrl = bridge.getPdfPage(id, page) || '';
+        } catch (e) {
+            dataUrl = '';
+        }
+
+        if (dataUrl) {
+            img.src = dataUrl;
+        } else {
+            /*
+              ⚠️ 取不到图（加密 PDF / 文件损坏 / 页码越界）要给**明确提示**，
+                 不能留一块空白 —— 用户会以为界面坏了。
+            */
+            var hint = document.createElement('div');
+            hint.className = 'reader-hint';
+            hint.textContent = t('reader.pageUnavailable');
+            wrap.appendChild(hint);
+        }
+        wrap.appendChild(img);
+        contentEl.appendChild(wrap);
+
+        if (bodyEl) {
+            bodyEl.scrollTop = 0;
+        }
+
+        renderPdfPager();
+        trace('reader:raw', 'page ' + page + (rawPageCount ? '/' + rawPageCount : ''));
+    }
+
+    /**
+     * 底部的翻页条（上一页 / 页码 / 下一页）。
+     *
+     * ⚠️ 只在原始视图里出现，阅读视图要把它清掉 ——
+     *    否则切回去之后还挂着一条翻页条，很怪。
+     *
+     * ⚠️ 用**真实按钮**而不是手势滑动：
+     *    滑动翻页在 WebView 里容易和"点中间唤起菜单"打架
+     *    （同一次触摸既要判翻页又要判点按），当前不值得引入这个复杂度。
+     */
+    function renderPdfPager() {
+        if (!contentEl) return;
+
+        var prev = contentEl.querySelector('.pdf-pager');
+        if (prev) prev.remove();
+
+        if (view !== 'raw') return;
+
+        var bar = document.createElement('div');
+        bar.className = 'pdf-pager';
+
+        var mkBtn = function (label, delta, disabled) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'pdf-pager-btn';
+            b.textContent = label;
+            b.disabled = !!disabled;
+            if (!disabled) {
+                b.addEventListener('click', function (ev) {
+                    /*
+                      ⚠️ 阻止冒泡 —— 否则这次点击会冒到 bodyEl，
+                         被"点中间唤起菜单"的监听器接住，
+                         于是翻页的同时菜单也跳出来了。
+                    */
+                    ev.stopPropagation();
+                    showPdfPage(rawPage + delta);
+                });
+            }
+            return b;
+        };
+
+        var hasCount = rawPageCount > 0;
+        bar.appendChild(mkBtn(t('reader.prevPage'), -1, rawPage <= 1));
+
+        var label = document.createElement('span');
+        label.className = 'pdf-pager-label';
+        label.textContent = hasCount
+            ? (rawPage + ' / ' + rawPageCount)
+            : String(rawPage);
+        bar.appendChild(label);
+
+        bar.appendChild(mkBtn(t('reader.nextPage'), 1, hasCount && rawPage >= rawPageCount));
+
+        contentEl.appendChild(bar);
+    }
+
+    /**
+     * 把阅读视图的正文重新放回 contentEl。
+     *
+     * ⚠️ 用**缓存**而不是重新向原生要文本：
+     *    重新要一次会让原生再解析一遍整个 PDF（几百毫秒到几秒），
+     *    而内容我们本来就有 —— 只是刚才为了让位给图片把它清掉了。
+     *
+     * 缓存为空（极端情况：切过去时正文还没回来）就重新请求一次。
+     */
+    function restoreReadingContent() {
+        if (!contentEl) return;
+
+        if (lastBlocks && lastBlocks.length) {
+            contentEl.textContent = '';
+            renderBlocks(lastBlocks);
+            if (bodyEl) bodyEl.scrollTop = 0;
+            return;
+        }
+
+        if (lastText) {
+            contentEl.textContent = lastText;
+            if (bodyEl) bodyEl.scrollTop = 0;
+            return;
+        }
+
+        // 缓存没有（正文还没提取完就切过去又切回来）→ 重新要一遍
+        if (currentDoc) {
+            showLoading();
+            requestText(String(currentDoc.id));
+        }
     }
 
     /**
@@ -496,19 +661,6 @@
              i18n 刷新由 refreshChrome() 主动调本函数负责。
         */
         viewToggleBtn.removeAttribute('data-i18n-aria-label');
-    }
-
-    /**
-     * 原生回报「已经从 PDF 回来了」。
-     *
-     * ⚠️ 必须由原生**主动通知**，不能靠网页轮询或猜。
-     *    PDF 是盖在别的 WebView 上的独立文档，网页全程收不到任何事件 ——
-     *    没有这条通知，按钮会一直停在"原始视图"的图标上。
-     */
-    function onRawClosed() {
-        rawViewRequested = false;
-        view = 'reading';
-        syncViewToggle();
     }
 
     // --- 菜单 ---------------------------------------------------------------
@@ -572,13 +724,15 @@
         /*
           ⚠️ 每次打开都回到**阅读视图**（重置视图状态）。
 
-             原始视图现在是“原生把 PDF 装进 WebView”的全屏导航，
-             网页被替换掉、不在前台，所以打开新文献时
-             网页这边的状态本来就已经是 reading；
-             这里显式重置是为了兼容“原生回报失败后转了一圈又回来”的路径。
+             原始视图现在是网页里的一块内容（原生渲染的页图），
+             所以“网页侧状态”与“用户看到的画面”现在是同一件事了 ——
+             但上一位用户可能停在原始视图上，打开新文献时必须重置到阅读视图。
         */
-        rawViewRequested = false;
         view = 'reading';
+        rawPage = 1;
+        rawPageCount = 0;
+        lastBlocks = null;
+        lastText = '';
         syncViewToggle();
 
         /*
@@ -614,7 +768,10 @@
                     contentEl.textContent = '';
                 }
                 view = 'reading';
-                rawViewRequested = false;
+                rawPage = 1;
+                rawPageCount = 0;
+                lastBlocks = null;
+                lastText = '';
             }
         }, 280);
     }
@@ -813,6 +970,22 @@
                  用 innerHTML 会破坏页面结构（甚至注入）。
             */
             contentEl.textContent = text;
+        }
+
+        /*
+          ⚠️ 缓存一份，供「从原始视图切回阅读视图」时重放
+             （见 restoreReadingContent）。
+
+          ⚠️ 两者只会有一个非空，所以要**显式清掉另一个** ——
+             不清的话，上一篇的 blocks 会残留在 lastBlocks 里，
+             下一次切回时重新渲染出**上一篇的正文**（而不是本篇的纯文本）。
+        */
+        if (blocks && blocks.length) {
+            lastBlocks = blocks;
+            lastText = '';
+        } else {
+            lastBlocks = null;
+            lastText = text;
         }
 
         if (bodyEl) {
@@ -2006,8 +2179,6 @@
         isOpen: isOpen,
         setText: setText,
         onExtractFailed: onExtractFailed,
-        /** 原生从 PDF 全屏视图返回后调用（见 setView 的长注释） */
-        onRawClosed: onRawClosed,
         /** 目录（供测试与将来的大纲导出用） */
         getToc: function () {
             return toc.slice();
