@@ -251,9 +251,17 @@
             'reader.headingLevel2': 'Level 2',
             'reader.headingLevel3': 'Level 3',
 
-            // 区间选择（把连续多块一次标完）
-            'reader.startRange': 'Select A Range',
-            'reader.rangeFrom': 'Will Apply From Line {a} To Line {b}.',
+            // 区间选择（长按起块，再点终点）
+            'reader.rangeArmed': 'Range Start Set. Tap The End Region.',
+            'reader.editMark': 'Edit',
+
+            // 清空（按类型整体清除）
+            'reader.clear': 'Clear',
+            'reader.clearAllKinds': 'All Kinds',
+            'reader.clearNothing': 'Nothing To Clear.',
+            'reader.clearConfirmTitle': 'Clear Regions?',
+            'reader.clearConfirmBody': 'This Removes {n} "{what}" Region(s). Your PDF Is Not Affected.',
+            'reader.clearDone': 'Cleared.',
 
             // 阅读设置：字体
             'reader.font': 'Font',
@@ -564,9 +572,17 @@
             'reader.headingLevel2': '二级',
             'reader.headingLevel3': '三级',
 
-            // 区间选择（把连续多块一次标完）
-            'reader.startRange': '选择一段区间',
-            'reader.rangeFrom': '将把第 {a} 行到第 {b} 行一起标注。',
+            // 区间选择（长按起块，再点终点）
+            'reader.rangeArmed': '起点已设，请点终点区域。',
+            'reader.editMark': '编辑',
+
+            // 清空（按类型整体清除）
+            'reader.clear': '清空',
+            'reader.clearAllKinds': '全部类型',
+            'reader.clearNothing': '没有可清空的标注。',
+            'reader.clearConfirmTitle': '清空这些框？',
+            'reader.clearConfirmBody': '将清除 {n} 个「{what}」区域。PDF 本身不受影响。',
+            'reader.clearDone': '已清空。',
 
 
             // 阅读设置：字体

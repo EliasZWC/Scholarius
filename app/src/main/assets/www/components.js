@@ -19,6 +19,8 @@
     var currentDismissHandler = null;
     var toastTimer = null;
     var longPressed = false;
+    /** 上面那个标记的过期定时器（见 attachLongPress） */
+    var longPressExpiry = null;
 
     function t(key) {
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
@@ -761,6 +763,20 @@
             timer = global.setTimeout(function () {
                 timer = null;
                 longPressed = true;
+                /*
+                  ⚠️ 标记必须**自动过期**（见 justLongPressed 的说明）。
+                     不能只靠"读一次清零"—— 浏览器在长按后**不一定**
+                     补发 click（手指移过、或某些 WebView 不补），
+                     那样标记会一直挂着，把**下一次真实点击吞掉**。
+                     实测：长按设区间起点后，点终点毫无反应。
+                */
+                if (longPressExpiry) {
+                    global.clearTimeout(longPressExpiry);
+                }
+                longPressExpiry = global.setTimeout(function () {
+                    longPressExpiry = null;
+                    longPressed = false;
+                }, 1200);
                 handler();
             }, 600);
         }, { passive: true });
@@ -774,10 +790,20 @@
         });
     }
 
-    /** 读一次就清零：只在长按后的那一次 click 里返回 true */
+    /**
+     * 读一次就清零：只在长按后的那一次 click 里返回 true。
+     *
+     * ⚠️ 另有 1200ms 的**自动过期**兜底（见 attachLongPress）。
+     *    只靠读一次清是不够的：长按后浏览器不一定补发 click，
+     *    标记会一直 true，把用户下一次真实点击吞掉。
+     */
     function justLongPressed() {
         var value = longPressed;
         longPressed = false;
+        if (longPressExpiry) {
+            global.clearTimeout(longPressExpiry);
+            longPressExpiry = null;
+        }
         return value;
     }
 
@@ -1024,6 +1050,18 @@
         annoReference: 'M560-564v-68q33-14 67.5-21t72.5-7q26 0 51 4t49 10v64q-24-9-48.5-13.5T700-600q-38 0-73 9.5T560-564Zm0 220v-68q33-14 67.5-21t72.5-7q26 0 51 4t49 10v64q-24-9-48.5-13.5T700-380q-38 0-73 9t-67 27Zm0-110v-68q33-14 67.5-21t72.5-7q26 0 51 4t49 10v64q-24-9-48.5-13.5T700-490q-38 0-73 9.5T560-454ZM260-320q47 0 91.5 10.5T440-278v-394q-41-24-87-36t-93-12q-36 0-71.5 7T120-692v396q35-12 69.5-18t70.5-6Zm260 42q44-21 88.5-31.5T700-320q36 0 70.5 6t69.5 18v-396q-33-14-68.5-21t-71.5-7q-47 0-93 12t-87 36v394Zm-40 118q-48-38-104-59t-116-21q-42 0-82.5 11T100-198q-21 11-40.5-1T40-234v-482q0-11 5.5-21T62-752q46-24 96-36t102-12q58 0 113.5 15T480-740q51-30 106.5-45T700-800q52 0 102 12t96 36q11 5 16.5 15t5.5 21v482q0 23-19.5 35t-40.5 1q-37-20-77.5-31T700-240q-60 0-116 21t-104 59ZM280-494Z',
         // keyword：`sell`（价签 / 吊牌）
         annoKeyword: 'M856-390 570-104q-12 12-27 18t-30 6q-15 0-30-6t-27-18L103-457q-11-11-17-25.5T80-513v-287q0-33 23.5-56.5T160-880h287q16 0 31 6.5t26 17.5l352 353q12 12 17.5 27t5.5 30q0 15-5.5 29.5T856-390ZM513-160l286-286-353-354H160v286l353 354ZM260-640q25 0 42.5-17.5T320-700q0-25-17.5-42.5T260-760q-25 0-42.5 17.5T200-700q0 25 17.5 42.5T260-640Zm220 160Z',
+        /*
+          clear：`delete_sweep`（一个废纸篓 + 几条待清的横线）
+
+          ⚠️ 用于底部编辑栏的「清空」项（用户 2026-09-25 要求）。
+             「清空某一类」要表达的是"这里有一堆要整批清掉的东西"，
+             delete_sweep 正好是这个意象；普通的 delete（垃圾桶）
+             看起来像"删掉这一个"，与"整类清空"不符。
+
+          ⚠️ 逐字取自官方：tools/fetch_icon.py delete_sweep
+        */
+        annoClear: 'M600-240v-80h160v80H600Zm0-320v-80h280v80H600Zm0 160v-80h240v80H600ZM120-640H80v-80h160v-60h160v60h160v80h-40v360q0 33-23.5 56.5T440-200H200q-33 0-56.5-23.5T120-280v-360Zm80 0v360h240v-360H200Zm0 0v360-360Z',
+
     };
 
     /*
@@ -1045,6 +1083,44 @@
         '2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 ' +
         '3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 ' +
         '8c0-4.42-3.58-8-8-8z';
+
+    /*
+      ══ 填充版路径（选中态用）══
+
+      ⚠️⚠️ Material Symbols 的 outlined 与 filled 是**两套不同的路径数据**，
+          不是同一条路径换填充规则。本项目实测 12 个标注图标里
+          **6 个确实不同**（table_chart / image / group / article /
+          sticky_note_2 / menu_book / sell），另 6 个官方两态相同。
+
+      所以选中态**必须用两个独立的 <svg>** 切换显示
+      （与底部导航栏 .nav-item 的做法完全一致，见 index.html 与 styles.css）。
+
+      ⚠️ 这里只登记**与轮廓版不同**的那些。查不到就退回 ICON_PATHS ——
+         官方两态相同时（如 text_fields）本来就该一样。
+
+      ⚠️ 全部来自 Google Fonts 官方 CDN，**不许手写**：
+         三次手写 Material 路径都出了错（少一段就认不出形状）。
+         抓取脚本见 tools/fetch_icon.py。
+    */
+    var ICON_PATHS_FILL = {
+        // table_chart, filled
+        annoTable: 'M120-640v-120q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v120H120Zm80 520q-33 0-56.5-23.5T120-200v-360h180v440H200Zm460 0v-440h180v360q0 33-23.5 56.5T760-120H660Zm-280 0v-440h200v440H380Z',
+        // image, filled
+        annoFigure: 'M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm40-160h480L570-480 450-320l-90-120-120 160Z',
+        // group, filled
+        annoAuthor: 'M40-160v-112q0-34 17.5-62.5T104-378q62-31 126-46.5T360-440q66 0 130 15.5T616-378q29 15 46.5 43.5T680-272v112H40Zm720 0v-120q0-44-24.5-84.5T666-434q51 6 96 20.5t84 35.5q36 20 55 44.5t19 53.5v120H760ZM247-527q-47-47-47-113t47-113q47-47 113-47t113 47q47 47 47 113t-47 113q-47 47-113 47t-113-47Zm466 0q-47 47-113 47-11 0-28-2.5t-28-5.5q27-32 41.5-71t14.5-81q0-42-14.5-81T544-792q14-5 28-6.5t28-1.5q66 0 113 47t47 113q0 66-47 113Z',
+        // article, filled
+        annoAbstract: 'M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm80-160h280v-80H280v80Zm0-160h400v-80H280v80Zm0-160h400v-80H280v80Z',
+        // sticky_note_2, filled
+        annoFootnote: 'M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v400L600-120H200Zm360-80 200-200H560v200ZM280-400h200v-80H280v80Zm0-160h400v-80H280v80Z',
+        // menu_book, filled
+        annoReference: 'M560-564v-68q33-14 67.5-21t72.5-7q26 0 51 4t49 10v64q-24-9-48.5-13.5T700-600q-38 0-73 9.5T560-564Zm0 220v-68q33-14 67.5-21t72.5-7q26 0 51 4t49 10v64q-24-9-48.5-13.5T700-380q-38 0-73 9t-67 27Zm0-110v-68q33-14 67.5-21t72.5-7q26 0 51 4t49 10v64q-24-9-48.5-13.5T700-490q-38 0-73 9.5T560-454ZM220-80q-24 0-42-18t-18-42v-482q0-11 5.5-21T182-658q56-17 114-25.5t124-8.5q45 0 88 8.5t84 25.5v470q30-13 62-19.5t66-6.5q36 0 70.5 6t69.5 18v-480q-23-10-46.5-16t-48.5-9v-81q25 4 49 10t47 15q11 5 16.5 15t5.5 21v482q0 23-19.5 35t-40.5 1q-37-20-77.5-31T700-240q-60 0-116 21t-104 59v-514q-41-24-87-36t-93-12q-36 0-71.5 7T160-692v514Z',
+    };
+
+    /** 取填充版路径；没有登记就退回轮廓版（官方两态相同的那些就该一样） */
+    function iconPathFilled(name) {
+        return ICON_PATHS_FILL[name] || ICON_PATHS[name];
+    }
 
     /*
       ⚠️⚠️ viewBox 必须**按图标逐个注册**，不能一律用 0 0 24 24。
@@ -1088,12 +1164,31 @@
         annoHeading: SYMBOLS_VIEWBOX,
         annoFootnote: SYMBOLS_VIEWBOX,
         annoReference: SYMBOLS_VIEWBOX,
-        annoKeyword: SYMBOLS_VIEWBOX
+        annoKeyword: SYMBOLS_VIEWBOX,
+        // 「清空某一类」——见 ICON_PATHS 里的说明
+        annoClear: SYMBOLS_VIEWBOX
     };
 
     /** 返回一段 svg 标记，图标全部来自 Google Material 体系 */
     function icon(name) {
         var path = ICON_PATHS[name];
+        if (!path) {
+            return '';
+        }
+        var box = ICON_VIEWBOX[name] || ICONS_VIEWBOX;
+        return '<svg viewBox="' + box + '" aria-hidden="true" focusable="false">' +
+            '<path d="' + path + '"/></svg>';
+    }
+
+    /**
+     * 返回**填充版** svg 标记（选中态用）。
+     *
+     * ⚠️ 调用方必须**同时**放轮廓版与填充版两个 <svg>，
+     *    再用 CSS 按选中态切 display —— 不能只换 fill 规则。
+     *    理由见 ICON_PATHS_FILL 的说明。
+     */
+    function iconFilled(name) {
+        var path = iconPathFilled(name);
         if (!path) {
             return '';
         }
@@ -1126,6 +1221,7 @@
         attachLongPress: attachLongPress,
         justLongPressed: justLongPressed,
         icon: icon,
+        iconFilled: iconFilled,
         githubMark: githubMark,
         ICON_PATHS: ICON_PATHS
     };

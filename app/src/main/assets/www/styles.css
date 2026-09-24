@@ -2224,31 +2224,95 @@ body {
 }
 
 /*
-  ⚠️⚠️ 选中态：**图标填充 + 强调色**，与底部导航栏（.nav-item）同一套。
+  ⚠️⚠️ 选中态：**真正的填充图标**，与底部导航栏（.nav-item）同一套。
 
-     用户明确要求：「就和导航栏一样，切换到哪个编辑选项，
-     图标就填充然后强调就可以了」。
+     用户反复要求（2026-09-24、2026-09-25 两次）：
+       「切换到哪个编辑选项，图标就填充然后强调就可以了」
+       「阅读视图的选项和编辑模式的选项都没有按照我说的
+         "选中后使用填充图标"」
 
-     ⚠️ 所以**不要**用背景块 / 边框 / 圆角胶囊那种"chip"式选中效果 ——
-        那与导航栏不是一套视觉语言。
+     ⚠️ 之前这里是**假的填充**：靠颜色强调 + 字重近似，
+        因为当时的 icon() 只输出固定 path、切不了字体轴。
+        用户看得出来不对 —— 假的就是假的。
+        现在改用**两只真 SVG**（outline / fill 各一只），
+        与 .nav-item 的做法逐字一致：
+          · 两个 svg 用 grid-area: 1/1 叠在同一格
+          · 按 aria-pressed 切 display
+          · Material Symbols 的 outlined / filled 是两套不同路径
+            （实测 12 个标注图标里 6 个确实不同）
 
-     ⚠️ 「图标填充」怎么实现：这些图标是 Material **Symbols**，
-        同一段 path 在 FILL=1 时才是填充形态。但我们的 icon()
-        只输出固定 path，不切换字体轴。
-        所以这里用 `fill: currentColor` 的实心效果近似 ——
-        实际上靠的是**颜色强调 + 字重**：
-
-        · 未选中 → --nav-inactive（与导航栏未选中同色）
-        · 选中   → --nav-active  （与导航栏选中同色）+ 加粗
-
-        这与 .nav-item 的表达力一致（导航栏也只靠颜色区分）。
+     ⚠️ 权重必须写成 `.reader-action-icon svg.icon-fill`（0,2,1）——
+        否则会被 `.reader-action-icon svg { display:block }` 盖掉，
+        两态同时显示（导航栏踩过同一个坑，见 .nav-icon 处的长注释）。
 */
+.reader-action-icon {
+    display: grid;
+    place-items: center;
+}
+
+.reader-action-icon svg {
+    display: block;
+    width: 24px;
+    height: 24px;
+    fill: currentColor;
+}
+
+.reader-action-icon svg.icon-outline,
+.reader-action-icon svg.icon-fill {
+    grid-area: 1 / 1;
+}
+
+.reader-action-icon svg.icon-fill {
+    display: none;
+}
+
+.reader-edit-tab[aria-pressed="true"] .reader-action-icon svg.icon-outline {
+    display: none;
+}
+
+.reader-edit-tab[aria-pressed="true"] .reader-action-icon svg.icon-fill {
+    display: block;
+}
+
+/* 选中态用强调色（与导航栏选中的 --nav-active 同一个变量） */
 .reader-edit-tab[aria-pressed="true"] {
     color: var(--nav-active);
 }
 
 .reader-edit-tab[aria-pressed="true"] .reader-action-label {
     font-weight: 700;
+}
+
+/*
+  ⚠️ 类型选择弹层里的选项同样走「两只 SVG 切换」。
+     （用户要求的"选中后使用填充图标"也包括这里）
+*/
+.anno-typeopt .icon-outline,
+.anno-typeopt .icon-fill {
+    grid-area: 1 / 1;
+}
+
+.anno-typeopt {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-items: center;
+}
+
+.anno-typeopt .icon-fill {
+    display: none;
+}
+
+.anno-typeopt[aria-pressed="true"] .icon-outline {
+    display: none;
+}
+
+.anno-typeopt[aria-pressed="true"] .icon-fill {
+    display: block;
+}
+
+.anno-typeopt[aria-pressed="true"] {
+    color: var(--nav-active);
+    border-color: var(--nav-active);
 }
 
 /*
@@ -2484,26 +2548,25 @@ body {
 }
 
 /*
-  ⚠️ 区间提示与「选择一段区间」按钮。
+  ⚠️ 「选择一段区间」按钮的样式**已删除**（用户 2026-09-25 两次要求）。
 
-     提示是**说明性文字**而不是标题 —— 按项目规则：
-     句子用正常书写（只句首大写），只有短语才首字母大写。
-     所以这里用小字号、常规字重，不套 .title-text。
+     那个按钮是多余的中间步骤：它把两步操作（点框→选类型）
+     变成四步，还常驻在弹层里。区间选择改由**长按**触发。
+
+     ⚠️ 一并删掉 `.anno-rangebtn` 与 `.anno-rangehint` ——
+        留着死样式会让后来的人以为还有这个控件。
 */
-.anno-rangehint {
-    margin: 0 0 10px;
-    padding: 8px 10px;
-    border-radius: 8px;
-    background: var(--surface-raised);
-    color: var(--on-surface-variant);
-    font-size: 12px;
-    line-height: 1.5;
-}
+/*
+  ⚠️ 底栏的「清空」项。
 
-/* 区间入口：整行宽的次要按钮（不是主操作，所以不用绿色） */
-.anno-rangebtn {
-    width: 100%;
-    margin-bottom: 12px;
+     它是**动作**不是模式，所以：
+       · 不做按下态（没有 aria-pressed=true）
+       · 用 --danger 色，与破坏性语义一致（红 = 小心）
+     位置在最右，与四个模式拉开距离 —— 避免误触。
+*/
+.reader-clear-tab {
+    color: var(--danger);
+    margin-left: auto;
 }
 
 

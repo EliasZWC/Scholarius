@@ -357,6 +357,23 @@
 
         bodyEl.addEventListener('click', function (event) {
             /*
+              ══ ⚠️ 编辑模式下**不切换菜单**（用户 2026-09-25 报的大 bug）══
+
+              用户原话：「点击收起菜单的这个功能在编辑某个性质的框的时候
+                        被你禁用了，这是一个很大的bug」
+
+              真实症状正是反过来：编辑模式里点框，会命中这个
+              切换菜单的逻辑 → 菜单忽隐忽现 → 用户以为"收起菜单坏了"，
+              而且框本身也点不干净。
+
+              编辑模式是**专注改标注**的场景，用户此时不需要唤出/收起菜单。
+              所以整个跳过。
+            */
+            if (annotating) {
+                return;
+            }
+
+            /*
               排除点在链接/按钮上的情况 —— 那些应该走自己的行为。
               （现在正文里还没有交互元素，但以后可能有引用跳转。）
             */
@@ -375,17 +392,30 @@
             }
 
             var rect = bodyEl.getBoundingClientRect();
-            if (!rect.width) {
+            if (!rect.width || !rect.height) {
                 return;
             }
             var x = event.clientX - rect.left;
-            var third = rect.width / 3;
+            var y = event.clientY - rect.top;
+            var thirdX = rect.width / 3;
+            var thirdY = rect.height / 3;
 
-            if (x >= third && x < third * 2) {
+            /*
+              ⚠️ 必须**同时**判横向与纵向都在中间三分之一。
+
+                 只判横向的话，靠近**顶部/底部**（横向中间）的区域
+                 也会切换菜单 —— 实测这让人没法在页面上下边缘附近操作：
+                 手指一点，菜单就冒出来，把那一小块盖住。
+                 用户抱怨"pdf 的顶部和底部变得无法编辑"就是这个。
+
+                 限定在中间 1/3 × 1/3 那块，四边都留出安全区。
+            */
+            if (x >= thirdX && x < thirdX * 2 &&
+                y >= thirdY && y < thirdY * 2) {
                 toggleMenu();
             }
             /*
-              左右两侧暂时不做事（以后是上一页/下一页）。
+              其余区域暂时不做事（以后是上一页/下一页 / 上下滚动区）。
               刻意留在这里，是为了让分区逻辑只有一处，将来不必回头改。
             */
         });
@@ -1156,6 +1186,18 @@
             editBarEl.appendChild(makeEditTab(EDIT_MODES[i]));
         }
 
+        /*
+          ⚠️ 第五项：清空（用户 2026-09-25 要求）。
+             用户原话：「当自动识别的结果一团乱麻的时候，一个个改太难了，
+                       直接给一个清空选项，确认表单确认之后该性质的所有框
+                       都直接清除」
+
+             ⚠️ 它是**动作**不是模式（与那四个开关性质不同），
+                所以不参与 annotateMode、也不会有"按下态"。
+                放在最右边，与四个模式视觉上拉开。
+        */
+        editBarEl.appendChild(makeClearTab());
+
         annoTipEl = document.createElement('div');
         annoTipEl.className = 'anno-tip';
 
@@ -1180,6 +1222,18 @@
      * ⚠️ 结构与 `.reader-action` **完全一致**（图标在上、文字在下），
      *    这样它与「目录 / 设置」在视觉上是同一种元素 ——
      *    用户看到的是"底栏换了内容"，而不是"冒出一条新栏"。
+     *
+     * ══ ⚠️ 选中态 = **两只 SVG 切换**（用户 2026-09-25 再次要求）══
+     *
+     * 用户原话：「选中后使用填充图标」，「不使用阴影和点击特效」。
+     *
+     * ⚠️ 必须与底部导航栏（.nav-item）用**完全相同**的做法：
+     *    预置 outline + fill 两只 svg，靠 `aria-pressed` 切 display。
+     *    绝不能用"背景色块 / 阴影"表示选中 —— 那不是本项目
+     *    导航栏的语言，用户已明确否定过两次。
+     *
+     * ⚠️ 两只 svg 一次性建好（不重建 innerHTML）：
+     *    重建会让图标闪一下（浏览器要重新解析 SVG）。
      */
     function makeEditTab(mode) {
         var tab = document.createElement('button');
@@ -1190,9 +1244,22 @@
 
         var ui = global.ScholariusUI;
         var iconName = TYPE_ICON[mode];
-        if (ui && ui.icon && iconName) {
-            tab.innerHTML = ui.icon(iconName);
+
+        /*
+          ⚠️ 图标要包在 `.reader-action-icon` 里（grid 叠同格），
+             否则两只 svg 会上下排列、把按钮撑高。
+             与 .nav-icon 的写法一致。
+        */
+        var iconWrap = document.createElement('span');
+        iconWrap.className = 'reader-action-icon';
+        if (ui && ui.iconFilled && iconName) {
+            iconWrap.innerHTML =
+                ui.icon(iconName).replace('<svg ', '<svg class="icon-outline" ') +
+                ui.iconFilled(iconName).replace('<svg ', '<svg class="icon-fill" ');
+        } else if (ui && ui.icon && iconName) {
+            iconWrap.innerHTML = ui.icon(iconName);
         }
+        tab.appendChild(iconWrap);
 
         var label = document.createElement('span');
         label.className = 'reader-action-label';
@@ -1225,6 +1292,90 @@
                  见 mountAnnotateLayer 与 styles.css 的说明。
             */
             refreshAnnotateMode();
+        });
+
+        return tab;
+    }
+
+    /**
+     * 造「清空」按钮（底部选项栏第五项）。
+     *
+     * ══ ⚠️ 为什么必须有（用户 2026-09-25）══
+     *
+     * 原生自动识别在真论文上错得很离谱：
+     *   · ResNet      107 / 1110 块被判成 heading
+     *   · Transformer 几乎**整篇**都是 heading
+     * 一块一块改在这种量级下是不可能完成的。
+     * 所以需要一个"整体推翻重来"的出口。
+     *
+     * ⚠️ 清空范围 = **当前选中的那一类**（用户：「该性质的所有框」）。
+     *    没选任何类型时问"清空全部"——
+     *    那是最彻底的"一团乱麻"场景。
+     *
+     * ⚠️ 必须走确认表单，且要**说清影响几个框**：
+     *    用户点之前得知道代价。清空是破坏性的、且没有撤销。
+     */
+    function makeClearTab() {
+        var tab = document.createElement('button');
+        tab.className = 'reader-action reader-edit-tab reader-clear-tab';
+        tab.type = 'button';
+        tab.setAttribute('data-edit-mode', 'clear');
+
+        var ui = global.ScholariusUI;
+        var iconWrap = document.createElement('span');
+        iconWrap.className = 'reader-action-icon';
+        if (ui && ui.icon) {
+            /*
+              ⚠️ 清空**不用填充态** —— 它不是"选中某个模式"，
+                 而是一次性动作。给两只图标反而暗示它能选中。
+                 （它也不会拿到 aria-pressed=true，见 syncEditBar。）
+            */
+            iconWrap.innerHTML = ui.icon('annoClear');
+        }
+        tab.appendChild(iconWrap);
+
+        var label = document.createElement('span');
+        label.className = 'reader-action-label';
+        label.textContent = t('reader.clear');
+        tab.appendChild(label);
+
+        tab.addEventListener('click', function () {
+            var scope = annotateMode;      // null = 全部
+            var n = countTextMarks(scope);
+            var what = scope
+                ? t(TYPE_LABEL_KEY[scope] || scope)
+                : t('reader.clearAllKinds');
+
+            if (!n) {
+                // 没有可清的 —— 直接告知，不弹确认表单让用户白点一次
+                showAnnoTip('reader.clearNothing');
+                return;
+            }
+
+            var ui2 = global.ScholariusUI;
+            if (!ui2 || typeof ui2.confirmSheet !== 'function') {
+                // 预览环境没有确认表单：直接执行，方便本地验证
+                clearTextMarksByType(scope);
+                return;
+            }
+
+            /*
+              ⚠️ 用项目既有的 confirmSheet（不是自己造弹层）——
+                 样式与"删除文献"等破坏性操作保持一致。
+            */
+            ui2.confirmSheet({
+                title: t('reader.clearConfirmTitle'),
+                message: t('reader.clearConfirmBody')
+                    .replace('{what}', what)
+                    .replace('{n}', String(n)),
+                confirmLabel: t('action.clear'),
+                cancelLabel: t('action.cancel'),
+                danger: true,
+                onConfirm: function () {
+                    clearTextMarksByType(scope);
+                    showAnnoTip('reader.clearDone');
+                }
+            });
         });
 
         return tab;
@@ -1315,6 +1466,13 @@
         var tabs = editBarEl.querySelectorAll('.reader-edit-tab');
         for (var i = 0; i < tabs.length; i++) {
             var mode = tabs[i].getAttribute('data-edit-mode');
+            /*
+              ⚠️ 「清空」是**动作**不是模式 —— 它永远不该有按下态。
+                 给它 aria-pressed 会让它看起来像被选中了，
+                 而它其实是一次性操作，点完就该回到原样。
+            */
+            if (mode === 'clear') continue;
+
             /*
               ⚠️ annotateMode 可能是 null（没选任何选项）——
                  那时所有 tab 都不选中。用严格比较就够了。
@@ -1419,7 +1577,7 @@
             /*
               ⚠️ 只有画框模式才给 is-drawing —— 它同时控制
                  pointer-events 与 touch-action（见 CSS）。
-                 不给的话页面能正常滚动，这正是默认该有的行为。
+                 不给的话页面能正常滚动。
             */
             if (isDrawing) {
                 layer.classList.add('is-drawing');
@@ -1432,18 +1590,27 @@
             annotateLayers.push(layer);
             positionAnnotateLayer(layer);
 
+            /*
+              ══ ⚠️ 文字块**始终**挂上（用户 2026-09-25 要求）══
+
+              用户原话：「打开编辑模式，各个部分各个性质的框应该显现出来，
+                        不是点击选项才显示相关的框」
+
+              这是对的 —— 编辑模式本身就该让用户**看见现状**，
+              否则他进来只看到一张干净的页图，根本不知道哪里判错了、
+              要改什么。之前要求"点选项才显示"是把因果搞反了：
+              用户点选项是**表达意图**，不是"请求显示"。
+
+              ⚠️ 所以文字块在任何模式下都挂（包括三个矩形模式）：
+                 · 它们要能看见（已标过的块带颜色与标签）
+                 · 矩形模式下它们不接手势（layer 的 touch-action: none
+                   已经接管了整层，块自己 pointer-events 由 CSS 控制）
+            */
+            mountTextBlocksOn(layer, page);
+
             if (isDrawing) {
                 bindLayerDrawing(layer, page);
-            } else if (isTextMode()) {
-                // 文本模式：画可点的文字块
-                mountTextBlocksOn(layer, page);
             }
-            /*
-              ⚠️ 没选任何选项时不挂任何东西 ——
-                 用户要求「哪个选项都没点，就不需要画框」。
-                 浮层留着只是为了承载**已有的框**（看得见现状），
-                 它自己 pointer-events: none，页面照常滚动。
-            */
         }
     }
 
@@ -1571,8 +1738,38 @@
         */
         el.addEventListener('click', function (ev) {
             ev.stopPropagation();
+            /*
+              ⚠️ 长按会**补发**一个 click（浏览器行为）。
+                 不跳过的话长按设好起点后立刻弹出类型表单，
+                 用户还没来得及点终点 —— 区间选择就废了。
+                 与项目里 attachLongPress 的用法一致。
+            */
+            var ui = global.ScholariusUI;
+            if (ui && typeof ui.justLongPressed === 'function' && ui.justLongPressed()) {
+                return;
+            }
             openTextTypePicker(el, block, page);
         });
+
+        /*
+          ══ ⚠️ 长按 = 设为区间起点（替代已删除的「选择一段区间」按钮）══
+
+          用户 2026-09-25 两次指出那个按钮多余，已删。
+          但区间能力必须留着 —— 原生把摘要切成 14 个交错块，
+          逐块点要点 14 次，"把整段摘要标成摘要"根本做不到。
+
+          所以改成**长按触发**：
+            · 长按某块 → 它成为区间起点
+            · 再普通点另一块 → 弹表单，选类型即覆盖【起点..终点】
+          长按是进阶操作，不占界面、不打断「点框→选类型」两步主流程。
+        */
+        var ui2 = global.ScholariusUI;
+        if (ui2 && typeof ui2.attachLongPress === 'function') {
+            ui2.attachLongPress(el, function () {
+                rangeAnchor = { line: block.line, text: block.text };
+                showAnnoTip('reader.rangeArmed');
+            });
+        }
 
         return el;
     }
@@ -1608,26 +1805,24 @@
 
         var title = document.createElement('div');
         title.className = 'anno-typesheet-title title-text';
-        title.textContent = t('reader.pickTextType');
+        /*
+          ⚠️ 标题是「编辑」而不是「重新归类 / 改为哪一类」
+             （用户 2026-09-25 明确要求）。
+
+             理由：点一个已有的框，用户心里想的是「改这一个」，
+             而出厂文案「改为哪一类」听起来像是从头新建。
+        */
+        title.textContent = t('reader.editMark');
         sheet.appendChild(title);
 
         /*
-          ⚠️ 区间提示与「选到这里为止」按钮：
-             起点已设且当前块不同行时才出现。
-             它把「把整段摘要标成摘要」从 14 次点击降为 2 次。
+          ⚠️ 原来的「将把第 a 行到第 b 行一起标注」提示**已删除**。
+             用户原话：「下面"选择一个范围"这个提示文字也多余」。
 
-             ⚠️ 用 replace 填行号时必须**同时**替换 {a} 和 {b}，
-                漏掉一个会在界面上直接显示 `{b}` ——
-                check_i18n_keys 只查键对称，查不出占位符没替换。
+             区间选择本身留着（它把标一整段摘要从 14 次点击降为 2 次），
+             但靠**按钮的按下态**表达"正在选区间"，不再刷一行说明文字 ——
+             那条文字每次开表单都在，而用户看一眼就懂了。
         */
-        if (canUseRange(block)) {
-            var hint = document.createElement('div');
-            hint.className = 'anno-rangehint';
-            hint.textContent = t('reader.rangeFrom')
-                .replace('{a}', String(rangeAnchor.line))
-                .replace('{b}', String(block.line));
-            sheet.appendChild(hint);
-        }
 
         var grid = document.createElement('div');
         grid.className = 'anno-typegrid';
@@ -1638,21 +1833,33 @@
         sheet.appendChild(grid);
 
         /*
-          「选到这里为止」：把当前块设为**起点**，让用户接着点终点。
-          ⚠️ 放在类型网格**下面**：它是附加动作，不是主流程，
-             放上面会抢掉八个类型的注意力。
-        */
-        if (!canUseRange(block)) {
-            var rangeBtn = document.createElement('button');
-            rangeBtn.className = 'btn anno-rangebtn';
-            rangeBtn.type = 'button';
-            rangeBtn.textContent = t('reader.startRange');
-            rangeBtn.addEventListener('click', function () {
-                startRangeFrom(block, page);
-            });
-            sheet.appendChild(rangeBtn);
-        }
+          ⚠️ 「选择一段区间」按钮**已删除**（用户 2026-09-25 第二次指出）。
 
+             第一次我误以为用户要删的只是那行说明文字
+             （「将把第 a 行到第 b 行一起标注」），于是保留了按钮。
+             用户随即追问：「选择一段区间这个提示不是没删吗？」
+             —— 对，用户要删的就是**这个按钮本身**。
+
+             理由（想清楚了）：它是个多余的中间步骤。
+             原来的流程是 点框 → 点「选择一段区间」→ 点终点 → 选类型，
+             四步；而普通标注只要 点框 → 选类型，两步。
+             为了一类操作凭空多出一步、还常驻在弹层里，
+             每次开表单都看见它 —— 这就是"多余"。
+
+             ⚠️ 区间能力**保留**（标一整段摘要必须能一次覆盖，
+                否则摘要被原生切成 14 块时要点 14 次），
+                改由**长按**触发：长按某块 = 把它设为区间起点。
+                长按是"进阶操作"，不占界面、不打断两步主流程。
+        */
+
+        /*
+          ⚠️ 底部两按钮：取消（左） / 删除（右）——
+             用户 2026-09-25 要求：「选项除了取消，右边应该是删除」。
+
+          ⚠️ 删除用 `.btn-danger`（红色），不是 `.btn-primary`（绿色）——
+             绿色在本项目里专表「确认某操作」，而删除是破坏性的。
+             见 styles.css 的按钮规范。
+        */
         var cancel = document.createElement('button');
         cancel.className = 'btn';
         cancel.type = 'button';
@@ -1660,9 +1867,24 @@
         cancel.addEventListener('click', function () {
             /*
               ⚠️ 「取消」要**连区间起点一起清**。
-                 （而点背景只关弹层、保留起点 —— 见 backdrop 处说明）
+                 （而点背景只关弹层、保留起点）
                  用户按取消 = 我这一次整个不要了。
             */
+            rangeAnchor = null;
+            closeTextTypePicker();
+        });
+
+        var del = document.createElement('button');
+        del.className = 'btn btn-danger';
+        del.type = 'button';
+        del.textContent = t('action.delete');
+        del.addEventListener('click', function () {
+            /*
+              ⚠️ 删除 = **去掉该块上的标注**，让它回到自动识别的结果。
+                 不是删除 PDF 里的内容 —— 文字还在，只是不再被标识为某个类型。
+                 所以提示语不能写"删除"这种吓人的词（见 confirmText）。
+            */
+            clearTextMarkFor(block);
             rangeAnchor = null;
             closeTextTypePicker();
         });
@@ -1670,6 +1892,7 @@
         var actions = document.createElement('div');
         actions.className = 'form-actions';
         actions.appendChild(cancel);
+        actions.appendChild(del);
         sheet.appendChild(actions);
 
         var backdrop = document.createElement('div');
@@ -1700,8 +1923,26 @@
         btn.className = 'anno-typeopt';
         btn.type = 'button';
 
+        /*
+          ⚠️ 当前生效的类型要高亮（用户 2026-09-25 要求"选中后填充图标"）。
+
+             这里是**八选一**的选择器，所以"选中"指"这个块现在就是这个类型"。
+             用 `aria-pressed` + 两只图标切换，与底栏编辑项同一套语言。
+
+             ⚠️ 不能靠背景色块表示选中 —— 用户已明确否定过
+                「不要阴影和点击特效」，且那不是本项目导航栏的语言。
+        */
+        var current = markAtLine(block.line != null ? block.line : -1) || nativeMark(block);
+        var selected = current.type === type;
+        btn.setAttribute('aria-pressed', selected ? 'true' : 'false');
+
         var ui = global.ScholariusUI;
-        if (ui && ui.icon && TYPE_ICON[type]) {
+        if (ui && ui.icon && ui.iconFilled && TYPE_ICON[type]) {
+            var nm = TYPE_ICON[type];
+            btn.innerHTML =
+                ui.icon(nm).replace('<svg ', '<svg class="icon-outline" ') +
+                ui.iconFilled(nm).replace('<svg ', '<svg class="icon-fill" ');
+        } else if (ui && ui.icon && TYPE_ICON[type]) {
             btn.innerHTML = ui.icon(TYPE_ICON[type]);
         }
 
@@ -1979,6 +2220,80 @@
 
         trace('reader:annotate', 'text ' + type +
             (type === 'heading' ? ' L' + level : '') + ' @' + from + '-' + to);
+    }
+
+    /**
+     * 去掉某一块上的标注（回到自动识别的结果）。
+     *
+     * ⚠️ 是"删掉用户标的类型"，**不是**删除 PDF 里的文字 ——
+     *    文字还在，只是不再被强制归到某个类型。
+     */
+    function clearTextMarkFor(block) {
+        if (!block || block.line == null) return;
+
+        var from = block.line;
+        var to = from + block.text.split('\n').length - 1;
+        var kept = [];
+        for (var i = 0; i < textMarks.length; i++) {
+            var m = textMarks[i];
+            var overlaps = !(m.to < from || m.from > to);
+            if (!overlaps) kept.push(m);
+        }
+        if (kept.length === textMarks.length) {
+            // 本来就没标过 —— 不用改动，也不必标脏
+            return;
+        }
+        textMarks = kept;
+        annotateDirty = true;
+        refreshTextBlockStyles();
+        trace('reader:annotate', 'clear text @' + from + '-' + to);
+    }
+
+    /**
+     * **按类型清空**（用户 2026-09-25 要求）。
+     *
+     * 用户原话：「当自动识别的结果一团乱麻的时候，一个个改太难了，
+     *            直接给一个清空选项，确认表单确认之后该性质的所有框
+     *            都直接清除」
+     *
+     * ⚠️ 场景真实且常见：ResNet 首页被原生判出 107 个 heading、
+     *    Transformer 几乎整篇都是 heading。这种量级下逐块改
+     *    不可能完成 —— 必须先整体清掉再重标。
+     *
+     * ⚠️ 这是**破坏性操作**，必须走确认表单（confirmSheet），
+     *    并且要在确认文案里说清**会影响多少个框** ——
+     *    用户点之前得知道代价。
+     *
+     * @param {String} type 要清空的类型；null 表示清空**全部**类型
+     * @return {Number} 被清掉了几条
+     */
+    function clearTextMarksByType(type) {
+        var kept = [];
+        var removed = 0;
+        for (var i = 0; i < textMarks.length; i++) {
+            var m = textMarks[i];
+            if (!type || m.type === type) {
+                removed++;
+                continue;
+            }
+            kept.push(m);
+        }
+        if (removed) {
+            textMarks = kept;
+            annotateDirty = true;
+            refreshTextBlockStyles();
+        }
+        trace('reader:annotate', 'clear by type ' + (type || '(all)') + ' removed=' + removed);
+        return removed;
+    }
+
+    /** 数一下某类型当前有多少条（给确认文案用） */
+    function countTextMarks(type) {
+        var n = 0;
+        for (var i = 0; i < textMarks.length; i++) {
+            if (!type || textMarks[i].type === type) n++;
+        }
+        return n;
     }
 
     /** 关掉类型选择弹层 */
