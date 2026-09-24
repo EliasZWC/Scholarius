@@ -34,6 +34,29 @@
             // --- 阅读页 ---
             'reader.loading': 'Extracting text...',
             'reader.extractFailed': 'Could not extract text from this PDF.',
+
+            // 底部选项栏
+            'reader.toc': 'Contents',
+            'reader.tocLabel': 'Contents',
+            'reader.settings': 'Reader settings',
+            'reader.settingsLabel': 'Settings',
+            'reader.tocEmpty': 'No headings found in this document.',
+            'reader.abstract': 'Abstract',
+
+            // 阅读设置：字体
+            'reader.font': 'Font',
+            'reader.fontSize': 'Font size',
+            'reader.fontSmaller': 'Decrease font size',
+            'reader.fontLarger': 'Increase font size',
+            'reader.fontColor': 'Text colour',
+            'reader.fontStyle': 'Typeface',
+            'reader.color.default': 'Default',
+            'reader.color.soft': 'Soft grey',
+            'reader.color.sepia': 'Sepia',
+            'reader.font.serif': 'Serif',
+            'reader.font.sans': 'Sans-serif',
+            'reader.font.mono': 'Monospace',
+
             'selection.cancel': 'Cancel selection',
             'selection.delete': 'Delete selected',
             'selection.count': '{n} selected',
@@ -43,6 +66,7 @@
             'action.copy': 'Copy',
             'action.delete': 'Delete',
             'action.clear': 'Clear',
+            'action.close': 'Close',
 
             // --- 登录页 ---
             'login.intro': 'Sign in with GitHub to Continue',
@@ -135,6 +159,29 @@
             // --- 阅读页 ---
             'reader.loading': '正在提取文本…',
             'reader.extractFailed': '无法从这份 PDF 提取文本。',
+
+            // 底部选项栏
+            'reader.toc': '目录',
+            'reader.tocLabel': '目录',
+            'reader.settings': '阅读设置',
+            'reader.settingsLabel': '设置',
+            'reader.tocEmpty': '未能从本文中识别出标题。',
+            'reader.abstract': '摘要',
+
+            // 阅读设置：字体
+            'reader.font': '字体',
+            'reader.fontSize': '字号',
+            'reader.fontSmaller': '减小字号',
+            'reader.fontLarger': '增大字号',
+            'reader.fontColor': '字体颜色',
+            'reader.fontStyle': '字体样式',
+            'reader.color.default': '默认',
+            'reader.color.soft': '浅灰',
+            'reader.color.sepia': '棕褐',
+            'reader.font.serif': '衬线',
+            'reader.font.sans': '无衬线',
+            'reader.font.mono': '等宽',
+
             'selection.cancel': '取消选择',
             'selection.delete': '删除所选',
             'selection.count': '已选 {n} 项',
@@ -144,6 +191,7 @@
             'action.copy': '复制',
             'action.delete': '删除',
             'action.clear': '清空',
+            'action.close': '关闭',
 
             'login.intro': '用 GitHub 登录以继续',
             'login.action': '用 GitHub 登录',

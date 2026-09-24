@@ -5,15 +5,15 @@
  *
  * · **点正文中间的 1/3 区域**切换菜单显隐（左 1/3、右 1/3 留给翻页，
  *   本版还没做翻页，但区域先留出来，避免以后改交互位置）
- * · 菜单分上下两条：顶部栏（左返回）、底部选项栏（先留空）
- * · 菜单显隐用 transform 滑动，**正文位置不动** —— 否则阅读进度会跳
+ * · 菜单分上下两条：顶部栏（返回）、底部选项栏（目录 / 设置）
+ * · 菜单是**浮在正文之上**的（absolute），正文位置不动，阅读进度不会跳
+ * · 正文容器撑满全屏（含状态栏区域），菜单盖上去 —— 不是为菜单留空带
  *
  * ## 正文是什么形态（v0.1.2 已修正）
  *
  * ⚠️ 这里是**普通文本**，不是 LaTeX 源码。
  *
- * v0.1.1 曾按「保存 LaTeX 源码」设计，但实测后放弃：PDF 里存的是
- * **排版结果**（带坐标的字形序列），不是 LaTeX 源码 ——
+ * PDF 里存的是**排版结果**（带坐标的字形序列），不是 LaTeX 源码 ——
  * 源码结构（`\section{}`、`\begin{equation}`）在 PDF 里已经不存在了。
  * 想把公式从 PDF 反推成 LaTeX 语法需要数学 OCR，不是本项目范围。
  *
@@ -26,6 +26,27 @@
  * 展示上仍然只用 textContent + pre-wrap：
  * 正文是任意文本，可能含 < > & 等字符，用 innerHTML 会破坏页面结构。
  *
+ * ## 目录怎么来的（v0.1.3）
+ *
+ * ⚠️ 目录来自**对提取文本做版式识别**，不是 PDF 自带的书签大纲。
+ *    理由：pdfbox 能读 PDF 大纲（`document.getDocumentCatalog().getDocumentOutline()`），
+ *    但实测很多论文（尤其 arXiv/LaTeX 投稿）大纲要么没有、要么只有
+ *    一个「正文」节点，不可用。而提取出的文本里标题行的形态相当稳定，
+ *    识别它反而更可靠，且对没有大纲的 PDF 也有效。
+ *
+ *    识别规则（见 buildToc）：行首形如
+ *        `3 Methodology` / `3.1 Problem Formulation` / `ABSTRACT` / `1 Introduction`
+ *    即「数字编号 + 标题」或「全大写关键词」。
+ *    正文单行最长不超过 MAX_TITLE_CHARS，超长的按正文行排除。
+ *
+ *    起点是**摘要**：摘要之前的作者、单位、邮箱等不进目录（用户明确要求）。
+ *
+ * ## 阅读设置（v0.1.3）
+ *
+ * 字号 / 颜色 / 字体样式三项**只作用于阅读页**，与全站主题无关；
+ * 主题（日间/夜间/跟随系统）**与「设置 → 主题」是同一个值**，
+ * 两处入口共用 ScholariusTheme，改一处另一处同步。
+ *
  * ## 文本从哪来
  *
  * 由原生从 PDF 提取（`PdfText.extract`）后推过来，网页不接触 PDF 文件
@@ -34,36 +55,129 @@
 (function (global) {
     'use strict';
 
+    /* ---------------------------------------------------------------------
+       阅读设置：存储键与取值域
+       --------------------------------------------------------------------- */
+
+    var FONT_KEY = 'scholarius.reader.font';
+    var SIZE_KEY = 'scholarius.reader.size';
+    var COLOR_KEY = 'scholarius.reader.color';
+
+    /** 字号档位（px）。用有限档位而不是连续滑块 —— 手指点得准，也便于测试 */
+    var SIZES = [15, 17, 19, 21, 23, 26];
+    var DEFAULT_SIZE = 17;
+
+    /**
+     * 字体颜色候选。
+     *
+     * ⚠️ 每个取值都是**成对**的（亮色主题一个值、暗色主题一个值），
+     *    因为同一个「深灰」在白底上清楚、在黑底上就看不见了。
+     *    实现上用 CSS 变量 --reader-fg，由 data-reader-color 选择器赋值，
+     *    这里只存"用户选了哪种语义色"，不存具体色值 ——
+     *    这样切主题时颜色自动跟着变，不用重算。
+     *
+     *    色值定义见 styles.css 的 .reader[data-reader-color="..."] 段。
+     */
+    var COLORS = ['default', 'soft', 'sepia'];
+
+    /** 字体样式 */
+    var FONTS = ['serif', 'sans', 'mono'];
+    var DEFAULT_FONT = 'serif';
+
+    /* ---------------------------------------------------------------------
+       模块状态
+       --------------------------------------------------------------------- */
+
     var root = null;
     var bodyEl = null;
     var contentEl = null;
     var topEl = null;
     var backBtn = null;
+    var bottomEl = null;
+    var tocBtn = null;
+    var settingsBtn = null;
+    var panelEl = null;
+    var tocSheetEl = null;
+    var tocListEl = null;
+    var tocCloseEl = null;
+    var tocBackdropEl = null;
+
     /** 当前打开的文献 */
     var currentDoc = null;
     /** 菜单是否可见 */
     var menuOpen = false;
+    /** 设置面板是否展开 */
+    var panelOpen = false;
+    /** 目录弹窗是否展开 */
+    var tocOpen = false;
+
+    /**
+     * 目录条目：[{ level, title, line }]
+     * line 是它在**原始提取文本**里的行号，跳转时据此定位。
+     */
+    var toc = [];
+    /** 提取出的原始文本，按行拆好缓存在这里（跳转要算偏移） */
+    var textLines = [];
 
     function t(key) {
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
     }
 
+    /** 读本地存储，失败就返回兜底值（隐私模式 / 旧 WebView） */
+    function readStore(key, fallback) {
+        try {
+            var v = global.localStorage.getItem(key);
+            return v === null ? fallback : v;
+        } catch (e) {
+            return fallback;
+        }
+    }
+
+    function writeStore(key, value) {
+        try {
+            global.localStorage.setItem(key, value);
+        } catch (e) { /* 忽略 */ }
+    }
+
+    // --- 初始化 -------------------------------------------------------------
+
     function init() {
         root = document.getElementById('reader');
-        bodyEl = document.getElementById('reader-body');
-        contentEl = document.getElementById('reader-content');
-        topEl = document.getElementById('reader-top');
-        backBtn = document.getElementById('reader-back');
-
         if (!root) {
             return;
         }
 
+        bodyEl = document.getElementById('reader-body');
+        contentEl = document.getElementById('reader-content');
+        topEl = document.getElementById('reader-top');
+        backBtn = document.getElementById('reader-back');
+        bottomEl = document.getElementById('reader-bottom');
+        tocBtn = document.getElementById('reader-toc-btn');
+        settingsBtn = document.getElementById('reader-settings-btn');
+        panelEl = document.getElementById('reader-panel');
+        tocSheetEl = document.getElementById('toc-sheet');
+        tocListEl = document.getElementById('toc-list');
+        tocCloseEl = document.getElementById('toc-close');
+        tocBackdropEl = document.getElementById('toc-backdrop');
+
         mountBack();
         mountTapToToggle();
+        mountToc();
+        mountSettings();
+
+        applySettings();
+        mountRows();
 
         if (global.ScholariusI18n && global.ScholariusI18n.onChange) {
             global.ScholariusI18n.onChange(refreshChrome);
+        }
+        /*
+          ⚠️ 订阅主题变化：阅读设置里的主题行与「设置 → 主题」共用同一个值，
+             所以从设置页改了主题，阅读页这行的文字也要跟着更新，
+             否则两处显示不一致。
+        */
+        if (global.ScholariusTheme && global.ScholariusTheme.onChange) {
+            global.ScholariusTheme.onChange(syncThemeRow);
         }
     }
 
@@ -94,6 +208,16 @@
                 return;
             }
 
+            /*
+              ⚠️ 设置面板展开时，点正文先收起面板而不是切换整条菜单。
+                 否则用户点一下正文，面板和菜单一起消失，想调两次字号
+                 就得重新点开菜单 —— 很烦。
+            */
+            if (panelOpen) {
+                setPanel(false);
+                return;
+            }
+
             var rect = bodyEl.getBoundingClientRect();
             if (!rect.width) {
                 return;
@@ -111,6 +235,8 @@
         });
     }
 
+    // --- 菜单 ---------------------------------------------------------------
+
     function toggleMenu() {
         setMenu(!menuOpen);
     }
@@ -119,6 +245,16 @@
         menuOpen = !!open;
         if (root) {
             root.classList.toggle('is-menu-open', menuOpen);
+        }
+        if (!menuOpen) {
+            // 菜单收起时面板必须一起收起，否则会留一块浮在外面
+            setPanel(false);
+        }
+        if (tocBtn) {
+            tocBtn.setAttribute('aria-expanded', 'false');
+        }
+        if (settingsBtn) {
+            settingsBtn.setAttribute('aria-expanded', 'false');
         }
     }
 
@@ -144,6 +280,9 @@
         root.setAttribute('aria-label', doc.title || doc.sourceName || t('nav.vault'));
 
         showLoading();
+        // 换文献时旧目录必须清掉，否则会在新正文加载前短暂显示上一篇的目录
+        toc = [];
+        textLines = [];
 
         root.hidden = false;
         // 强制布局后再加 is-open，否则滑入动画不触发
@@ -152,11 +291,7 @@
 
         // 初始不显示菜单，纯正文
         setMenu(false);
-
-        /*
-          菜单栏在隐藏态是 translateY(±100%)。
-          首次显示时要保证 transform 已生效再滑动 —— 上面强制布局已经处理。
-        */
+        setPanel(false);
 
         requestText(doc.id);
     }
@@ -165,12 +300,21 @@
         if (!root) {
             return;
         }
+        // 目录开着就先收目录，退出动作交给下一次（与返回键行为保持一致）
+        if (tocOpen) {
+            setToc(false);
+            return;
+        }
+
         root.classList.remove('is-open');
         setMenu(false);
+        setPanel(false);
         global.setTimeout(function () {
             if (!root.classList.contains('is-open')) {
                 root.hidden = true;
                 currentDoc = null;
+                toc = [];
+                textLines = [];
                 if (contentEl) {
                     contentEl.textContent = '';
                 }
@@ -196,7 +340,7 @@
         contentEl.appendChild(hint);
     }
 
-    function showError(reason) {
+    function showError() {
         if (!contentEl) {
             return;
         }
@@ -235,7 +379,7 @@
 
         contentEl.textContent = '';
         if (!text) {
-            showError('empty');
+            showError();
             return;
         }
 
@@ -245,25 +389,591 @@
              用 innerHTML 会破坏页面结构（甚至注入）。
         */
         contentEl.textContent = text;
-        // 回到顶部
         if (bodyEl) {
             bodyEl.scrollTop = 0;
         }
+
+        // 正文到位后才解析目录（解析要看全文）
+        textLines = text.split('\n');
+        toc = buildToc(textLines);
+        trace('reader:toc', toc.length + ' entries');
     }
 
     function onExtractFailed(id) {
         if (!currentDoc || currentDoc.id !== id) {
             return;
         }
-        showError('failed');
+        showError();
     }
+
+    // --- 目录：解析 ---------------------------------------------------------
+
+    /** 标题行最长字符数。超过就按正文行排除，避免把长句当标题 */
+    var MAX_TITLE_CHARS = 80;
+
+    /**
+     * 摘要之前的内容（作者、单位、邮箱、日期）不进目录，所以目录从摘要开始。
+     * 用多个写法兜底 —— 不同期刊排版差异很大：
+     *   "ABSTRACT" / "Abstract" / "摘 要" / "摘要"
+     */
+    var ABSTRACT_RE = /^\s*(?:A\s*B\s*S\s*T\s*R\s*A\s*C\s*T|Abstract|ABSTRACT|摘\s*要)\s*[:：]?\s*$/;
+
+    /**
+     * 「数字编号 + 标题」。覆盖：
+     *   1 Introduction
+     *   3.1 Problem Formulation
+     *   IV. Methodology      （罗马数字，部分期刊用）
+     *   §3 Methodology       （带节号）
+     */
+    var NUMBERED_RE = /^\s*(?:§\s*)?(\d+(?:\.\d+)*|[IVXLC]+)[.、]?\s+(\S.*)$/;
+
+    /**
+     * **单独成行的编号**。如 `1` / `3.1` / `IV.`。
+     *
+     * ⚠️ 这一条是必需的，不是锦上添花。实测（PyMuPDF 对一篇 LaTeX 论文）：
+     *       8 |ABSTRACT
+     *      11 |1              ← 编号独占一行
+     *      12 |Introduction   ← 标题在下一行
+     *      17 |3
+     *      18 |Methodology
+     *      19 |3.1
+     *      20 |Problem Formulation
+     *    pdfbox 输出同样是这个形态 —— PDF 里编号与标题是**两个独立的定位块**，
+     *    提取出来就分行。只匹配「编号+标题同行」会漏掉全部编号章节。
+     */
+    var NUMBER_ONLY_RE = /^\s*(?:§\s*)?(\d+(?:\.\d+)*|[IVXLC]+)[.、]?\s*$/;
+
+    /**
+     * 全大写标题行（无编号）。如 "RELATED WORK"、"CONCLUSION AND FUTURE WORK"。
+     * ⚠️ 只认全大写且不含小写字母的行，否则论文里全是误判。
+     */
+    var UPPER_RE = /^\s*([A-Z][A-Z0-9 \-,:&'()\/]{3,})\s*$/;
+
+    /**
+     * 常见的、值得进目录的无编号标题词。全部用大写比对。
+     * 加这一层是因为有些 PDF 的标题不是全大写（如 "Introduction"）。
+     */
+    var KNOWN_HEADS = [
+        'INTRODUCTION', 'RELATED WORK', 'BACKGROUND', 'PRELIMINARIES',
+        'METHODOLOGY', 'METHOD', 'METHODS', 'APPROACH', 'MODEL',
+        'EXPERIMENTS', 'EXPERIMENT', 'EVALUATION', 'RESULTS',
+        'DISCUSSION', 'ANALYSIS', 'ABLATION STUDY',
+        'CONCLUSION', 'CONCLUSIONS', 'CONCLUSION AND FUTURE WORK',
+        'FUTURE WORK', 'REFERENCES', 'ACKNOWLEDGEMENTS',
+        'ACKNOWLEDGMENTS', 'APPENDIX'
+    ];
+
+    /**
+     * 明确**不是**标题的行（全大写比对）。
+     *
+     * ⚠️ `UNKNOWN` 必须在这里。pdfbox 遇到解不出的字段会输出字面量
+     *    "UNKNOWN"，而它恰好满足「全大写、长度够」的标题特征 ——
+     *    实测一篇论文里出现了 4 次，全被误收进目录。
+     */
+    var NOT_HEADS = [
+        'UNKNOWN', 'NONE', 'NULL', 'N/A', 'TBD'
+    ];
+
+    /**
+     * 编号深入层级：`3` → 2 级，`3.1` → 3 级……
+     *
+     * ⚠️ 基础层级是 2（不是 1），因为 level 1 被「摘要」占了。
+     *    章节要比摘要低一级，否则目录里两者看起来一样重。
+     */
+    function levelOfNumber(numText) {
+        var dots = (numText.match(/\./g) || []).length;
+        return Math.min(6, dots + 2);
+    }
+
+    /**
+     * 从正文行里识别目录。
+     *
+     * ⚠️ 这是**版式启发式**，不是解析 PDF 大纲。
+     *    实测多数论文（arXiv / LaTeX 投稿）的 PDF 大纲要么缺失、
+     *    要么只有一个「正文」节点，不可用；而标题行的文本形态很稳定。
+     *    代价是会漏掉一些非常规标题，也可能误收个别全大写行。
+     *    这个取舍是有意的：宁可少几条，也不要塞满噪音。
+     *
+     * @param lines 正文行数组（原始提取文本，未加工）
+     * @return [{ level, title, line }]，line 是在 lines 里的下标
+     */
+    function buildToc(lines) {
+        var out = [];
+        var started = false;
+
+        for (var i = 0; i < lines.length; i++) {
+            var raw = lines[i];
+            if (!raw) continue;
+            var s = raw.trim();
+            if (!s) continue;
+
+            // ① 找到摘要：从这里开始收目录
+            if (!started) {
+                if (ABSTRACT_RE.test(s)) {
+                    started = true;
+                    out.push({ level: 1, title: t('reader.abstract'), line: i });
+                }
+                continue;
+            }
+
+            if (s.length > MAX_TITLE_CHARS) continue;
+
+            /*
+              ② 编号独行 → 与下一行合并成一条。
+                 ⚠️ 必须往前看一行，且下一行要有内容、不能是纯数字
+                    （否则 `1` 后面紧跟公式 `2` 会被误合并）。
+            */
+            var numOnly = NUMBER_ONLY_RE.exec(s);
+            if (numOnly) {
+                var title = lookAheadTitle(lines, i + 1);
+                if (title) {
+                    out.push({
+                        level: levelOfNumber(numOnly[1]),
+                        title: numOnly[1] + ' ' + title.text,
+                        line: i
+                    });
+                    /*
+                      ⚠️ 跳过已消费的标题行。
+                         循环末尾还有一次 i++，所以这里只能设到 title.index，
+                         让 i++ 之后正好停在 title.index + 1。
+                         写成 title.index - 1 会**原地再处理一遍标题行**，
+                         导致目录里每条编号标题都多出一个重复项
+                         （实测症状：`2 | 1 Introduction` 与 `1 | Introduction` 并列）。
+                    */
+                    i = title.index;
+                    continue;
+                }
+                // 后面不是标题 → 当成普通数字，忽略
+                continue;
+            }
+
+            // ③ 编号与标题同行
+            var m = NUMBERED_RE.exec(s);
+            if (m) {
+                out.push({
+                    level: levelOfNumber(m[1]),
+                    title: s,
+                    line: i
+                });
+                continue;
+            }
+
+            // ④ 无编号：全大写，或在已知标题词表里
+            var isUpper = UPPER_RE.test(s);
+            var upper = s.toUpperCase();
+            // 占位符之类明确不是标题的，先排除
+            if (NOT_HEADS.indexOf(upper) >= 0) continue;
+            var known = KNOWN_HEADS.indexOf(upper) >= 0;
+            if (isUpper || known) {
+                /*
+                  ⚠️ 排除单字符/极短的全大写行（如 "A"、"II"）——
+                     那种多半是公式编号或列表标记，不是标题。
+                */
+                if (s.replace(/[^A-Za-z0-9]/g, '').length < 4) continue;
+                out.push({ level: 1, title: s, line: i });
+            }
+        }
+
+        return out;
+    }
+
+    /**
+     * 向后找一行可以用作标题的文本。
+     *
+     * ⚠️ 跳过空行，但**只跳一格**就放弃 —— 编号与标题之间通常紧邻，
+     *    中间隔了空行又隔了正文，那这编号多半是公式编号不是章节号。
+     *
+     * @return { text, index } 或 null
+     */
+    function lookAheadTitle(lines, from) {
+        var idx = from;
+        // 允许前面有一个空行
+        if (idx < lines.length && !lines[idx].trim()) idx++;
+        if (idx >= lines.length) return null;
+
+        var s = lines[idx].trim();
+        if (!s || s.length > MAX_TITLE_CHARS) return null;
+        // 占位符（pdfbox 对解不出的字段输出 UNKNOWN）不是标题
+        if (NOT_HEADS.indexOf(s.toUpperCase()) >= 0) return null;
+        // 纯数字/纯符号 → 不是标题
+        if (!/[A-Za-z\u4e00-\u9fff]/.test(s)) return null;
+        // 以句号结尾的长句 → 正文，不是标题
+        if (s.length > 40 && /[.。]$/.test(s)) return null;
+
+        return { text: s, index: idx };
+    }
+
+    // --- 目录：弹窗 ---------------------------------------------------------
+
+    function mountToc() {
+        if (tocBtn) {
+            tocBtn.addEventListener('click', function () {
+                setToc(true);
+            });
+        }
+        if (tocCloseEl) {
+            tocCloseEl.addEventListener('click', function () {
+                setToc(false);
+            });
+        }
+        if (tocBackdropEl) {
+            tocBackdropEl.addEventListener('click', function () {
+                setToc(false);
+            });
+        }
+    }
+
+    function setToc(open) {
+        if (!tocSheetEl) return;
+
+        tocOpen = !!open;
+        if (tocBtn) {
+            tocBtn.setAttribute('aria-expanded', tocOpen ? 'true' : 'false');
+        }
+
+        if (tocOpen) {
+            // 打开时至少要把菜单留着？不留 —— 目录是全屏覆盖，菜单在下面也没用
+            setPanel(false);
+            renderToc();
+            tocSheetEl.hidden = false;
+            // 强制布局后再加 is-open，否则滑入动画不触发
+            if (tocSheetEl.offsetWidth < 0) return;
+            tocSheetEl.classList.add('is-open');
+        } else {
+            tocSheetEl.classList.remove('is-open');
+            global.setTimeout(function () {
+                if (!tocOpen) {
+                    tocSheetEl.hidden = true;
+                }
+            }, 260);
+        }
+    }
+
+    function renderToc() {
+        if (!tocListEl) return;
+        tocListEl.textContent = '';
+
+        if (!toc.length) {
+            var empty = document.createElement('li');
+            empty.className = 'toc-empty';
+            empty.textContent = t('reader.tocEmpty');
+            tocListEl.appendChild(empty);
+            return;
+        }
+
+        toc.forEach(function (entry) {
+            var li = document.createElement('li');
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'toc-item';
+            btn.setAttribute('data-level', String(entry.level));
+            btn.textContent = entry.title;
+            btn.addEventListener('click', function () {
+                jumpTo(entry);
+            });
+            li.appendChild(btn);
+            tocListEl.appendChild(li);
+        });
+    }
+
+    /**
+     * 跳转到目录条目的位置。
+     *
+     * ⚠️ 定位方式：把正文按行渲染，每条目录记着行号。
+     *    跳转时用**该行第一个字符在渲染文本里的偏移**算像素位置。
+     *
+     *    为什么不用给每行套 <span id>：正文可能几十万字符，
+     *    为每一行建元素会让 WebView 的内存和布局开销爆炸
+     *    （实测一篇 17 页论文 5 千行，建 5 千个元素已经明显卡顿）。
+     *    用 Range + getBoundingClientRect 只对目标行算一次，成本极低。
+     */
+    function jumpTo(entry) {
+        if (!contentEl || !bodyEl) return;
+
+        var offset = 0;
+        for (var i = 0; i < entry.line && i < textLines.length; i++) {
+            offset += textLines[i].length + 1;   // +1 是换行符
+        }
+
+        /*
+          ⚠️ 用 Range 而不是 childNodes 遍历：正文是单一文本节点
+             （textContent 设进去的），所以只有一个子节点，
+             偏移可以直接用在它身上。若将来改成多节点，这里要跟着改。
+        */
+        var target = null;
+        var node = contentEl.firstChild;
+        if (node && node.nodeType === 3) {
+            var len = node.nodeValue.length;
+            var start = Math.min(offset, len);
+            try {
+                var range = document.createRange();
+                range.setStart(node, start);
+                range.setEnd(node, Math.min(start + 1, len));
+                target = range.getBoundingClientRect();
+            } catch (e) {
+                target = null;
+            }
+        }
+
+        setToc(false);
+
+        if (target && target.height >= 0) {
+            // 目标相对正文容器的位置 + 当前滚动量 = 绝对滚动位置
+            var bodyTop = bodyEl.getBoundingClientRect().top;
+            var y = bodyEl.scrollTop + (target.top - bodyTop);
+            /*
+              留出顶部栏高度，否则跳过去的标题正好被顶栏压住。
+              菜单这时是收起的（点目录时菜单收起了吗？没有 ——
+              所以顶栏是隐藏的，只留一点点呼吸空间即可）。
+            */
+            bodyEl.scrollTo({ top: Math.max(0, y - 24), behavior: 'smooth' });
+        }
+    }
+
+    // --- 设置面板 -----------------------------------------------------------
+
+    function mountSettings() {
+        if (settingsBtn) {
+            settingsBtn.addEventListener('click', function () {
+                setPanel(!panelOpen);
+            });
+        }
+    }
+
+    function setPanel(open) {
+        if (!panelEl) return;
+
+        panelOpen = !!open;
+        if (settingsBtn) {
+            settingsBtn.setAttribute('aria-expanded', panelOpen ? 'true' : 'false');
+        }
+
+        if (panelOpen) {
+            if (!menuOpen) {
+                setMenu(true);
+            }
+            panelEl.hidden = false;
+
+            /*
+              ⚠️ 唯一需要 JS 介入的是**高度上限**，不需要算上移量。
+                 面板与选项栏是 .reader-stack 里自下往上排的 flex 兄弟，
+                 面板一展开就把选项栏自然顶上去，两者永远严丝合缝。
+
+                 上限公式：视口 - 状态栏 - 选项栏高度 - 呼吸空间。
+                 ⚠️ 不能用「屏幕高度的百分比」——面板是贴着底部、叠在
+                    选项栏之上的，可用高度不是 62vh 这类比例。
+                    实测 360x640 小屏 + 字号 26px 时，写 62vh 会让面板
+                    top 到 -255px，顶部的「字体」整组被推出屏幕且滚不到。
+            */
+            var bottomH = bottomEl
+                ? bottomEl.getBoundingClientRect().height
+                : 56;
+            var safeTop = parseFloat(getComputedStyle(document.documentElement)
+                .getPropertyValue('--safe-top')) || 0;
+            var avail = global.innerHeight - safeTop - bottomH - 12;
+            root.style.setProperty('--reader-panel-max', Math.max(120, avail) + 'px');
+
+            if (panelEl.offsetWidth < 0) return;
+            root.classList.add('is-panel-open');
+        } else {
+            root.classList.remove('is-panel-open');
+            if (settingsBtn) {
+                settingsBtn.setAttribute('aria-expanded', 'false');
+            }
+            global.setTimeout(function () {
+                if (!panelOpen) {
+                    panelEl.hidden = true;
+                }
+            }, 240);
+        }
+    }
+
+    // --- 设置：应用与持久化 -------------------------------------------------
+
+    function getSize() {
+        var v = parseInt(readStore(SIZE_KEY, ''), 10);
+        return SIZES.indexOf(v) >= 0 ? v : DEFAULT_SIZE;
+    }
+
+    function getColor() {
+        var v = readStore(COLOR_KEY, 'default');
+        return COLORS.indexOf(v) >= 0 ? v : 'default';
+    }
+
+    function getFont() {
+        var v = readStore(FONT_KEY, DEFAULT_FONT);
+        return FONTS.indexOf(v) >= 0 ? v : DEFAULT_FONT;
+    }
+
+    function getSize() {
+        var v = parseInt(readStore(SIZE_KEY, ''), 10);
+        return SIZES.indexOf(v) >= 0 ? v : DEFAULT_SIZE;
+    }
+
+    function getColor() {
+        var v = readStore(COLOR_KEY, 'default');
+        return COLORS.indexOf(v) >= 0 ? v : 'default';
+    }
+
+    function getFont() {
+        var v = readStore(FONT_KEY, DEFAULT_FONT);
+        return FONTS.indexOf(v) >= 0 ? v : DEFAULT_FONT;
+    }
+
+    /**
+     * 把设置写进 DOM。
+     *
+     * ⚠️ 字号只写在 contentEl 上（内联 style），**不写在 .reader 或 body 上**。
+     *    用户明确要求：字体三项只作用于正文内容，菜单/面板/目录
+     *    跟随应用整体字体。写到上层会连带把菜单也放大。
+     *
+     * ⚠️ 颜色/字体用 data 属性 + CSS 选择器**限定到 .reader-content**，
+     *    所以对菜单没有影响。
+     */
+    function applySettings() {
+        if (!root || !contentEl) return;
+
+        contentEl.style.fontSize = getSize() + 'px';
+        root.setAttribute('data-reader-color', getColor());
+        root.setAttribute('data-reader-font', getFont());
+
+        syncRows();
+    }
+
+    /** 刷新四行右侧的当前值文字 */
+    function syncRows() {
+        syncThemeRow();
+        setRowValue('reader-font-size-value', getSize() + 'px');
+        setRowValue('reader-font-color-value', t('reader.color.' + getColor()));
+        setRowValue('reader-font-style-value', t('reader.font.' + getFont()));
+    }
+
+    function setRowValue(id, text) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = text;
+    }
+
+    function fontFamilyOf(name) {
+        if (name === 'serif') {
+            return 'Georgia, "Times New Roman", "Songti SC", "SimSun", serif';
+        }
+        if (name === 'mono') {
+            return 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+        }
+        return 'system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif';
+    }
+
+    // --- 设置：四项行式（字号 / 颜色 / 字体 / 主题） ------------------------
+
+    /**
+     * 四项都用「左标签 + 右当前值」，点整行弹**底部表单**。
+     *
+     * ⚠️ 用 createRowSheetPicker（底部表单）而不是 createRowPicker（行内菜单）——
+     *    用户明确要求：行内菜单高度有限，选项一多就排不开；
+     *    而字号/颜色/字体/主题这些设置项只会越来越多，必须能滚动容纳。
+     */
+    function mountRows() {
+        var ui = global.ScholariusUI;
+        if (!ui || !ui.createRowSheetPicker) return;
+
+        // 字号
+        bindRow('reader-font-size-row', 'reader-font-size-value', {
+            getOptions: function () {
+                return SIZES.map(function (px) {
+                    return { value: px, label: px + 'px' };
+                });
+            },
+            getValue: getSize,
+            onChange: function (px) {
+                writeStore(SIZE_KEY, String(px));
+                applySettings();
+            }
+        });
+
+        // 字体颜色
+        bindRow('reader-font-color-row', 'reader-font-color-value', {
+            getOptions: function () {
+                return COLORS.map(function (name) {
+                    return { value: name, label: t('reader.color.' + name) };
+                });
+            },
+            getValue: getColor,
+            onChange: function (name) {
+                writeStore(COLOR_KEY, name);
+                applySettings();
+            }
+        });
+
+        // 字体样式
+        bindRow('reader-font-style-row', 'reader-font-style-value', {
+            getOptions: function () {
+                return FONTS.map(function (name) {
+                    return { value: name, label: t('reader.font.' + name) };
+                });
+            },
+            getValue: getFont,
+            onChange: function (name) {
+                writeStore(FONT_KEY, name);
+                applySettings();
+            }
+        });
+
+        // 主题 —— ⚠️ 值走 ScholariusTheme，不自己存。
+        // 主题是全站共享的，两处入口必须读写同一个地方，否则会互相覆盖。
+        bindRow('reader-theme-row', 'reader-theme-value', {
+            getOptions: function () {
+                return ['light', 'dark', 'system'].map(function (mode) {
+                    return { value: mode, label: t('setting.theme.' + mode) };
+                });
+            },
+            getValue: function () {
+                return global.ScholariusTheme
+                    ? global.ScholariusTheme.getMode()
+                    : 'system';
+            },
+            onChange: function (mode) {
+                if (global.ScholariusTheme) {
+                    global.ScholariusTheme.setMode(mode);
+                }
+                syncThemeRow();
+            }
+        });
+    }
+
+    function bindRow(rowId, valueId, config) {
+        var row = document.getElementById(rowId);
+        var valueEl = document.getElementById(valueId);
+        if (!row || !valueEl) return null;
+        return global.ScholariusUI.createRowSheetPicker(row, valueEl, config);
+    }
+
+    /**
+     * 主题行右侧的当前值。
+     *
+     * ⚠️ 组件内部的 syncSheetPickerValue 只在**本行被点选后**刷新文字；
+     *    外部（设置页）改主题时不会触发，所以要单独订阅 ScholariusTheme。
+     */
+    function syncThemeRow() {
+        var el = document.getElementById('reader-theme-value');
+        if (!el) return;
+        var mode = global.ScholariusTheme
+            ? global.ScholariusTheme.getMode()
+            : 'system';
+        el.textContent = t('setting.theme.' + mode);
+    }
+
+    // --- 其它 ---------------------------------------------------------------
 
     function refreshChrome() {
         /*
-          目前顶部栏没有任何随语言/主题变化的文本
-          （只有返回按钮，它靠 data-i18n-aria-label 自适应）。
-          保留这个函数作为将来加按钮时的挂点。
+          语言切换后，右侧的当前值文字要重写 —— 它们是 JS 填的，
+          靠 data-i18n 不会自动更新（那种只适用于静态文案）。
         */
+        syncRows();
+        applySettings();
+        if (tocOpen) {
+            renderToc();
+        }
     }
 
     function trace(stage, detail) {
@@ -279,12 +989,40 @@
         isOpen: isOpen,
         setText: setText,
         onExtractFailed: onExtractFailed,
-        /** 系统返回键用：菜单开着就先关菜单，否则关阅读页 */
+        /** 目录（供测试与将来的大纲导出用） */
+        getToc: function () {
+            return toc.slice();
+        },
+        /** 当前设置（供测试用） */
+        getSettings: function () {
+            return { size: getSize(), color: getColor(), font: getFont() };
+        },
+        setSize: function (px) {
+            if (SIZES.indexOf(px) >= 0) {
+                writeStore(SIZE_KEY, String(px));
+                applySettings();
+            }
+        },
+        /** 系统返回键用：选项表单 → 目录 → 面板 → 菜单 → 关阅读页，逐层退 */
         handleBack: function () {
             if (!isOpen()) {
                 return false;
             }
-            if (menuOpen) {
+            /*
+              ⚠️ 选项表单（#sheet-picker）最先判断。
+                 它虽然在 DOM 上挂在阅读页外面（是个 .sheet），
+                 但语义上属于阅读设置 —— 用户点它时正在调阅读字体，
+                 返回键当然应该先关表单，而不是直接退阅读页。
+            */
+            if (global.ScholariusUI &&
+                typeof global.ScholariusUI.isSheetPickerOpen === 'function' &&
+                global.ScholariusUI.isSheetPickerOpen()) {
+                global.ScholariusUI.closeSheetPicker();
+            } else if (tocOpen) {
+                setToc(false);
+            } else if (panelOpen) {
+                setPanel(false);
+            } else if (menuOpen) {
                 setMenu(false);
             } else {
                 close();

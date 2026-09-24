@@ -257,6 +257,8 @@
             message: t('vault.deleteMessage').replace('{n}', String(ids.length)),
             confirmLabel: t('action.delete'),
             cancelLabel: t('action.cancel'),
+            // 破坏性且不可撤销 → DELETE 用删除红
+            danger: true,
             onConfirm: function () {
                 doDelete(ids);
             }
@@ -273,6 +275,8 @@
             message: t('vault.deleteOneMessage').replace('{title}', doc.title || ''),
             confirmLabel: t('action.delete'),
             cancelLabel: t('action.cancel'),
+            // 破坏性且不可撤销 → DELETE 用删除红
+            danger: true,
             onConfirm: function () {
                 doDelete([doc.id]);
             }

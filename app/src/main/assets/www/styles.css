@@ -321,31 +321,70 @@ body {
     display: none;
 }
 
-/* 一张文献卡片：左缩略图 / 右信息 */
+/*
+  一张文献卡片：左缩略图 / 右信息。
+
+  ⚠️ 卡片**不画外框**（用户明确要求「不要用框框住」）。
+     之前是 border: 1px solid + border-radius + background，
+     整页看起来像一堆小盒子。现在改成：
+       · 无边框、无圆角、无底色 —— 卡片本身完全透明；
+       · 行与行之间用一条极淡的分隔线（::after 画在下方）；
+       · 靠缩略图与文字本身的留白形成节奏。
+     这样更接近文献列表该有的样子，密集但不拥挤。
+
+  ⚠️ 分隔线用 ::after + left 偏移，让线从**文字左边缘**开始
+     （而不是从缩略图左边），视觉上与标题对齐，不与缩略图打架。
+*/
 .doc-card {
+    position: relative;
     display: flex;
     align-items: stretch;
     gap: 12px;
-    margin-bottom: 10px;
-    padding: 10px;
-    border: 1px solid var(--outline);
-    border-radius: 14px;
-    background: var(--surface);
+    padding: 10px 4px;
+    border: 0;
+    background: transparent;
     cursor: pointer;
     outline: none;
     -webkit-tap-highlight-color: transparent;
-    transition: transform 120ms ease, opacity 120ms ease, background-color 160ms ease;
+    transition: opacity 120ms ease, background-color 160ms ease;
+}
+
+/*
+  ⚠️ 分隔线用 ::after 画在每张卡片**下方**，最后一张不画 ——
+     否则列表底部会多出一条悬空的线。
+
+  ⚠️ 选择器是 `.doc-list > .doc-card:last-child`，不是
+     `.doc-list > li:last-child .doc-card`：
+     vault.js 里卡片**本身就是 li**（`<li class="doc-card">`），
+     没有内层元素，写成后代选择器会一条都匹配不上。
+     已实测确认：结构是 ul.doc-list > li.doc-card。
+*/
+.doc-card::after {
+    content: '';
+    position: absolute;
+    left: 76px;                 /* 缩略图 56 + gap 12 + 内边距 4 ≈ 对齐文字左缘 */
+    right: 4px;
+    bottom: 0;
+    height: 1px;
+    background: var(--outline);
+}
+
+.doc-list > .doc-card:last-child::after {
+    display: none;
 }
 
 .doc-card:active {
-    transform: scale(0.99);
-    opacity: 0.75;
+    opacity: 0.6;
 }
 
-/* 多选模式下被选中的卡片 */
+/*
+  多选模式下被选中的卡片。
+  ⚠️ 没有边框可以变色了，改用**底色高亮** + 左侧色条。
+     色条用 inset 阴影画，不额外建元素。
+*/
 .doc-card.is-selected {
-    border-color: var(--nav-active);
     background: var(--surface-raised);
+    box-shadow: inset 3px 0 0 var(--nav-active);
 }
 
 /*
@@ -508,12 +547,24 @@ body {
       阅读页是从文库进去的，进入时多选栏已关闭，所以不需要比它更高。
     */
     z-index: 8;
-    display: flex;
-    flex-direction: column;
-    padding-top: var(--safe-top);
-    padding-right: var(--safe-right);
-    padding-bottom: var(--safe-bottom);
-    padding-left: var(--safe-left);
+    /*
+      ⚠️ .reader **不加任何 padding**。
+
+         两个原因，都是踩过的坑：
+
+         ① 加了 padding-top 会把整层往下推，看起来像「为菜单预留了空带」。
+            用户明确要求正文顶到屏幕最上沿（含状态栏区域），
+            菜单是唤出式、浮在内容上面的。
+
+         ② 更隐蔽的：absolute 子元素的 top/bottom 是相对**padding box**，
+            不是 border box。.reader 有 padding-bottom 时，
+            子元素的 bottom: 0 会落在 padding 内边缘 ——
+            实测导致面板算出的 top 是 -405px（跑到屏幕外）。
+            去掉 padding 后基准就只剩视口一处，不会再算错。
+
+         安全区改由各子元素自己处理（见 .reader-top / .reader-bottom /
+         .reader-content / .reader-stack）。
+    */
     background: var(--bg);
     /* 从右侧滑入，与账户详情页同一套动作 */
     transform: translateX(100%);
@@ -529,62 +580,80 @@ body {
 }
 
 /*
-  顶部栏与底部选项栏：菜单显示时滑入，隐藏时滑出。
+  顶部栏：absolute 浮在正文之上，收起时整体上移出屏幕。
 
-  ⚠️ 用 transform 而不是 display —— 否则高度会突然塌掉，
-     正文区跟着跳动，阅读位置会错位。
+  ⚠️ 用户明确要求：菜单是**唤出式**的，盖在内容上面，
+     不是把内容挤下去、也不为它预留空带。
 */
-.reader-top,
-.reader-bottom {
-    flex: 0 0 auto;
-    /* 与底部导航同高，视觉厚度一致 */
-    height: 56px;
-    background: var(--nav-bg);
-    transition: transform 220ms cubic-bezier(0.2, 0, 0, 1);
-}
-
 .reader-top {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 2;
     display: flex;
     align-items: center;
     justify-content: flex-start;
     gap: 8px;
     padding: 0 8px;
     /*
-      顶部栏要连同状态栏区域一起收起。
-
-      ⚠️ 这里的关键：.reader 有 padding-top: var(--safe-top)，
-         所以顶部栏的静止位置本就低了 safe-top。
-         只写 translateY(-100%) 只能上移自己的高度（56px），
-         收起后仍停在 safe-top 处 —— 即“压在状态栏上”，看起来没收干净。
-
-         修法：用负 margin-top 把顶部栏向上拉出 safe-top，
-         再叠上自己的高度，这样 -100% 才能真的移出屏幕。
+      顶部栏背景从屏幕最上沿开始（视觉上不留空隙），
+      但内容要压到安全区之下，否则返回按钮被状态栏图标盖住。
+      做法：高度 = 56 + safe-top，用 padding 把内容推下来。
     */
-    margin-top: calc(-1 * var(--safe-top));
+    height: calc(56px + var(--safe-top));
     padding-top: var(--safe-top);
-    box-sizing: content-box;
-    height: 56px;
+    padding-left: calc(8px + var(--safe-left));
+    padding-right: calc(8px + var(--safe-right));
+    box-sizing: border-box;
+    background: var(--nav-bg);
     transform: translateY(-100%);
+    transition: transform 220ms cubic-bezier(0.2, 0, 0, 1);
 }
 
+.reader.is-menu-open .reader-top {
+    transform: translateY(0);
+}
+
+/*
+  底部选项栏。现在是 .reader-stack 里的 flex 子元素（不是 absolute），
+  因为面板要和它拼在一起从底部往上排。
+
+  ⚠️ 收起时用 translateY(100%) 滑出屏幕；菜单展开时归位。
+     面板展开时整条上移面板的高度（见 .reader-stack 与 --reader-panel-h）。
+*/
 .reader-bottom {
-    /* 底部选项栏现在没有内容，先只留高度与背景 */
+    flex: 0 0 auto;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
     padding: 0 8px;
-    /*
-      同理：.reader 有 padding-bottom: var(--safe-bottom)，
-      底部栏要收进手势条之下。
-    */
-    margin-bottom: calc(-1 * var(--safe-bottom));
+    padding-left: calc(8px + var(--safe-left));
+    padding-right: calc(8px + var(--safe-right));
+    height: calc(56px + var(--safe-bottom));
     padding-bottom: var(--safe-bottom);
-    box-sizing: content-box;
+    box-sizing: border-box;
+    background: var(--nav-bg);
     /* 藏起来时整体下移 */
     transform: translateY(100%);
+    transition: transform 220ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-/* 菜单可见时两条都归位 */
-.reader.is-menu-open .reader-top,
 .reader.is-menu-open .reader-bottom {
     transform: translateY(0);
+}
+
+/*
+  ⚠️ 设置面板展开时**不需要**给选项栏写上移。
+     面板与选项栏是 .reader-stack 里紧邻的两个 flex 子元素，
+     自下往上排：面板在上、选项栏在下，面板一展开就把选项栏往上顶。
+     之前用「选项栏 translateY(-面板高度)」是多余的，
+     而且两个高度只要有一像素误差就会露出空档。
+*/
+.reader.is-panel-open .reader-panel {
+    display: block;
 }
 
 .reader-title {
@@ -615,23 +684,34 @@ body {
 }
 
 /*
-  正文区。可滚动，点它切换菜单。
+  正文区。绝对定位铺满整个阅读页（含状态栏区域），自己滚动。
 
-  ⚠️ 菜单滑出时正文**不跟着移动** —— 与主流阅读器一致：
-     菜单是浮在内容之上的，内容位置不动，阅读进度不会跳。
-     所以这里不能用 padding 给菜单腾位，而是让菜单覆盖上去。
+  ⚠️ 用 absolute 而不是 flex 子元素：
+     它必须**不受**菜单与面板的显隐影响 —— 菜单是浮在上面的，
+     内容位置不能因为唤出菜单而跳动（否则阅读进度会错位）。
 */
 .reader-body {
-    flex: 1 1 auto;
-    min-height: 0;
+    position: absolute;
+    inset: 0;
+    z-index: 1;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
 }
 
 .reader-content {
-    /* 正文左右留白，接近纸质阅读的版心宽度 */
-    padding: 20px 24px 40px;
+    /*
+    ⚠️ 顶部内边距 = 状态栏高度 + 一点呼吸空间。
+       这是**内容的留白**，不是给容器缩进 ——
+       正文容器本身撑满全屏（.reader 没有 padding-top），
+       所以菜单收起时文字能滚到屏幕最上沿之下、贴着状态栏读，
+       而首屏第一行文字不会钻到状态栏图标底下。
+
+       底部同理：菜单收起时不留空，文字可以滚到屏幕最下沿。
+       滚动是连续的，用户滚到哪读到哪，中间不会有一块永远空着的带。
+    */
+    padding: calc(var(--safe-top) + 12px) calc(24px + var(--safe-right))
+        calc(var(--safe-bottom) + 16px) calc(24px + var(--safe-left));
     font-size: 17px;
     line-height: 1.75;
     color: var(--on-surface);
@@ -659,6 +739,386 @@ body {
     color: var(--on-surface-variant);
     font-size: 14px;
     text-align: center;
+}
+
+/* --------------------------------------------------------------------------
+   阅读页 · 底部选项栏按钮
+   -------------------------------------------------------------------------- */
+
+/*
+  选项栏里的图标按钮：纵向排（图标在上、文字在下），
+  比纯图标好认 —— 「目录」和「设置」光看图不太分得清。
+*/
+.reader-action {
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    max-width: 96px;
+    padding: 6px 4px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--nav-inactive);
+    font: inherit;
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 160ms ease, background-color 160ms ease;
+}
+
+.reader-action:active {
+    background: var(--surface-raised);
+}
+
+/* 当前展开的那个（目录/设置）：高亮 */
+.reader-action[aria-expanded="true"] {
+    color: var(--nav-active);
+}
+
+.reader-action svg {
+    width: 22px;
+    height: 22px;
+    fill: currentColor;
+}
+
+.reader-action-label {
+    font-size: 11px;
+    line-height: 14px;
+    letter-spacing: 0.02em;
+}
+
+/* --------------------------------------------------------------------------
+   阅读页 · 设置面板（从选项栏上方冒出）
+   -------------------------------------------------------------------------- */
+
+/*
+  ⚠️ 面板是选项栏的兄弟，紧跟其后、absolute 定位在选项栏正上方。
+     展开时用 transform 从下方滑出，收起时滑回。
+
+     位置用 bottom 计算：选项栏高度 + 面板高度。
+     选项栏高度是动态的（含 safe-bottom），所以这里让 JS 把
+     面板高度写进 --reader-panel-h，选项栏整体上移同样的距离，
+     面板再叠在选项栏上方 —— 两者拼成一块整体，视觉上「一起冒出」。
+*/
+/*
+  ⚠️ 面板与选项栏都改成用 top 定位，不用 bottom。
+
+     踩过的坑：.reader 有 padding-bottom: var(--safe-bottom)，
+     而 absolute 元素的 bottom 是相对**padding box** 而不是 border box，
+     所以 bottom: calc(56px + safe-bottom + panelH) 会被再叠一次 safe-bottom，
+     实测面板 top 算出 -405px（比屏幕还高）。
+
+     改用 top: 0 + 内部用 flex 从底部往上排，定位基准就只有一处。
+     整个 .reader 是一个从下往上堆叠的列：正文(弹性) / 面板 / 选项栏。
+*/
+.reader-stack {
+    position: absolute;
+    left: 0;
+    right: 0;
+    /* 占满整个阅读页高度，从下往上排 */
+    top: 0;
+    bottom: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    /* 让下面的子元素能接收点击，上面的空隙不挡住正文 */
+    pointer-events: none;
+}
+
+.reader-stack > * {
+    pointer-events: auto;
+}
+
+.reader-panel {
+    flex: 0 0 auto;
+    /*
+      ⚠️ 高度上限由 JS 写进 --reader-panel-max（按「视口 - 状态栏 -
+         选项栏 - 呼吸空间」算）。这里只兜底。
+    */
+    max-height: var(--reader-panel-max, 46vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding: 14px 20px;
+    background: var(--nav-bg);
+    border-top: 1px solid var(--outline);
+    /*
+      ⚠️ 字号必须固定，**不能继承正文字号**。
+         一旦字号被写到父级，面板里的标签会跟着放大
+         （实测自然高度能到 900px）。
+    */
+    font-size: 15px;
+    line-height: 1.4;
+}
+
+.reader-panel[hidden] {
+    display: none;
+}
+
+/* --------------------------------------------------------------------------
+   阅读页 · 目录弹窗
+   -------------------------------------------------------------------------- */
+
+/*
+  ⚠️ 目录用**覆盖层**（不是新的一级页面），从底部滑入，占屏幕下半部分。
+     理由：目录只是导航辅助，用户点完就走，不该离开阅读上下文。
+*/
+.toc-sheet {
+    position: fixed;
+    inset: 0;
+    /* 高于阅读页（8），低于通用弹层（100）—— 目录属于阅读页内部的东西 */
+    z-index: 20;
+}
+
+.toc-sheet[hidden] {
+    display: none;
+}
+
+.toc-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.42);
+    opacity: 0;
+    transition: opacity 220ms ease;
+}
+
+.toc-sheet.is-open .toc-backdrop {
+    opacity: 1;
+}
+
+.toc-body {
+    position: absolute;
+    left: var(--safe-left);
+    right: var(--safe-right);
+    bottom: 0;
+    max-height: 68vh;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: var(--safe-bottom);
+    background: var(--surface);
+    border-radius: 20px 20px 0 0;
+    transform: translateY(100%);
+    transition: transform 260ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.toc-sheet.is-open .toc-body {
+    transform: translateY(0);
+}
+
+.toc-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 12px 12px 8px 20px;
+}
+
+.toc-title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--on-surface);
+}
+
+.toc-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    margin: 0;
+    padding: 0 8px 12px;
+    list-style: none;
+}
+
+.toc-item {
+    display: block;
+    width: 100%;
+    padding: 11px 12px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--on-surface);
+    font: inherit;
+    font-size: 15px;
+    line-height: 1.45;
+    text-align: left;
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.toc-item:active {
+    background: var(--surface-raised);
+}
+
+/* 层级：一级标题字号大、缩进小；二级及以下递减 */
+.toc-item[data-level="1"] {
+    font-weight: 700;
+    font-size: 16px;
+}
+
+.toc-item[data-level="2"] {
+    padding-left: 28px;
+    font-size: 14px;
+}
+
+.toc-item[data-level="3"] {
+    padding-left: 44px;
+    font-size: 13px;
+    color: var(--on-surface-variant);
+}
+
+.toc-item[data-level="4"],
+.toc-item[data-level="5"],
+.toc-item[data-level="6"] {
+    padding-left: 58px;
+    font-size: 13px;
+    color: var(--on-surface-variant);
+}
+
+.toc-empty {
+    padding: 24px 20px 32px;
+    color: var(--on-surface-variant);
+    font-size: 14px;
+    text-align: center;
+}
+
+/* --------------------------------------------------------------------------
+   阅读页 · 设置项（行式：左标签 + 右当前值）
+   -------------------------------------------------------------------------- */
+
+/*
+  ⚠️ 四项设置（字号 / 颜色 / 字体 / 主题）都用「左标签 + 右当前值」，
+     点整行弹**底部表单**，不用并排的分段按钮/色块/列表。
+
+     理由（用户明确要求）：并排控件在项数变多时排不开
+     （字号档位、字体、颜色、主题都只会越来越多），
+     而行式 + 可滚动的表单能容纳任意项数，形态也和设置页一致。
+
+     直接复用 .setting-action / .setting-label / .setting-value，
+     这里只把尺度调成面板大小，别让它在窄面板里显得过大。
+*/
+.reader-setting-row {
+    padding: 11px 12px;
+    border-radius: 10px;
+}
+
+.reader-setting-row + .reader-setting-row {
+    margin-top: 2px;
+}
+
+.reader-setting-row .setting-label {
+    font-size: 14px;
+}
+
+.reader-setting-row .setting-value {
+    font-size: 14px;
+    color: var(--on-surface-variant);
+}
+
+/* 面板里不要额外分隔线 —— 行式本身已经够清楚 */
+.reader-setting-group + .reader-setting-group {
+    margin-top: 6px;
+}
+
+/* --------------------------------------------------------------------------
+   底部选项表单（由 ScholariusUI.createRowSheetPicker 动态填充）
+   -------------------------------------------------------------------------- */
+
+.sheet-picker-list {
+    margin: 4px 0 0;
+    padding: 0;
+    list-style: none;
+    /*
+      ⚠️ 必须可滚动。设置项只会越来越多，写死高度会在项多时排不开 ——
+         这正是当初放弃行内菜单、改用底部表单的原因。
+    */
+    max-height: 52vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+
+.sheet-picker-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    padding: 13px 12px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--on-surface);
+    font: inherit;
+    font-size: 15px;
+    line-height: 1.4;
+    text-align: left;
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.sheet-picker-item:active {
+    background: var(--surface-raised);
+}
+
+.sheet-picker-item[aria-pressed="true"] {
+    color: var(--on-surface);
+    font-weight: 700;
+}
+
+/* 选中标记：只有选中时才显示 */
+.sheet-picker-check {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    fill: var(--success);
+    visibility: hidden;
+}
+
+.sheet-picker-item[aria-pressed="true"] .sheet-picker-check {
+    visibility: visible;
+}
+
+.sheet-picker-label {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/*
+  ⚠️ 阅读设置的字体三项（字号 / 颜色 / 样式）**只作用于正文内容**，
+     不作用于阅读页的菜单、选项栏、设置面板、目录。
+
+     用户原话：「阅读字体只作用于阅读页，或者说阅读内容，
+               菜单不属于阅读内容，所以依旧跟随应用整体的字体。」
+
+     实现要点：
+       ① 字体样式由 `data-reader-font` 选择器**限定到 .reader-content**，
+          所以 .reader-top / .reader-bottom / .reader-panel / .toc-* 全不受影响；
+       ② 字号用内联 style 也只写在 contentEl 上（见 reader.js applySettings），
+          不要写到 .reader 或 <body>，否则菜单会跟着变大；
+       ③ 颜色同理，只落在 .reader-content。
+*/
+.reader[data-reader-font="serif"] .reader-content {
+    font-family: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+}
+
+.reader[data-reader-font="sans"] .reader-content {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto,
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.reader[data-reader-font="mono"] .reader-content {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 /* --------------------------------------------------------------------------
@@ -1496,30 +1956,6 @@ body {
 
 .btn-danger {
     color: var(--danger);
-}
-
-/*
-  图标按钮的删除态。
-
-  ⚠️ 与 .btn-danger 分开写，因为 .icon-button 的 color 是给按钮的、
-     SVG 靠 fill="currentColor" 跟随；而 .btn 是文字按钮。
-     两者共用 --danger，保证与 Livolog 的删除红完全一致：
-         亮  #C0392B
-         暗  #E06C5E
-*/
-.icon-danger {
-    color: var(--danger);
-}
-
-/*
-  删除键禁用（没选任何项时）。
-  ⚠️ 选择器写成 .icon-button.icon-danger:disabled（三要素齐全），
-     优先级高于 .icon-danger 与 .icon-button:disabled，
-     保证「禁用时是灰的」这条不会被红色的类名压过去。
-*/
-.icon-button.icon-danger:disabled {
-    color: var(--nav-inactive);
-    opacity: 0.45;
 }
 
 /* --------------------------------------------------------------------------

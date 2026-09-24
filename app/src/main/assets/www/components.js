@@ -156,7 +156,13 @@
     /**
      * 弹一个「标题 + 正文 + 取消/确定」的确认框。
      *
-     * @param options { title, message, confirmLabel, cancelLabel, onConfirm }
+     * @param options { title, message, confirmLabel, cancelLabel, onConfirm, danger }
+     *
+     * ⚠️ danger=true 时确定按钮用删除红（--danger），否则用默认前景色。
+     *    这个弹层被两类场景复用：
+     *      · 删除文献        → danger=true   （破坏性，不可撤销）
+     *      · 登录设备码确认   → danger 省略   （普通动作，绿色/默认才对）
+     *    所以颜色**不能写死在 HTML 上**，必须按调用方意图切换。
      *
      * 为什么不复用 sheet-signout：那个的文案写死在 i18n 里，
      * 而这里要显示运行时才拿到的设备码，必须动态填。
@@ -185,6 +191,14 @@
         messageEl.textContent = options.message || '';
         okBtn.textContent = options.confirmLabel || '';
         cancelBtn.textContent = options.cancelLabel || '';
+
+        /*
+          确定按钮配色。
+          ⚠️ 每次都显式设一遍（含 else 分支），
+             否则上一次「删除」留下的红色会残留到下一次「验证码确认」上。
+        */
+        okBtn.classList.toggle('btn-danger', !!options.danger);
+        okBtn.classList.toggle('btn-action', !options.danger);
 
         confirmHandler = typeof options.onConfirm === 'function'
             ? options.onConfirm
@@ -405,6 +419,169 @@
     }
 
     /* ----------------------------------------------------------------------
+       设置行：点整行弹**底部表单**选项
+       ---------------------------------------------------------------------- */
+
+    /**
+     * 与 createRowPicker 同一形态（左名称 / 右当前值），但选项弹在**底部表单**里，
+     * 而不是贴着行的小菜单。
+     *
+     * ⚠️ 为什么需要这个组件：
+     *    createRowPicker 的行内菜单是限定高度的（estimated 最多 320px），
+     *    选项一多就会挤在一起或超出屏幕。设置项将来只会更多
+     *    （字号档位、字体、颜色、主题……），必须有个能容纳任意项数的形态。
+     *    底部表单可以滚动，项数再多也不会排不开。
+     *
+     * @param row      整行可点的容器
+     * @param valueEl  显示当前值的元素
+     * @param config   { getOptions, getValue, onChange, title }
+     */
+    /**
+     * 当前打开表单所对应的 row / 回调。
+     *
+     * ⚠️ 必须按元素存，**不能共用一个「最后一个绑定的 valueEl」变量**。
+     *    踩过的坑：原来写了模块级的 sheetPickerValueEl，每次
+     *    createRowSheetPicker 都覆写它，导致所有行都指向最后一行的值元素 ——
+     *    实测「字体样式」选完之后，**主题那一行也变成了 Monospace**。
+     *    改成挂在 row 上，各行互不干扰。
+     */
+    var SHEET_PICKER_CONFIG = '_scholariusPickerConfig';
+    var SHEET_PICKER_VALUE_EL = '_scholariusPickerValueEl';
+    /** 当前打开的 row（关表单时要清掉它的 aria-expanded） */
+    var openSheetPickerRow = null;
+
+    function createRowSheetPicker(row, valueEl, config) {
+        // 把回调挂在元素上，而不是模块级变量 —— 见上面的说明
+        row[SHEET_PICKER_CONFIG] = config;
+        row[SHEET_PICKER_VALUE_EL] = valueEl;
+
+        row.addEventListener('click', function () {
+            if (row.disabled) return;
+            openSheetPicker(row, config);
+        });
+
+        var api = {
+            refresh: function () {
+                syncSheetPickerValue(valueEl, config);
+            },
+            close: closeSheetPicker
+        };
+        api.refresh();
+        return api;
+    }
+
+    /**
+     * 打开底部选项表单。
+     *
+     * ⚠️ 实现上**复用一个静态 DOM**（#sheet-picker），每次打开重建内容。
+     *    每行都创建一个 form 会让 DOM 无限增长（设置项多、切页频繁）。
+     */
+    function openSheetPicker(row, config) {
+        var sheet = document.getElementById('sheet-picker');
+        if (!sheet) {
+            return;
+        }
+
+        openSheetPickerRow = row;
+        if (row.setAttribute) row.setAttribute('aria-expanded', 'true');
+
+        var titleEl = document.getElementById('sheet-picker-title');
+        var listEl = document.getElementById('sheet-picker-list');
+        var cancelEl = document.getElementById('sheet-picker-cancel');
+
+        if (titleEl) {
+            titleEl.textContent = config.title
+                || (row.querySelector('.setting-label')
+                    ? row.querySelector('.setting-label').textContent
+                    : '');
+        }
+
+        if (listEl) {
+            listEl.textContent = '';
+            var current = config.getValue();
+            config.getOptions().forEach(function (opt) {
+                var li = document.createElement('li');
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'sheet-picker-item';
+                btn.setAttribute('data-value', String(opt.value));
+                btn.setAttribute('aria-pressed',
+                    String(opt.value) === String(current) ? 'true' : 'false');
+
+                var label = document.createElement('span');
+                label.className = 'sheet-picker-label';
+                label.textContent = opt.label;
+                btn.appendChild(label);
+
+                // 选中标记
+                var mark = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                mark.setAttribute('class', 'sheet-picker-check');
+                mark.setAttribute('viewBox', '0 0 24 24');
+                mark.setAttribute('aria-hidden', 'true');
+                var p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                p.setAttribute('d', 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z');
+                mark.appendChild(p);
+                btn.appendChild(mark);
+
+                btn.addEventListener('click', function () {
+                    /*
+                      ⚠️ 先关闭再回调。若反过来，回调里改了 DOM 导致
+                         行位置变化，弹层的收起动画会从新位置开始，看起来闪一下。
+
+                      ⚠️ 刷新右侧文字要用**这一行自己的** valueEl / config，
+                         不能用模块级变量 —— 否则会写到别的行上去。
+                    */
+                    var valueEl = row[SHEET_PICKER_VALUE_EL];
+                    closeSheetPicker();
+                    if (typeof config.onChange === 'function') {
+                        config.onChange(opt.value);
+                    }
+                    syncSheetPickerValue(valueEl, config);
+                });
+
+                li.appendChild(btn);
+                listEl.appendChild(li);
+            });
+        }
+
+        if (cancelEl) {
+            cancelEl.onclick = closeSheetPicker;
+        }
+
+        openSheet(sheet, function () {
+            /* 被任何其它途径关掉（返回键、被顶掉）都要清掉状态 */
+            if (openSheetPickerRow && openSheetPickerRow.setAttribute) {
+                openSheetPickerRow.setAttribute('aria-expanded', 'false');
+            }
+            openSheetPickerRow = null;
+        });
+    }
+
+    function closeSheetPicker() {
+        if (openSheetPickerRow && openSheetPickerRow.setAttribute) {
+            openSheetPickerRow.setAttribute('aria-expanded', 'false');
+        }
+        openSheetPickerRow = null;
+        closeSheet();
+    }
+
+    function syncSheetPickerValue(valueEl, config) {
+        if (!valueEl || !config) return;
+        var current = config.getValue();
+        var match = null;
+        config.getOptions().forEach(function (opt) {
+            if (String(opt.value) === String(current)) match = opt;
+        });
+        valueEl.textContent = match ? match.label : '';
+    }
+
+    /** 有没有打开底部选项表单（供返回键查询） */
+    function isSheetPickerOpen() {
+        var sheet = document.getElementById('sheet-picker');
+        return !!(sheet && !sheet.hidden);
+    }
+
+    /* ----------------------------------------------------------------------
        长按
        ---------------------------------------------------------------------- */
 
@@ -509,8 +686,11 @@
         currentSheet: currentSheetEl,
         confirmSheet: confirmSheet,
         createRowPicker: createRowPicker,
+        createRowSheetPicker: createRowSheetPicker,
         hasOpenRowMenu: hasOpenRowMenu,
         closeRowMenu: closeRowMenu,
+        isSheetPickerOpen: isSheetPickerOpen,
+        closeSheetPicker: closeSheetPicker,
         attachLongPress: attachLongPress,
         justLongPressed: justLongPressed,
         icon: icon,

@@ -724,7 +724,7 @@
             return true;
         }
 
-        // ③ 底部弹层（更新 / 退出登录 / 通用确认）
+        // ③ 底部弹层（更新 / 退出登录 / 通用确认 / 设置选项）
         if (window.ScholariusUI &&
             typeof window.ScholariusUI.isSheetOpen === 'function' &&
             window.ScholariusUI.isSheetOpen()) {

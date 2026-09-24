@@ -348,7 +348,7 @@
 
                     <span class="selection-count" id="selection-count"></span>
 
-                    <button class="icon-button icon-danger" type="button" id="selection-delete"
+                    <button class="icon-button" type="button" id="selection-delete"
                         aria-label="Delete selected" data-i18n-aria-label="selection.delete">
                         <!-- Google Material Icons: delete -->
                         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -718,8 +718,110 @@
             <div class="reader-content" id="reader-content"></div>
         </div>
 
-        <!-- 底部选项栏：先留空，高度与底部导航一致 -->
-        <footer class="reader-bottom" id="reader-bottom"></footer>
+        <!--
+          .reader-stack：自下往上堆叠的两个块 —— 设置面板在上、选项栏在下。
+
+          ⚠️ 用 flex + justify-content: flex-end 而不是 absolute + bottom。
+             原因：absolute 子元素的 top/bottom 是相对 **padding box**，
+             .reader 一旦有 padding 就会算错（实测面板 top 跑到 -405px）。
+             用 flex 堆叠后，面板一展开就把选项栏自然往上顶，
+             两者永远严丝合缝，不需要 JS 算上移量。
+        -->
+        <div class="reader-stack">
+                <!--
+                  阅读设置面板：从选项栏上方冒出。
+                  hidden 由 JS 控制；展开时会按「视口 - 状态栏 - 选项栏」
+                  算一个高度上限写进 --reader-panel-max（小屏上必须封顶，
+                  否则面板比屏幕还高、顶部的字体组滚不到）。
+                -->
+                <div class="reader-panel" id="reader-panel" hidden>
+                    <!--
+                      ⚠️ 三项都用「左标签 + 右当前值」的行式，点整行弹底部表单。
+                         理由（用户明确要求）：并排的分段按钮/色块/列表在项数变多时
+                         排不开，而行式 + 可滚动的表单能容纳任意项数，
+                         且与设置页的 Language / Theme 形态一致。
+
+                         字体三项只作用于正文内容；主题与「设置 → 主题」同值。
+                         ⚠️ 这里不再用 <p class="reader-setting-label"> 那种分组标题 ——
+                            行式本身就是标签，加分组标题会重复。
+                    -->
+                    <button class="setting-action reader-setting-row" type="button"
+                        id="reader-font-size-row" aria-haspopup="dialog" aria-expanded="false">
+                        <span class="setting-label" data-i18n="reader.fontSize">Font size</span>
+                        <span class="setting-value" id="reader-font-size-value">&mdash;</span>
+                    </button>
+
+                    <button class="setting-action reader-setting-row" type="button"
+                        id="reader-font-color-row" aria-haspopup="dialog" aria-expanded="false">
+                        <span class="setting-label" data-i18n="reader.fontColor">Text colour</span>
+                        <span class="setting-value" id="reader-font-color-value">&mdash;</span>
+                    </button>
+
+                    <button class="setting-action reader-setting-row" type="button"
+                        id="reader-font-style-row" aria-haspopup="dialog" aria-expanded="false">
+                        <span class="setting-label" data-i18n="reader.fontStyle">Typeface</span>
+                        <span class="setting-value" id="reader-font-style-value">&mdash;</span>
+                    </button>
+
+                    <!-- 主题（与「设置 → 主题」是同一个值，两处入口） -->
+                    <button class="setting-action reader-setting-row" type="button"
+                        id="reader-theme-row" aria-haspopup="dialog" aria-expanded="false">
+                        <span class="setting-label" data-i18n="setting.theme">Theme</span>
+                        <span class="setting-value" id="reader-theme-value">&mdash;</span>
+                    </button>
+                </div>
+                <!-- ⚠️ 上面这个 </div> 关闭的是 .reader-panel，别删。
+                     少掉它会让下面的 footer 被解析进面板内部，
+                     .reader-stack 里就只剩一个子元素，
+                     选项栏不再参与 flex 堆叠、贴不到底（实测底部空出 14px）。 -->
+
+                <!-- 底部选项栏：目录 / 设置 -->
+                <footer class="reader-bottom" id="reader-bottom">
+                    <button class="reader-action" type="button" id="reader-toc-btn"
+                        aria-expanded="false" aria-controls="toc-sheet"
+                        aria-label="Contents" data-i18n-aria-label="reader.toc">
+                        <!-- Google Material Icons: list (format_list_bulleted) -->
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path d="M4 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm0-6c-.83 0-1.5.67-1.5 1.5S3.17 7.5 4 7.5 5.5 6.83 5.5 6 4.83 4.5 4 4.5zm0 12c-.83 0-1.5.68-1.5 1.5s.68 1.5 1.5 1.5 1.5-.68 1.5-1.5-.67-1.5-1.5-1.5zM7 19h14v-2H7v2zm0-6h14v-2H7v2zm0-8v2h14V5H7z" />
+                        </svg>
+                        <span class="reader-action-label" data-i18n="reader.tocLabel">Contents</span>
+                    </button>
+
+                    <button class="reader-action" type="button" id="reader-settings-btn"
+                        aria-expanded="false" aria-controls="reader-panel"
+                        aria-label="Reader settings" data-i18n-aria-label="reader.settings">
+                        <!-- Google Material Icons: settings -->
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                        </svg>
+                        <span class="reader-action-label" data-i18n="reader.settingsLabel">Settings</span>
+                    </button>
+                </footer>
+        </div>
+    </section>
+
+    <!-- ==================================================================
+         阅读页 · 目录弹窗
+
+         ⚠️ 是**覆盖层**，不是新的一级页面 —— 目录只是导航辅助，
+            用户点完就走，不该离开阅读上下文。
+         ================================================================== -->
+    <section class="toc-sheet" id="toc-sheet" role="dialog" aria-modal="true"
+        aria-labelledby="toc-title" hidden>
+        <div class="toc-backdrop" id="toc-backdrop"></div>
+        <div class="toc-body">
+            <div class="toc-head">
+                <h2 class="toc-title" id="toc-title" data-i18n="reader.toc">Contents</h2>
+                <button class="icon-button" type="button" id="toc-close"
+                    aria-label="Close" data-i18n-aria-label="action.close">
+                    <!-- Google Material Icons: close -->
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                    </svg>
+                </button>
+            </div>
+            <ul class="toc-list" id="toc-list"></ul>
+        </div>
     </section>
 
     <!-- ==================================================================
@@ -777,6 +879,23 @@
         <div class="form-actions">
             <button class="btn" type="button" id="confirm-cancel">Cancel</button>
             <button class="btn btn-action" type="button" id="confirm-ok"></button>
+        </div>
+    </section>
+
+    <!-- ==================================================================
+         通用选项弹层（由 ScholariusUI.createRowSheetPicker 动态填充）
+
+         ⚠️ 与 .row-menu 的区别：那个是贴着行的小菜单，高度有限，
+            选项一多就排不开。这个是**底部表单**，可以滚动、容纳任意项数，
+            用于设置项（字号 / 字体 / 颜色 / 主题…）—— 这些只会越来越多。
+         ================================================================== -->
+    <section class="sheet" id="sheet-picker" role="dialog" aria-modal="true"
+        aria-labelledby="sheet-picker-title" hidden>
+        <h2 class="sheet-title" id="sheet-picker-title"></h2>
+        <ul class="sheet-picker-list" id="sheet-picker-list"></ul>
+        <div class="form-actions">
+            <button class="btn" type="button" id="sheet-picker-cancel"
+                data-i18n="action.cancel">Cancel</button>
         </div>
     </section>
 
