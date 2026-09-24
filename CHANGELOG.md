@@ -4,6 +4,92 @@
 
 ---
 
+## [0.1.10] - 2026-09-24
+
+### 新增：阅读页 PDF 视图（文本视图 ↔ PDF 阅读器）
+
+顶栏详情按钮**左边**多了一个眼睛图标，用来在两种视图间切换：
+
+| 视图 | 内容 |
+|---|---|
+| 文本（默认） | 重排后的正文（v0.1.6 的结构化渲染） |
+| PDF | 原生 PDF 页面，带 WebView 内置查看器（缩放/翻页原汁原味） |
+
+按钮用眼睛图标（`visibility`，官方 Material Symbols 路径，
+经 `tools/fetch_icon.py` 拉取而非手写）。当前处在 PDF 视图时按钮高亮，
+无障碍标签会变成「切到另一个视图」的名字。
+
+#### 底层：给网页开一条**受控**的 PDF 通道
+
+PDF 存在应用私有目录，而 WebView 的 `allowFileAccess = false` ——
+**网页原本根本拿不到这个文件**。现在由原生拦截
+`https://appassets.androidplatform.net/pdf/<id>` 并按需**流式**返回。
+
+选这个方案而不是其他三个（代码里有完整记录）：
+
+| 方案 | 为什么不选 |
+|---|---|
+| 给 `file://` 路径 | 需要打开 `allowFileAccess`，等于向网页暴露整个私有目录 |
+| 读成 base64 喂 pdf.js | 20MB 的 PDF 转 base64 约 27MB 字符串，**会 OOM**；PDF 必须流式 |
+| 起 localhost HTTP 服务 | 要占端口、管生命周期，多一个对外监听入口 |
+| **`shouldInterceptRequest`**（采用） | 文件仍在私有目录，按需流式；权限只在这一处把关 |
+
+并且用 WebView 的**内置查看器**渲染，不引入 pdf.js
+（省几百 KB 与一份第三方代码）。
+
+⚠️ `id` 直接来自 URL，所以做了白名单校验（`[A-Za-z0-9-]`）——
+不做的话 `pdf/../../x` 这类路径穿越能读到私有目录里的其它文件。
+
+⚠️ 只在真正切到 PDF 视图时才设 `iframe.src`（PDF 动辄几十 MB）；
+关闭阅读页时置 `about:blank` 真正释放内置查看器
+（隐藏 != 卸载，否则连读十几篇内存会涨）。
+
+### 修复：更新弹窗文案换行 → 一行解决
+
+用户要求「尽量做到一行文字解决」。
+
+旧文案是两句：
+
+```
+Version 0.2.0 has been released (14.7 MB). You are on 0.1.9.
+```
+
+实测 **360dp 屏（正文框 320px）下换行成两行**。改为：
+
+```
+Version {version} ({size}) is ready.
+```
+
+取舍：去掉「has been released」（标题已写 Update Available），
+也去掉「You are on {current}」（当前版本在设置 → Version 里看得到）。
+保留 `size` —— 用户想知道要下载多少流量。
+
+> ⚠️ 顺带清掉了 `update.js` 里对已不存在的 `{current}` 的替换 ——
+> 它匹配不到（无害），但会让后来人以为文案里还有当前版本。
+
+### 修复：设置页底部留白不足
+
+`#page-profile` 的 `padding-bottom` 是 **0**，最后一组（Sign Out）
+正好被底部导航栏压住。改为 `calc(80px + var(--safe-bottom))`
+（64 导航 + 16 呼吸，再叠手势条安全区）。
+
+### 修复：设置页分组标题与选项之间间隔过大
+
+`.setting-group-title` 旧值 `14px / 6px` 上下内边距，叠上
+`.setting-group` 的 `4px 0` 与 18px 行高 —— 一个 12px 小标签
+前后占了 **42px**（实测标题盒高 38px）。
+
+改为 `10px / 2px`：上方留一点与上一组分开，下方**紧贴自己的列表**
+（相邻原则：标题必须明显更靠近它标注的那组）。
+
+### 新增：本地图标拉取工具
+
+`tools/fetch_icon.py <icon-name>` —— 把官方 Material Symbols 的
+`viewBox` 与 `path d` 打出来，避免凭记忆手写图标路径
+（历史上因此出过三次事故）。
+
+---
+
 ## [0.1.9] - 2026-09-24
 
 ### 修复：设置项「上面有线下面没有」

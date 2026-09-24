@@ -816,6 +816,18 @@
         closeX: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
 
         /*
+          ⚠️ 这一条是 **Material Symbols（960 体系）**，默认那条是
+             Material Icons（24 体系）—— viewBox 不同，已在
+             ICON_VIEWBOX 里登记。别照抄上面几条的坐标风格。
+
+          用途：阅读页顶栏切换「PDF 视图 / 文本视图」。
+
+          ⚠️ 取自官方，**不要手写**（手写 Material 路径出过三次事故）：
+             tools/fetch_icon.py visibility
+        */
+        visibility: 'M480-320q75 0 127.5-52.5T660-500q0-75-52.5-127.5T480-680q-75 0-127.5 52.5T300-500q0 75 52.5 127.5T480-320Zm0-72q-45 0-76.5-31.5T372-500q0-45 31.5-76.5T480-608q45 0 76.5 31.5T588-500q0 45-31.5 76.5T480-392Zm0 192q-146 0-266-81.5T40-500q54-137 174-218.5T480-800q146 0 266 81.5T920-500q-54 137-174 218.5T480-200Zm0-300Zm0 220q113 0 207.5-59.5T832-500q-50-101-144.5-160.5T480-720q-113 0-207.5 59.5T128-500q50 101 144.5 160.5T480-280Z',
+
+        /*
           ══ 文献类型图标（v0.1.5）══
 
           用于文献卡片「发表载体」那一行的左侧，表示载体的**性质**。
@@ -961,7 +973,8 @@
         venuePreprint: SYMBOLS_VIEWBOX,
         venueBook: SYMBOLS_VIEWBOX,
         venueThesis: SYMBOLS_VIEWBOX,
-        venueReport: SYMBOLS_VIEWBOX
+        venueReport: SYMBOLS_VIEWBOX,
+        visibility: SYMBOLS_VIEWBOX
     };
 
     /** 返回一段 svg 标记，图标全部来自 Google Material 体系 */

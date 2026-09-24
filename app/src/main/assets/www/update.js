@@ -251,10 +251,22 @@
     }
 
     function renderText() {
+        /*
+          ⚠️ 只替换文案里**实际存在的**占位符。
+
+             踩过的坑：原来还有一句 `.replace('{current}', …)`，
+             而文案改成单行后已经没有 `{current}` 了 ——
+             多出来的 replace 是**无害但有害**的：
+             无害是因为它匹配不到（No-Op），
+             有害是它会让下一个人以为文案里还有当前版本，
+             改文案时就不敢动 `info.current`。
+
+             ⚠️ 所以这里只留用得到的两个。
+                将来若要恢复当前版本，先改文案再加回这一行。
+        */
         textEl.textContent = t('update.message')
             .replace('{version}', info ? info.version : '')
-            .replace('{size}', info ? info.size : '')
-            .replace('{current}', info ? info.current : '');
+            .replace('{size}', info ? info.size : '');
 
         stalledEl.hidden = !(info && info.stalled);
         if (info && info.stalled) {

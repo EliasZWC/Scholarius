@@ -185,6 +185,16 @@
             'reader.tocEmpty': 'No Headings Found In This Document.',
             'reader.abstract': 'Abstract',
 
+            /*
+              视图切换按钮的**无障碍标签**。
+
+              ⚠️ 写的是「点了会切到哪个视图」，不是「当前是哪个视图」——
+                 按钮标签应该描述**动作的后果**。
+                 当前状态由 aria-pressed 表达，不靠 label 重复。
+            */
+            'reader.pdfView': 'PDF View',
+            'reader.textView': 'Text View',
+
             // 阅读设置：字体
             'reader.font': 'Font',
             'reader.fontSize': 'Font Size',
@@ -261,7 +271,26 @@
 
             // --- 更新 ---
             'update.title': 'Update Available',
-            'update.message': 'Version {version} has been released ({size}). You are on {current}.',
+            /*
+              ⚠️ 必须**一行放得下**（用户 2026-09-24：「尽量做到一行文字解决」）。
+
+                 旧文案是两句：
+                     'Version {version} has been released ({size}). You are on {current}.'
+                 实测 360dp 屏（正文框 320px）下**换行成两行**。
+
+                 取舍：
+                 · 「has been released」是废话 —— 标题已写 Update Available；
+                 · 「You are on {current}」可以去掉 —— 当前版本在
+                   设置 → Version 里就能看到，不必占一句；
+                 · size 保留，用户想知道要下载多少流量。
+
+                 ⚠️ 中文同样控制在一行内（中文更短，好办）。
+
+                 ⚠️ 改文案时**必须回 360dp 宽度实测**行数，
+                    预览用的宽窗口（459px）下一行也是装得下的，
+                    看不出问题。
+            */
+            'update.message': 'Version {version} ({size}) is ready.',
             'update.later': 'Later',
             'update.now': 'Update',
             'update.downloading': 'Downloading...',
@@ -435,6 +464,10 @@
             'reader.tocEmpty': '未能从本文中识别出标题。',
             'reader.abstract': '摘要',
 
+            // 视图切换（无参标签，写「点了会切到哪个视图」）
+            'reader.pdfView': 'PDF 视图',
+            'reader.textView': '文本视图',
+
             // 阅读设置：字体
             'reader.font': '字体',
             'reader.fontSize': '字号',
@@ -507,7 +540,8 @@
             'setting.debugLog.restartHint': 'Logger 已开启',
 
             'update.title': '发现新版本',
-            'update.message': '新版本 {version} 已发布（{size}），当前版本 {current}。',
+            // 一行放得下（见英文侧同一条的长注释）
+            'update.message': '新版本 {version}（{size}）已就绪。',
             'update.later': '稍后',
             'update.now': '更新',
             'update.downloading': '正在下载…',

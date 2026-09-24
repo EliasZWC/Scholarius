@@ -156,6 +156,101 @@ class MainActivity : AppCompatActivity() {
             .build()
     }
 
+    /**
+     * 把某篇文献的 PDF 以**受控 URL** 交给 WebView 加载（PDF 视图用）。
+     *
+     * ══ 为什么需要这条通道 ══
+     *
+     * PDF 存在应用私有目录（`files/docs/<id>/doc.pdf`），而 WebView 的
+     * `allowFileAccess = false` —— **网页直接拿不到这个文件**，
+     * 连 `file://` 路径都开不了。所以要在原生侧开一个受控入口。
+     *
+     * ══ 为什么用 shouldInterceptRequest 而不是别的办法 ══
+     *
+     * 候选方案与排除理由：
+     *
+     *  ① `file://` 直接给路径
+     *     → allowFileAccess=false 下不可用；就算打开也是把私有目录
+     *       暴露给网页，破坏了「网页看不到文件系统」的隔离。
+     *
+     *  ② 把整个 PDF 读成 base64 再喂给 pdf.js
+     *     → 一篇 20MB 的 PDF 转 base64 约 27MB 字符串，穿过
+     *       evaluateJavascript / 桥的参数传递会 OOM 或卡死。
+     *       **PDF 一定要走流式读取，不能整体搬进内存再传。**
+     *
+     *  ③ 起个 localhost HTTP 服务
+     *     → 要申请端口、管理生命周期，且多一个对外监听的入口。
+     *
+     *  ④ `shouldInterceptRequest`（采用）
+     *     → 文件仍是私有目录，但按 URL 按需流式返回；
+     *       不占用端口、不暴露文件系统，权限由这一处代码把关。
+     *       而且 WebView 的**原生 PDF 查看器**会接管渲染，
+     *       我们不用引入 pdf.js（省下几百 KB 与一份第三方代码）。
+     *
+     * ⚠️ 返回 null 表示「不拦截，交给默认流程」——
+     *    普通资源（assets/www 下的 JS/CSS）本来就不该走这里。
+     *
+     * @param url 形如 `https://appassets.androidplatform.net/pdf/<id>`
+     * @return PDF 响应；不是 PDF 请求则返回 null
+     */
+    private fun pdfResponseFor(url: Uri): WebResourceResponse? {
+        if (url.host != APP_ASSETS_HOST) return null
+        if (url.pathSegments.firstOrNull() != PDF_URL_PREFIX.trim('/')) return null
+
+        /*
+          ⚠️ id 直接取自 URL 的下一段，所以必须自己校验格式 ——
+             否则 `pdf/../../something` 这类路径穿越会读到别的文件。
+             我们的 id 是 UUID（见 LibraryStore），只允许
+             `[A-Za-z0-9-]`，其余一律拒绝。
+        */
+        val id = url.pathSegments.getOrNull(1) ?: return null
+        if (!DOC_ID_PATTERN.matches(id)) {
+            Log.w(TAG, "PDF 请求的 id 非法：$id")
+            return null
+        }
+
+        val file = LibraryStore.pdfFile(this, id)
+        if (!file.isFile) {
+            Log.w(TAG, "PDF 不存在：${file.absolutePath}")
+            return null
+        }
+
+        return try {
+            /*
+              ⚠️ 必须声明 `Content-Type: application/pdf` 且**不能**加
+                 `Content-Disposition: attachment` —— 前者让 WebView
+                 走内置 PDF 查看器（而不是当二进制下载），
+                 后者会强制触发下载行为。
+
+              ⚠️ mimeType 由**第一个参数**给出，不要再往 responseHeaders
+                 里塞一份 `Content-Type` —— 重复设置会让部分 WebView
+                 版本用后者覆盖前者，反而是个隐患。
+
+              ⚠️ encoding 传 null：PDF 是二进制，没有字符编码。
+                 官方文档明确说「没有定义字符编码的内容（如图片）应传 null」。
+
+              ⚠️ 用 6 参构造（API 21+）。我们 minSdk 26，安全。
+                 3 参构造拿不到 statusCode，异常时会落到默认值、不明确。
+            */
+            WebResourceResponse(
+                "application/pdf",
+                null,
+                /*
+                  ⚠️ statusCode 必须在 [100,299] 或 [400,599] ——
+                     3xx 会被拒绝（官方文档：不支持用 3xx 做重定向）。
+                */
+                200,
+                "OK",
+                // 同源加载由 WebView 自己发起的子请求使用，放开 CORS 避免被拦
+                mapOf("Access-Control-Allow-Origin" to "*"),
+                file.inputStream()
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "打开 PDF 流失败：$id", t)
+            null
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         /*
@@ -465,7 +560,16 @@ class MainActivity : AppCompatActivity() {
             override fun shouldInterceptRequest(
                 view: WebView,
                 request: WebResourceRequest,
-            ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
+            ): WebResourceResponse? {
+                /*
+                  ⚠️ 顺序有意义：先试 PDF 通道，再落到 assets。
+                     PDF 走的是同名 host 下的 /pdf/ 前缀，
+                     assetLoader 不认识它（会返回 null 触发 404），
+                     所以不会冲突；但显式先行更清楚。
+                */
+                pdfResponseFor(request.url)?.let { return it }
+                return assetLoader.shouldInterceptRequest(request.url)
+            }
 
             override fun shouldOverrideUrlLoading(
                 view: WebView,
@@ -1032,8 +1136,11 @@ class MainActivity : AppCompatActivity() {
      *    [thumbnailFor] 单独取。
      *
      * ⚠️ **PDF 文件路径也不推**。网页拿不到应用私有目录（WebView 的
-     *    `allowFileAccess = false`），阅读页需要的是一条受控通道 ——
-     *    那部分下个版本设计时再定。
+     *    `allowFileAccess = false`），阅读页需要一条受控通道 ——
+     *    该通道已由 [pdfResponseFor] 实现：网页请求
+     *    `https://appassets.androidplatform.net/pdf/<id>`，
+     *    由 shouldInterceptRequest 按需流式返回。
+     *    **仍然不推路径**：路径只有原生知道，网页只用 id 拼 URL。
      */
     private fun pushLibraryToWeb() {
         if (!::webView.isInitialized || !pageReady) return
@@ -1521,6 +1628,27 @@ class MainActivity : AppCompatActivity() {
         const val TAG = "Scholarius"
 
         const val APP_ASSETS_HOST = "appassets.androidplatform.net"
+
+        /**
+         * PDF 受控通道的 URL 前缀。
+         *
+         * 完整形态：`https://appassets.androidplatform.net/pdf/<docId>`
+         * 由 [pdfResponseFor] 在 shouldInterceptRequest 里接管。
+         *
+         * ⚠️ 与网页端的常量必须**逐字一致** —— 网页在 reader.js 里
+         *    拼这个 URL。改这里就要同步改那边（已在那侧注释标注）。
+         */
+        const val PDF_URL_PREFIX = "/pdf/"
+
+        /**
+         * 文献 id 的合法形态（UUID，见 LibraryStore）。
+         *
+         * ⚠️ 这是**安全校验**，不只是格式检查：
+         *    id 直接来自 URL 路径，若不校验，`pdf/..%2F..%2Fxxx`
+         *    这类构造就能读到私有目录里的其他文件（路径穿越）。
+         */
+        val DOC_ID_PATTERN = Regex("^[A-Za-z0-9-]{1,64}$")
+
         /**
          * 入口页。
          *

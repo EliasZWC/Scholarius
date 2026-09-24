@@ -1140,15 +1140,97 @@ body {
 }
 
 /*
-  ⚠️ 顶栏现在是「左返回 + 右详情」，所以详情按钮要靠右。
+  ⚠️ 顶栏现在是「左返回 + 右（视图切换、详情）」，所以整组按钮靠右。
 
      为什么用 margin-left:auto 而不是把容器的 justify-content 改成
      space-between：space-between 在只有**一个**可见子元素时
      （将来若隐藏返回按钮）会把它推到左边，行为反直觉。
      margin-left:auto 是「吃掉左边所有剩余空间」，语义更稳。
+
+  ⚠️ 这个 margin **只能给靠右那一组的第一个元素**（视图切换），
+     不能同时给详情按钮 —— 实测两个都写 auto 时，剩余空间被
+     **两份平分**，两个按钮各占一半、中间出现一大段空白：
+         返回 ... [视图切换] ............ [详情]
+     正确做法：容器只推一次，后面的按钮自然紧跟。
+     所以 .reader-detail-btn 不再带 margin-left:auto（见下）。
+*/
+.reader-view-toggle {
+    margin-left: auto;
+}
+
+/*
+  ⚠️ 视图切换按钮的**选中态**（当前正在看 PDF）。
+
+     .icon-button 是全站通用类，不该认识"阅读页视图"这个概念，
+     所以状态样式单独写在这里。
+
+  ⚠️ 用 `aria-pressed="true"` 作为选择器而不是自己加 class：
+     属性是**语义层**，class 是表现层。
+     同一个状态既驱动读屏也驱动样式，不会出现
+     「看起来是选中了但读屏说没有」这种不一致。
+*/
+.reader-view-toggle[aria-pressed="true"] {
+    background: var(--surface-raised);
+    color: var(--on-surface);
+}
+
+/*
+  PDF 视图。
+
+  ⚠️ 为什么不用 .reader-content 那套 padding：
+     内置 PDF 查看器自带页面留白与缩放，再套 24px 内边距
+     会让页面被挤得比屏幕窄，看起来像"没适配好"。
+     所以 PDF 视图**贴满**整个正文区。
+
+  ⚠️ 顶部要留出状态栏高度吗？**不留**。
+     查看器自己的工具栏会浮在内容上方，它内部已经处理了
+     inset（WebView 会把 window insets 传给内置查看器）。
+     我们再加一层 padding 反而会让它错位。
+
+  ⚠️ 尺寸 100% 而不是 absolute：
+     .reader-body 是 absolute 铺满的，iframe 作为它的普通子元素
+     用 height:100% 即可撑满；用 absolute 反而要重复写 inset:0。
+*/
+.reader-pdf {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: var(--surface);
+}
+
+/*
+  ⚠️ hidden 属性对 iframe 生效需要这条 ——
+     UA 默认样式里 `[hidden] { display: none }` 会被
+     上面的 `display: block` 覆盖掉（同优先级下后者在作者样式表里靠后）。
+     实测：不写这条，切回文本视图后 PDF 仍显示在正文下面。
+
+     用 `[hidden]` 而不是 `.reader-pdf[hidden]`：
+     保持与其他同类修正一致，也避免将来改类名时漏掉。
+*/
+.reader-pdf[hidden] {
+    display: none;
+}
+
+/*
+  ⚠️ 文本视图隐藏时同理。
+*/
+.reader-content[hidden] {
+    display: none;
+}
+
+/*
+  ⚠️ 详情按钮**不要**再写 margin-left:auto。
+
+     顶栏靠右的那一组现在是「视图切换 + 详情」，推左空间的活
+     由组里**第一个**元素（.reader-view-toggle）承担。
+     这里若也写 auto，剩余空间会被两组平分，两个按钮之间空出一段
+     （实测：视图切换停在 x=190、详情在 x=372，中间一大块空白）。
+
+     ⚠️ 只保留文字对齐这类无副作用的属性；定位交给上面的规则。
 */
 .reader-detail-btn {
-    margin-left: auto;
+    flex: 0 0 auto;
 }
 
 /*
@@ -3900,6 +3982,24 @@ body {
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
+    /*
+      ⚠️ 底部必须给足留白（用户 2026-09-24：「底部预留空间不够」）。
+
+         改前 padding-bottom 是 **0**，实测最后一组（Sign Out）
+         正好贴着页面下沿、被底部导航栏压住 —— 视觉上像内容被截断。
+
+         为什么不能只写一个固定值：
+         底部导航是**固定浮层**（.bottom-nav 高 64 + --safe-bottom），
+         它盖在页面之上，所以「最后一屏」的可视高度少了这一块。
+         直接把导航栏高度 + 一点呼吸空间补上：
+
+             64（导航）+ 16（呼吸）= 80，再叠安全区
+
+         ⚠️ 用 calc 叠 --safe-bottom 而不是写死 80px：
+            有手势条的机型安全区约 24px，不叠的话最后一项
+            仍会被手势条区域盖住一部分。
+    */
+    padding-bottom: calc(80px + var(--safe-bottom));
 }
 
 .account-card {
@@ -4200,7 +4300,24 @@ body {
      字体类是"被使用方"，页面是"使用方"，方向不能反过来。
 */
 .setting-group-title {
-    padding: 14px 36px 6px;
+    /*
+      ⚠️ 竖直内边距要**紧**（用户 2026-09-24：「分区的文字和选项之间
+         间隔过大」）。
+
+         旧值 14px 上 / 6px 下，加上 .setting-group 的 4px 0、
+         再叠 18px 行高 —— 一个 12px 的小标签前后占了 42px，
+         实测（改前）：标题盒高 38px，标题底到列表顶还有 8px。
+         屏幕上看就是「GENERAL 离下面的选项老远」。
+
+         新值上 10px / 下 2px：
+           · 上方 10px 是**与上一组分开**，需要一点呼吸；
+           · 下方 2px —— 标题是**它的列表的标签**，必须明显更贴近
+             自己的列表（相邻原则），否则会看起来像属于上一组。
+
+         ⚠️ 左右 36px 与设置项名称对齐，不要动：它是水平对齐用的，
+            与「间隔过大」无关。
+    */
+    padding: 10px 36px 2px;
 }
 
 .setting-list {

@@ -119,6 +119,8 @@
     var topEl = null;
     var backBtn = null;
     var detailBtn = null;
+    var viewToggleBtn = null;
+    var pdfEl = null;
     var bottomEl = null;
     var tocBtn = null;
     var settingsBtn = null;
@@ -136,6 +138,8 @@
     var panelOpen = false;
     /** 目录弹窗是否展开 */
     var tocOpen = false;
+    /** 当前视图：'text' | 'pdf' */
+    var view = 'text';
 
     /**
      * 目录条目：[{ level, title, line }]
@@ -178,6 +182,8 @@
         topEl = document.getElementById('reader-top');
         backBtn = document.getElementById('reader-back');
         detailBtn = document.getElementById('reader-detail');
+        viewToggleBtn = document.getElementById('reader-view-toggle');
+        pdfEl = document.getElementById('reader-pdf');
         bottomEl = document.getElementById('reader-bottom');
         tocBtn = document.getElementById('reader-toc-btn');
         settingsBtn = document.getElementById('reader-settings-btn');
@@ -189,6 +195,7 @@
 
         mountBack();
         mountTapToToggle();
+        mountViewToggle();
         mountToc();
         mountSettings();
 
@@ -311,6 +318,115 @@
         });
     }
 
+    // --- PDF 视图 -----------------------------------------------------------
+
+    /**
+     * PDF 受控通道的 URL 前缀。
+     *
+     * ⚠️ 必须与原生侧 MainActivity 的 `PDF_URL_PREFIX` **逐字一致**。
+     *    两头各有一份常量（网页改不了 Kotlin 的，反之亦然），
+     *    所以改一处就要同步改另一处 —— 两边都留了这条注释。
+     */
+    var PDF_URL_PREFIX = '/pdf/';
+
+    /**
+     * 拼某篇文献的 PDF URL。
+     *
+     * ⚠️ 用 `encodeURIComponent(id)` —— id 是 UUID，正常情况下没有
+     *    需要转义的字符，但**不能因此省略**：URL 里拼用户/数据来源的
+     *    字符串时永远要转义，否则将来 id 生成规则一变就出问题。
+     */
+    function pdfUrlFor(id) {
+        return 'https://appassets.androidplatform.net' + PDF_URL_PREFIX +
+            encodeURIComponent(String(id || ''));
+    }
+
+    /** 顶栏「视图切换」按钮：绑事件 + 填图标 */
+    function mountViewToggle() {
+        if (!viewToggleBtn) {
+            return;
+        }
+
+        // 图标只在这里定义一次（路径在 components.js）
+        if (global.ScholariusUI && global.ScholariusUI.icon) {
+            viewToggleBtn.innerHTML = global.ScholariusUI.icon('visibility');
+        }
+
+        viewToggleBtn.addEventListener('click', function () {
+            setView(view === 'pdf' ? 'text' : 'pdf');
+        });
+
+        syncViewToggle();
+    }
+
+    /**
+     * 切换视图。
+     *
+     * ══ 为什么是「两个视图互斥」而不是「叠加一个覆盖层」══
+     *
+     * PDF 视图要占满整个正文区（内置查看器自己带缩放/翻页），
+     * 叠加会让文本视图在底下继续占内存、也可能被点到。
+     * 所以用 hidden 严格互斥，同时只有一个在文档流里。
+     *
+     * ⚠️ **只在切到 PDF 时才设置 iframe.src**。
+     *    PDF 动辄几十 MB，进阅读页就加载会白等几秒；
+     *    而多数用户看的是重排后的文本视图。
+     *
+     * ⚠️ 切回文本时**保留 iframe 的 src 不置空** ——
+     *    用户可能来回切（文本看到一半去核对原文），
+     *    每次置空都会重新下载 + 重新定位滚动位置。
+     *    释放交给 close()。
+     *
+     * @param {string} next 'text' | 'pdf'
+     */
+    function setView(next) {
+        var want = (next === 'pdf') ? 'pdf' : 'text';
+        view = want;
+
+        var isPdf = (want === 'pdf');
+
+        if (contentEl) contentEl.hidden = isPdf;
+        if (pdfEl) {
+            pdfEl.hidden = !isPdf;
+            if (isPdf) {
+                // 第一次进入（或换了文献）才真的设 src
+                var wantSrc = currentDoc ? pdfUrlFor(currentDoc.id) : '';
+                if (wantSrc && pdfEl.getAttribute('src') !== wantSrc) {
+                    pdfEl.setAttribute('src', wantSrc);
+                }
+            }
+        }
+
+        syncViewToggle();
+        trace('reader:view', want);
+    }
+
+    /**
+     * 刷新视图切换按钮的状态与无障碍标签。
+     *
+     * ⚠️ aria-label 要写**即将切到**的视图，而不是当前视图 ——
+     *    按钮的语义是"点了会发生什么"。写当前视图会让读屏用户
+     *    以为按钮描述的是现在看到的东西，从而按错。
+     */
+    function syncViewToggle() {
+        if (!viewToggleBtn) {
+            return;
+        }
+        var toPdf = (view !== 'pdf');
+        viewToggleBtn.setAttribute('aria-pressed', view === 'pdf' ? 'true' : 'false');
+        viewToggleBtn.setAttribute(
+            'aria-label',
+            t(toPdf ? 'reader.pdfView' : 'reader.textView')
+        );
+        /*
+          ⚠️ data-i18n-aria-label 必须**移除** ——
+             它在语言切换时会把 innerHTML/属性重刷成模板里的原始文案，
+             把我们这里算出来的「即将切到哪个视图」覆盖掉。
+             i18n 刷新由 refreshChrome() 主动调本函数负责。
+        */
+        viewToggleBtn.removeAttribute('data-i18n-aria-label');
+    }
+
     // --- 菜单 ---------------------------------------------------------------
 
     function toggleMenu() {
@@ -370,6 +486,24 @@
         setPanel(false);
 
         /*
+          ⚠️ 每次打开都回到**文本视图**，并清掉上一篇的 PDF。
+
+             理由：
+             ① 用户上次可能停在 PDF 视图，但新开一篇时默认给重排文本
+                更符合"读论文"的意图（PDF 视图是核对原文用的次要入口）；
+             ② 不清掉的话 iframe 里还是**上一篇**的 PDF ——
+                切到 PDF 视图会先闪一下旧文献，很难看。
+
+             ⚠️ 置 src 为空字符串（而不是 removeAttribute）：
+                空 src 会让 iframe 立刻卸载文档并释放内置查看器；
+                removeAttribute 在部分 WebView 上不触发卸载。
+        */
+        setView('text');
+        if (pdfEl) {
+            pdfEl.setAttribute('src', 'about:blank');
+        }
+
+        /*
           ⚠️ 打开时重算一次颜色行的色块。
              主题可能在阅读页关闭期间被改过（比如在「设置」里切了夜间模式），
              此时正文颜色已随新主题变化，而色块还是上次的值。
@@ -401,6 +535,18 @@
                 if (contentEl) {
                     contentEl.textContent = '';
                 }
+                /*
+                  ⚠️ 释放 PDF 视图的内置查看器。
+
+                     不释放的话它会一直持有文件句柄与渲染资源 ——
+                     读十几篇之后内存明显上涨（内置查看器不认识
+                     "这个 iframe 已经隐藏了"，隐藏不等于卸载）。
+                     置 about:blank 会真正卸载文档。
+                */
+                if (pdfEl) {
+                    pdfEl.setAttribute('src', 'about:blank');
+                }
+                view = 'text';
             }
         }, 280);
     }
@@ -1767,6 +1913,13 @@
         */
         syncRows();
         applySettings();
+        /*
+          ⚠️ 视图切换按钮也要刷 —— 它的 aria-label 是「即将切到哪个视图」，
+             由 JS 按当前 view 算出来。i18n 的 data-i18n-aria-label 已被
+             syncViewToggle 摘掉（否则会被刷成固定文案），
+             所以这里不补这一句，切语言后读屏标签就一直是旧语言。
+        */
+        syncViewToggle();
         if (tocOpen) {
             renderToc();
         }
