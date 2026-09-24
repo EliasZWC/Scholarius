@@ -43,15 +43,68 @@
 
     --bg: #EFEFED;
     --nav-bg: #FCFCFB;
-    --surface: #FCFCFB;
+    /*
+      ⚠️ 日间模式的输入框底色**必须与页面底色拉开**（用户 2026-09-24：
+         「日间模式输入框没有夜间模式那样和背景不同的颜色，
+          完全是背景色，需要补好」）。
+
+         踩过的坑：原来 `--surface: #FCFCFB`，而 `--bg: #EFEFED` ——
+         两者亮度只差约 5%，在白屏上**肉眼几乎分不出**，
+         输入框看起来就是"没有底色"。夜间是
+         `#242424` on `#1E1E1E`，对比同样小，但**暗色下小差异反而
+         更容易看出**（暗色视觉对亮度台阶更敏感），所以夜间没暴露。
+
+         ⚠️ 更糟的是 `--surface` 恰好等于 `--nav-bg`（都是 #FCFCFB）——
+            输入框底色与导航栏底色是同一个值，说明这个变量当时
+            没有独立的取值意图，只是顺手填了个近白色。
+
+         ⚠️ 修法：把日间 `--surface` 改成 **#FFFFFF**（纯白），
+            与 #EFEFED 的页面底色形成明确台阶（白卡浮在灰底上）。
+            同时**边框也要加深** —— 光靠底色不够，
+            见下面 `--outline` 的说明。
+
+         ⚠️ 为什么不改 `--bg` 而改 `--surface`：
+            页面底色 #EFEFED 是「纸」的感觉，是对的；
+            错的是卡片/输入框没有从纸上"浮起来"。
+    */
+    --surface: #FFFFFF;
     --surface-raised: #E6E6E4;
     --on-surface: #1B1B1B;
     --on-surface-variant: #6E6E6E;
-    --outline: #E1E1DE;
+    /*
+      ⚠️ 日间边框从 #E1E1DE 加深到 #D5D5D1。
+
+         原因：`#E1E1DE` 在 #EFEFED 的页面上对比极弱，
+         而输入框的轮廓主要靠这条边框界定 ——
+         用户看到的"没有框"其实是**边框也看不见**。
+
+         ⚠️ 只加深到 #D5D5D1，不要更深：
+            再深就变成"每个输入框都描了黑边"，视觉过重。
+            目标是"看得见轮廓"而不是"强调"。
+
+         ⚠️ 改这个值会影响全站所有用 --outline 的地方
+            （分隔线、卡片边、日期格…）—— 这是**期望的**，
+            因为它们现在同样偏淡。#333333 的夜间值不动：
+            暗色下它已经足够。
+    */
+    --outline: #D5D5D1;
+    /*
+      ⚠️ 更淡一档的描边：只给「空着的控件」用（目前是日期格）。
+
+         语义是「这里还没有值」—— 用比 --outline 淡一档的线表达，
+         而不是降低整个元素的 opacity（那会把 placeholder 文字
+         也一起变淡，日间模式下会淡到看不清）。
+
+         ⚠️ 必须随主题给两个值：原来日期格硬编码了
+            rgba(51,51,51,0.7)（只在日间成立），夜间模式下
+            在 #242424 上几乎看不见，空格子会「消失」。
+    */
+    --outline-faint: #E4E4E0;
     --nav-active: #1B1B1B;
     --nav-inactive: #8C8C8A;
     /* 破坏性操作（退出登录）：日间用深一点的红，保证在白底上对比够 */
-    --danger: #C0392B;    /* 确认操作专用：与 --danger 同一色系（同明度、同饱和度水平）的绿 */
+    --danger: #C0392B;
+    /* 确认操作专用：与 --danger 同一色系（同明度、同饱和度水平）的绿 */
     --success: #15803D;
     /* 悬浮按钮 / 主按钮：反色，跟随当前主题最强的前景色 */
     --fab-bg: var(--nav-active);
@@ -68,10 +121,13 @@
         --on-surface: #ECECEA;
         --on-surface-variant: #9A9A98;
         --outline: #333333;
+        --outline-faint: #3E3E3E;
         --nav-active: #F2F2F0;
         --nav-inactive: #7E7E7C;
         /* 夜间要用亮一点的红，否则在黑底上发黑看不清 */
-        --danger: #E06C5E;        --success: #7EE2A8;    }
+        --danger: #E06C5E;
+        --success: #7EE2A8;
+    }
 }
 
 /* 夜间主题：用户在设置里手动指定 */
@@ -83,6 +139,7 @@
     --on-surface: #ECECEA;
     --on-surface-variant: #9A9A98;
     --outline: #333333;
+    --outline-faint: #3E3E3E;
     --nav-active: #F2F2F0;
     --nav-inactive: #7E7E7C;
     --danger: #E06C5E;
@@ -1186,6 +1243,150 @@ body {
     content: '';
 }
 
+/* --------------------------------------------------------------------------
+   阅读页 · 结构化正文块（v0.1.6）
+   -------------------------------------------------------------------------- */
+
+/*
+  ⚠️ 用户反馈「所有文本挤在一起，非常难以辨认」的根因是
+     **纯文本流没有结构** —— 标题、段落、公式视觉上完全一样。
+
+     下面这几条就是给每一类元素建立视觉层级。
+     核心原则：**用间距区分结构**，而不是靠加边框/底色
+     （加太多修饰会让正文变花，反而更难读）。
+
+  ⚠️ 所有字号都用 `em` 而不是 px ——
+     阅读页的字号是用户可调的（.reader-content 上的 font-size），
+     标题必须跟着缩放，写死 px 会导致"调大字号后标题反而不显眼"。
+*/
+
+/*
+  段落。
+
+  ⚠️ 段距用 margin-top 而不是 margin-bottom：
+     最后一段之后不该留空（否则滚动到底时有一块莫名的空白）。
+
+  ⚠️ 段距取 1em（= 1 个行高左右）。
+     太小看不出分段、太大显得散。行高是 1.75，所以 1em 视觉上
+     约等于"空半行多"，这是书籍排版的常见量级。
+
+  ⚠️ **不做首行缩进**。
+     中文习惯首行缩进两字，但英文论文（本项目主要来源）不缩进、
+     靠段距区分。混用会让中英混排的文档看起来杂乱。
+     段距已经足够表达分段。
+*/
+.reader-para {
+    margin: 1em 0 0;
+    /* 段内换行按原样保留（公式对齐、列表缩进都依赖它） */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* 第一个段落不要上边距 —— 否则正文顶部会多出一块空白 */
+.reader-para:first-child {
+    margin-top: 0;
+}
+
+/*
+  标题。
+
+  ⚠️ 用 margin-top 拉开与上一段的距离（比段距更大），
+     这样"新的章节开始了"一眼可见。
+
+  ⚠️ 字号用 em 相对正文：
+       h2 → 1.25em，h3 → 1.1em
+     差距不大是**故意的** —— 论文标题通常只比正文略大，
+     差距过大会让正文被挤到一边，滚动时不断被打断。
+*/
+.reader-heading {
+    margin: 1.6em 0 0.4em;
+    font-weight: 700;
+    /*
+      ⚠️ 继承 .reader-content 的 color，不另设颜色。
+         阅读页有 4 档对比度（strong/medium/soft/warm），
+         标题另设颜色会在某些档位下与正文冲突。
+    */
+    line-height: 1.35;
+    /* 标题不换行保留内部的连续空格（编号与标题之间的对齐） */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.reader-heading:first-child {
+    margin-top: 0;
+}
+
+.reader-content h2.reader-heading {
+    font-size: 1.25em;
+}
+
+.reader-content h3.reader-heading {
+    font-size: 1.1em;
+}
+
+/*
+  公式块。
+
+  ⚠️ 等宽字体是**关键**：公式里靠空格对齐的部分
+     （如 `P (A|B) = 0.3    P (B) = 0.5`）
+     用比例字体永远对不齐，等宽才能保住原有的列结构。
+
+     ⚠️ 用通用等宽字族栈，不引外部字体 ——
+        WebView 里保证可用，且不增加包体。
+
+  ⚠️ `overflow-x: auto` 而不是换行：
+     公式被折行会彻底读不懂（一个式子断成两半）。
+     宁可让用户横向滚，也不折行。
+
+  ⚠️ 底色用 --surface（卡片色）而不是自定义灰：
+     日间/夜间自动跟随，不用写两套。
+     但**不能**用 --bg（那就是正文底色，等于没底纹）。
+
+  ⚠️ 左右 padding 给一点，让底色不要贴着文字。
+*/
+.reader-formula {
+    margin: 1em 0 0;
+    padding: 10px 12px;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas,
+        "Liberation Mono", monospace;
+    font-size: 0.92em;
+    line-height: 1.5;
+    white-space: pre;
+    overflow-x: auto;
+    background: var(--surface);
+    border-radius: 8px;
+    /*
+      ⚠️ 用 border 而不是只靠底色：某些对比度档位下
+         --surface 与正文底色的差别很小（日间尤其），
+         加一条细边保证"这是个独立的块"始终看得出来。
+    */
+    border: 1px solid var(--outline);
+}
+
+.reader-formula:first-child {
+    margin-top: 0;
+}
+
+/*
+  图片占位。
+
+  ⚠️ 目前**不会**产出（抽取 PDF 图片是独立一项），
+     这里先把样式写好，原生侧开始产出时前端无需再改。
+*/
+.reader-figure {
+    margin: 1em 0 0;
+    padding: 10px 12px;
+    color: var(--on-surface-variant);
+    background: var(--surface);
+    border: 1px solid var(--outline);
+    border-radius: 8px;
+    text-align: center;
+}
+
+.reader-figure:first-child {
+    margin-top: 0;
+}
+
 /* 正文里的占位提示（还在解析中 / 提取失败） */
 .reader-hint {
     display: flex;
@@ -2019,6 +2220,21 @@ body {
 }
 
 /*
+  ⚠️ **日间模式对比度**（用户实测反馈）。
+
+     原来真值与占位提示都是 --on-surface-variant（浅色 #6E6E6E）。
+     日间模式下白底 + #6E6E6E 只有 ~4.0:1，**已经填好的值看起来
+     像灰色的提示文字**，用户分不清"这里有值"还是"这里空着"。
+
+     修法：真值提到 --on-surface（#1B1B1B，对比度 ~15:1），
+     占位提示**留在** --on-surface-variant 且再降不透明度。
+     两者层次拉开后，"有值 / 无值"一眼可辨。
+*/
+.detail-inline-input {
+    color: var(--on-surface);
+}
+
+/*
   ⚠️ 占位提示颜色：比真值更淡。
      这里直接给 placeholder 单独上色 —— 
      Firefox 会忽略 opacity 的继承，必须走 ::placeholder 伪元素。
@@ -2118,7 +2334,31 @@ body {
      不用 `:empty` —— 那对 <input> 无效（input 永远不是 :empty）。
 */
 .detail-date-seg:placeholder-shown {
-    border-color: rgba(51, 51, 51, 0.7);
+    /*
+      ⚠️ 原来这里写死 rgba(51,51,51,0.7) —— 那是**只在日间模式成立**的值。
+         夜间模式 --surface 是 #242424，51,51,51 的边框几乎看不见，
+         空格子会"消失"。
+
+         改用主题令牌 --outline-faint（三个主题块里都定义了）。
+      ⚠️ 不要用 color-mix()：它需要 Chrome 111+，
+         而 minSdk 26 的机器上 WebView 版本无法保证。
+    */
+    border-color: var(--outline-faint);
+}
+
+/*
+  ⚠️ 日期格的占位提示颜色。
+
+     不写这条时用浏览器默认（实测 rgb(117,117,117)）——
+     日间勉强可用，夜间模式在 #242424 上对比度不足。
+
+     显式绑 --on-surface-variant，两个主题都正确。
+     注意别用 .detail-input 那条规则：日期格的类是
+     .detail-date-seg，选择器不匹配，必须单写。
+*/
+.detail-date-seg::placeholder {
+    color: var(--on-surface-variant);
+    opacity: 1;
 }
 
 .detail-date-seg:focus {
@@ -2363,6 +2603,24 @@ body {
 
 .detail-input:focus {
     border-color: var(--on-surface-variant);
+}
+
+/*
+  ⚠️ 两行输入框的占位提示颜色（用户实测：日间模式下提示与真值同色）。
+
+     实测 getComputedStyle(input, '::placeholder').color 在
+     .detail-input 上是 rgb(27,27,27) —— **与真值完全相同**。
+     根因：这条规则原本缺失，浏览器回退到"占位与文字同色"，
+     于是「e.g. Nature」看起来像一个已经填好的值。
+     用户会以为字段已有内容，不会去填。
+
+     修法：显式给 ::placeholder 上 --on-surface-variant。
+     不加 opacity —— 单靠颜色差（#6E6E6E vs #1B1B1B）已经足够，
+     再叠 opacity 在夜间模式会淡到看不见。
+*/
+.detail-input::placeholder {
+    color: var(--on-surface-variant);
+    opacity: 1;
 }
 
 /*
@@ -2890,6 +3148,40 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/*
+  ⚠️ `is-muted`：把这一项画成**浅色**，表示它不是一个真正的选择
+     （目前只有发表物类别的「未设定 / Not Set」用它）。
+
+     用户 2026-09-24：「类型选项中的未设置请用浅色来凸显和
+     其他选项的不同」。
+
+     ⚠️ 为什么需要区分：「未设定」语义上是「还没判定」，
+        不是七种载体之一。但它和 Journal / Conference 长得一样，
+        用户会以为它是第八种类型 —— 甚至"主动选择未设定"，
+        而那是无意义的（等于什么都不选）。
+
+     ⚠️ 用 --on-surface-variant（次要文字色）而不是直接降 opacity：
+        · opacity 会让整行（含对勾、图标）一起变淡，
+          而这一项**仍然可以被选中**，对勾不该显得"禁用"；
+        · 用色变量能自动跟随日夜主题，
+          inline 写死颜色会在其中一个主题里错。
+
+     ⚠️ 图标也跟着淡 —— 但「未设定」本来就没有图标
+        （meta.js 里它的 icon 是空串），所以这条是预防性的：
+        将来若给它配了图标，颜色也应该是淡的。
+
+     ⚠️ 不要再叠 `font-style: italic` 或加括号等其他区分手段：
+        日间/夜间都要成立，颜色一档已经足够，加多了显脏。
+*/
+.sheet-picker-item.is-muted .sheet-picker-label {
+    color: var(--on-surface-variant);
+}
+
+.sheet-picker-item.is-muted .sheet-picker-icon {
+    color: var(--on-surface-variant);
+    opacity: 0.7;
 }
 
 /*

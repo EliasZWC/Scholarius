@@ -269,6 +269,23 @@
                             label: t('venue.type.' + type.value)
                         };
                         if (type.icon) opt.icon = type.icon;
+                        /*
+                          ⚠️ 「未设定」用**浅色**渲染（用户 2026-09-24：
+                             「类型选项中的未设置请用浅色来凸显和其他
+                              选项的不同」）。
+
+                             ⚠️ 为什么不按 value === 'unknown' 硬编码在组件里：
+                                组件是通用的（设置页的语言/主题/调试
+                                也用它），它不该认识"发表物类别"这个概念。
+                                由调用方声明哪一项是 muted，组件只负责画。
+                                这与 opt.icon / opt.swatch 是同一套设计。
+
+                             ⚠️ 判断依据用 `type.icon` 也行（unknown 的
+                                icon 是空串），但**不能**那样写 ——
+                               将来若给 unknown 配了个图标，
+                               这条淡化就会静默失效。语义要显式表达。
+                        */
+                        if (type.value === 'unknown') opt.muted = true;
                         return opt;
                     });
                 },
@@ -590,6 +607,35 @@
                 seg.dataset.index = String(slotIndex);
 
                 /*
+                  ⚠️ `overwriteArmed`：这一格是否处于「用户要来改这一位」状态。
+
+                     背景（两个 bug 互相拉扯，必须同时满足）：
+
+                       bug A（连打）：用户依次打 20150624，
+                         焦点不动，每次按键都要落到**顺序的下一个空格**。
+                       bug B（修改）：用户点进某个已填的格子改一位，
+                         按键必须**覆盖这一格**，而不是往后找空位。
+
+                     单看"当前格有没有值"分不出这两者 ——
+                     连打时第一键之后当前格就有值了，
+                     若一律覆盖，结果就是 `4_______`（实测踩到）。
+
+                     ⚠️ 判据：**这一格的 focus 是不是由"点击"引发的**。
+                        · 点击进入 → 用户有明确的"改这一位"意图 → 覆盖；
+                        · 连打过程中焦点自己移过来（或压根没动）
+                          → 没有点击意图 → 顺序往后找空位。
+
+                     ⚠️ 为什么用 focus 事件而不是 click 事件：
+                        格子可能被**键盘/Tab**聚焦，也可能被
+                        spreadDigits 里的逻辑聚焦 —— 那些都不该
+                        触发覆盖。focus 是"焦点真的落到这里"的唯一
+                        统一入口，click 只是其中一种成因。
+                        所以这里在 focus 里置位，并在第一次
+                        按键后立刻消费掉（见 keydown）。
+                */
+                var overwriteArmed = false;
+
+                /*
                   ⚠️ 输入走 keydown，焦点**不逐格移动** ——
                      改为「把这一位写进第一个空格」。
 
@@ -657,30 +703,57 @@
                     event.preventDefault();
 
                     /*
-                      ══ 写入位置：**当前格之后的第一个空位** ══
+                      ══ 写入位置 ══
 
-                      ⚠️ 不依赖「焦点是否已经跳过去」——
-                         实测焦点移动会被浏览器回退（见下面 focus 的注释），
-                         所以设计成**每次按键都自己找空位**，
-                         焦点在哪都不影响结果。
+                      两种意图，靠 `overwriteArmed` 区分（见它的声明处）：
 
-                      ⚠️ 从**当前格**开始找（含当前格），不从这里之后的格子找。
-                         因为用户点进空格时，那一位就该填现在敲的这个数字。
+                      ⚠️① **overwriteArmed = true**：用户刚点进这一格，
+                            明确要来改这一位 → **覆盖当前格**。
 
-                      ⚠️ 当前格有值时**往后找空格**，而不是覆盖它。
-                         理由：连续输入时焦点一直停在第 1 格（跳格不可靠），
-                         若「有值就覆盖」，8 次按键只会留下最后一位
-                         —— 实测就是这个结果（`lens: [1,0,0,...]`，值为 "4"）。
-                         往后找空位则能让 8 位依次落进 8 格，
-                         完全不依赖焦点。
-                    */
-                    var cell = seg;
-                    while (cell && cell.value) {
-                        cell = siblingSeg(cell, 1);
+                            消费掉标记（一帧只服务一次点击）——
+                            否则连打时第一次按键覆盖了当前格，
+                            后续按键还会继续覆盖同一格，
+                            结果就是 `4_______`（实测踩过）。
+
+                      ⚠️② **未 armed**：连打中。从当前格起往后找第一个空位。
+
+                      ⚠️③ 往后也找不到空位（8 格全满且未 armed）→
+                            退回覆盖**当前格**，而不是丢弃按键。
+
+                            丢弃会让用户以为输入坏了 ——
+                            这正是"卡在前两位不动"那个 bug 的成因。
+                */
+                    var target = null;
+
+                    if (overwriteArmed) {
+                        // 消费掉：这一格只在"刚点进来"的第一次按键时覆盖
+                        overwriteArmed = false;
+                        target = seg;
+                    } else {
+                        target = seg;
+                        while (target && target.value) {
+                            target = siblingSeg(target, 1);
+                        }
+                        /*
+                          ⚠️ 连打走到这里说明**当前格是空**（所以第一轮
+                             while 不执行，target 仍是 seg）。
+                             若 while 走完变成 null，说明从当前格到末尾
+                             全满 —— 覆盖当前格比丢弃好。
+                        */
+                        if (!target) target = seg;
                     }
-                    // 8 格都满了 → 无处可写，保持原值不动
-                    if (cell) {
-                        cell.value = event.key;
+
+                    target.value = event.key;
+
+                    /*
+                      ⚠️ 光标要落在**真正被写入的那一格**上。
+
+                         连打时焦点可能停在别的格（比如第 1 格），
+                         而写入落到了后面的空格 —— 把光标移过去，
+                         后续输入才连贯，用户也能看到"写到哪了"。
+                    */
+                    if (target !== seg && document.activeElement !== target) {
+                        target.focus();
                     }
 
                     syncDateToDraft(field.key);
@@ -725,14 +798,91 @@
                     spreadDigits(seg, d, field.key);
                 });
 
+                /*
+                  ⚠️ 用 pointerdown（不是 click）来标记「用户是点进来的」。
+
+                     理由：click 在 **mouseup 之后**才触发，而用户
+                     点一下立刻打字时，keydown 可能早于 click ——
+                     那时标记还没置上，按键会走"往后找空位"，
+                     表现为"点了却改不了"。pointerdown 早于一切
+                     输入事件，时序上必然已经置好位。
+
+                     ⚠️ 它只负责记录"这一次 focus 是点击引起的"；
+                        真正决定是否覆盖在 focus 里做（见下），
+                        因为覆盖还要求「格子已有值」。
+                */
+                var pointerArmed = false;
+                seg.addEventListener('pointerdown', function () {
+                    pointerArmed = true;
+                });
+
                 seg.addEventListener('focus', function () {
+                    /*
+                      ⚠️ 判定「用户要来改这一位」并 arm 覆盖模式。
+
+                         两个条件缺一不可：
+                           ① 这次 focus 由 pointerdown 引起
+                              （或由键盘 Tab 引起 —— 见下面的说明）；
+                           ② 这一格**已有值**（空格子没有"改"的语义）。
+
+                         ⚠️ 为什么必须排除「连打时 keydown 里的
+                            target.focus()」这条路径：
+                            它也会触发 focus。若无条件 arm，
+                            连打的每一键都会变成覆盖同一格 ——
+                            实测结果 `4_______`（只留最后一位）。
+                            而 pointerArmed 在那条路径上是 false
+                            （是代码调 focus()，没有 pointerdown），
+                            所以能正确区分。
+
+                         ⚠️ 键盘用户（Tab）没有 pointerdown。
+                            这里用「focus 时没有 pointerArmed 且
+                            不是连打路径」无法与连打区分 ——
+                            所以键盘场景**不做 arm**：
+                            键盘用户可以用 Backspace 清掉一位再填，
+                            而连打（最常见的输入方式）绝不能被破坏。
+                            取舍明确：宁可键盘改一位要多按一下退格，
+                            也不能让连打失效。
+                    */
+                    if (seg.value && pointerArmed) overwriteArmed = true;
+                    pointerArmed = false;
+
                     /*
                       ⚠️ 只对**已有内容**的格子全选。
 
                          空格子是「准备接下一个字符」的状态，
                          全选会把它变成覆盖模式，看起来像输入被吃掉。
+
+                      ⚠️⚠️ 但**不能只靠 select()**（踩过的坑）。
+
+                         实测（Android WebView + Playwright 都复现）：
+                         点击一个有值的单字格，`select()` 之后
+                         `selectionStart/selectionEnd` 是 `0-0`
+                         —— 也就是**光标没选中任何字符**，
+                         而不是期望的 `0-1` 全选。
+
+                         ⚠️ 所以这里**不依赖 select() 的结果**：
+                            覆盖行为完全由 `overwriteArmed` 决定
+                            （见上面的写入位置注释 ①），
+                            select() 只是**尽力**给出视觉反馈。
+
+                         ⚠️ 用 requestAnimationFrame 再 select 一次：
+                            点击时浏览器会在 mouseup 后重置选区，
+                            同步调用 select() 会被这次重置覆盖掉。
+                            推迟一帧才落得住 —— 这是修复
+                            `0-0` 那个现象的实际措施。
                     */
-                    if (seg.value) seg.select();
+                    if (!seg.value) return;
+                    seg.select();
+                    if (typeof global.requestAnimationFrame === 'function') {
+                        global.requestAnimationFrame(function () {
+                            /*
+                              ⚠️ 再确认一次仍是当前焦点格。
+                                 一帧之内用户可能已经点到别处了，
+                                 那时不该抢他的选区。
+                            */
+                            if (document.activeElement === seg) seg.select();
+                        });
+                    }
                 });
 
                 group.appendChild(seg);

@@ -215,15 +215,24 @@
            outline  PDF 自带大纲 [{level,title,page}]，可能为 null
            meta     行排版元数据 {fonts:[名], lines:[[字体下标,字号x10,页]]}
                     靠它识别标题（Nature/NIPS 这类标题只靠字体区分）
+
+          v0.1.6 新增一个参数：
+           blocks   结构化正文 [{kind,text,level,page}]，kind 取值
+                    heading / paragraph / formula / figure。
+                    阅读页按它分块渲染 —— 这是「能读」的关键：
+                    纯文本流里段落、标题、公式无从区分，挤成一片。
+
+                    ⚠️ 与 text **同时**传：text 仍用于复制全文与搜索，
+                        blocks 只负责渲染。
         */
-        readerText: function (id, text, outline, meta) {
+        readerText: function (id, text, outline, meta, blocks) {
             if (!window.ScholariusReader) {
                 return 'no-reader-module';
             }
             if (text === null || text === undefined) {
                 return window.ScholariusReader.onExtractFailed(id);
             }
-            return window.ScholariusReader.setText(id, text, outline, meta);
+            return window.ScholariusReader.setText(id, text, outline, meta, blocks);
         },
         /*
           原生 → 网页：某篇文献的元数据保存完了。

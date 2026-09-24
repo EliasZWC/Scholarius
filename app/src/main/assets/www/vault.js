@@ -566,17 +566,38 @@
              用户在设置里配的 NIPS 映射**永远不会生效**
              （lookup 定义了却没人调）。
 
-          ⚠️ 查表用**未截断的原始 venue**（doc.venue），
-             不能用显示用的值 —— 将来若对 venue 做清洗，
-             查表要拿清洗后的值与用户设置时的值对齐。
-             lookup 自己做 trim + 大小写归一，这里不必重复。
+          ⚠️⚠️ 载体名的来源是 `venueNameOf(doc)`，**不是 `doc.venue`**
+             （用户 2026-09-24 报的 bug：「在详情更改了文章的发表物名称，
+              但文库列表的卡片显示依旧是错误提取的东西，没有变化」）。
 
-          ⚠️ 兜底链：发表物简称 → doc.venue → 空。
-             前两层都空就留白（卡片那一栏本来就是「可为空」的）。
+             根因：`doc.venue` 是**老数据的兼容字段**，只在导入时从
+             PDF 的 Subject 抓一次。而详情页里用户填的期刊名/会议名
+             写进的是 `doc.fields.journalName` / `fields.conferenceName` ——
+             **两个不同的地方**。卡片一直读 `doc.venue`，
+             所以用户在详情页怎么改都不会反映到卡片上。
+
+             而 `meta.js` 的 `venueNameOf()` 早就实现了正确的兜底链
+             （类别字段 → doc.venue → 空），**但它从没被调用过** ——
+             和 ScholariusShortcut.lookup() 一样，
+             「写了却没人调」这类 bug 在本项目已出现两次。
+
+          ⚠️ 查表用**载体名**（venueNameOf 的结果）而不是 doc.venue：
+             用户配的简称映射（NIPS → Neural Information…）是针对
+             「载体名」的，而载体名可能来自类别字段。
+             拿 doc.venue 去查会漏掉「用户填了 journalName 但 venue 为空」
+             这种最常见的情况（新导入的文献 venue 常常是空的）。
+
+             实测过就是这个组合出的问题：ResNet 那篇的 venue 有值
+             （从 Subject 抓到全名），而 Nature 那篇 venue 为空、
+             只有 fields.journalName —— 后者配了简称也不会生效。
         */
-        var venueLabel = doc.venue;
+        var venueBase = global.ScholariusMeta
+            ? global.ScholariusMeta.venueNameOf(doc)
+            : (doc.venue || '');
+
+        var venueLabel = venueBase;
         if (global.ScholariusShortcut && typeof global.ScholariusShortcut.lookup === 'function') {
-            var abbr = global.ScholariusShortcut.lookup(doc.venue || '');
+            var abbr = global.ScholariusShortcut.lookup(venueBase || '');
             if (abbr) venueLabel = abbr;
         }
         venueLine.appendChild(buildMetaLine('doc-venue', venueLabel));

@@ -1212,21 +1212,23 @@ class MainActivity : AppCompatActivity() {
                     debugLog("[reader] no text for $id")
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.readerText(" +
-                            "${org.json.JSONObject.quote(id)}, null, null, null);"
+                            "${org.json.JSONObject.quote(id)}, null, null, null, null);"
                     )
                 } else {
                     val outlineJson = outlineToJson(result.outline)
                     val linesJson = linesToJson(result.lines)
+                    val blocksJson = blocksToJson(result.blocks)
                     debugLog(
                         "[reader] pushing ${result.text.length} chars, " +
                             "${result.lines.size} lines, " +
+                            "${result.blocks.size} blocks, " +
                             "${result.outline.size} outline entries for $id"
                     )
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.readerText(" +
                             "${org.json.JSONObject.quote(id)}, " +
                             "${org.json.JSONObject.quote(result.text)}, " +
-                            "$outlineJson, $linesJson);"
+                            "$outlineJson, $linesJson, $blocksJson);"
                     )
                 }
             }
@@ -1249,6 +1251,31 @@ class MainActivity : AppCompatActivity() {
             sb.append("{\"level\":").append(e.level)
             sb.append(",\"title\":").append(org.json.JSONObject.quote(e.title))
             sb.append(",\"page\":").append(e.page)
+            sb.append('}')
+        }
+        sb.append(']')
+        return sb.toString()
+    }
+
+    /**
+     * 把结构化正文块序列化成 JS 数组字面量。
+     *
+     * ⚠️ 每个字段都过 `quote()` —— 块文本里必然有引号、反斜杠、
+     *    换行（正文是自然语言），手写转义几乎必错。
+     *    `kind` 是我们自己产出的固定标识，但也一并 quote 以求一致。
+     *
+     * ⚠️ `level` / `page` 是数字，直接 append。
+     */
+    private fun blocksToJson(blocks: List<PdfText.Block>): String {
+        if (blocks.isEmpty()) return "[]"
+        val sb = StringBuilder(blocks.size * 64)
+        sb.append('[')
+        for ((i, b) in blocks.withIndex()) {
+            if (i > 0) sb.append(',')
+            sb.append("{\"kind\":").append(org.json.JSONObject.quote(b.kind))
+            sb.append(",\"text\":").append(org.json.JSONObject.quote(b.text))
+            sb.append(",\"level\":").append(b.level)
+            sb.append(",\"page\":").append(b.page)
             sb.append('}')
         }
         sb.append(']')

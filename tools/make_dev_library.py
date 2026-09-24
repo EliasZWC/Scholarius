@@ -85,11 +85,78 @@ UPPER_HEAD = re.compile(r"^[A-Z][A-Z0-9 \-,:&'()/]{2,}$")
 
 
 def looks_like_head(s: str) -> bool:
+    """一行是否「自成一段」（标题 / 作者 / 单位 / 编号）。与 Kotlin 一致。
+
+    ⚠️ 以连字符结尾的行是**断词续行**，永远不是标题 ——
+       否则 `…scientific re-` 会被当成独立块，把一句话硬断成两段。
+       实测：HAL 版 LeCun《Deep learning》封面页被断成
+         `for the deposit and dissemination of scientific re-`
+         `search documents, whether they are published or not.`
+    """
     if not s:
         return False
     if NUMBER_ONLY.match(s) or UPPER_HEAD.match(s):
         return True
+    if s[-1] in ('-', '\u2013', '\u2014'):
+        return False
     return len(s) <= SHORT_LINE and s[-1] not in SENT_END
+
+
+def starts_new_block(t: str) -> bool:
+    """这一行是否应**独立成块**（标题 / 页码 / 页眉）。
+
+    ⚠️ 与 Kotlin 的 startsNewBlock 一致。
+
+    ⚠️ 存在的理由：原来只在「已积累的内容是标题」时 flush，
+       于是**新标题会被并进上一段正文**。实测证据：
+         「…averaged over all the training examples, can Deep le…」
+       正文与下一节标题黏在一起。
+       所以必须**双向检查**：到达的行像标题时也要先 flush。
+    """
+    if not t:
+        return True
+    if looks_like_page_artifact(t):
+        return True
+    return looks_like_head(t)
+
+
+def is_math_fragment(t: str) -> bool:
+    """单个数学符号 / 项目符号（公式被拆行时的碎片）。"""
+    return len(t) == 1 and (t in MATH_SYMBOLS or t in BULLET_CHARS)
+
+
+def is_math_run(t: str) -> bool:
+    """公式变量的孤字（`x` `y` `z` `W` `yl` `zk` `wjk` …）。
+
+    与 Kotlin 的 isMathRun 一致。只作**黏合**用。
+    """
+    if not t or len(t) > MATH_RUN_MAX:
+        return False
+    # ⚠️ 页码 / 页眉优先（否则 `13.5` 会黏住 `14`）
+    if PAGE_NUMBER.match(t) or PAGE_HEADER.match(t):
+        return False
+    if ' ' in t or '\t' in t:
+        return False
+    if any(c in PROSE_END for c in t) or ',' in t or '\u3001' in t:
+        return False
+    if not any(c.isalnum() for c in t):
+        return False
+    return all(c.isalnum() or c in MATH_SYMBOLS for c in t)
+
+
+def needs_space_between(a: str, b: str) -> bool:
+    """合并两段文字时是否需要补空格。与 Kotlin 的 needsSpaceBetween 一致。
+
+    ⚠️ 只在「前末字符是拉丁字母/数字」且「后首字符是字母/数字」时补。
+    """
+    if not a or not b:
+        return False
+    last, first = a[-1], b[0]
+    if last == '-':
+        return False
+    last_word = last.isalnum() and ord(last) < 0x2E80
+    first_word = first.isalnum() and ord(first) < 0x2E80
+    return last_word and first_word
 
 
 def merge_paragraphs(raw_lines):
@@ -109,6 +176,28 @@ def merge_paragraphs(raw_lines):
         if not t:
             flush()
             continue
+        # ⚠️ 顺序要紧：**先**排掉页码/页眉（独立成块），**再**判公式碎片（黏合）。
+        #    反例（实测回归）：先判公式碎片 → 页码 `13.5` 被当成变量
+        #    黏到页眉 `14` 上，产出 `13.5 14` 伪标题。
+        if looks_like_page_artifact(t):
+            flush()
+            para, meta = t, (font, size, page)
+            continue
+        # 单个数学符号 / 变量孤字 → 黏合，不判句末
+        # ⚠️ 空格规则与 Kotlin 一致：只在两侧都是字母/数字时补空格。
+        #    `x` + `=` → `x=`；`yl` + `yj` → `yl yj`
+        if is_math_fragment(t) or is_math_run(t):
+            if needs_space_between(para, t):
+                para += ' '
+            para += t
+            if meta is None:
+                meta = (font, size, page)
+            continue
+        # 到达的行像标题/页码 → 先收掉上一段（修复"标题黏进正文"）
+        if starts_new_block(t):
+            flush()
+            para, meta = t, (font, size, page)
+            continue
         if looks_like_head(para):
             flush()
             para, meta = t, (font, size, page)
@@ -117,15 +206,159 @@ def merge_paragraphs(raw_lines):
             flush()
             para, meta = t, (font, size, page)
         else:
-            if para:
-                a, b = para[-1], t[0]
-                if a != '-' and a.isascii() and a.isalnum() and b.isascii() and b.isalnum():
+            # 上一行以连字符结尾 + 新行以字母开头 → 断词续行，去连字符直接接
+            if para and para[-1] in ('-', '\u2010', '\u2011') and t[0].isalpha() \
+                    and ord(t[0]) < 0x2E80:
+                para = para[:-1] + t
+            elif para:
+                if needs_space_between(para, t):
                     para += ' '
                 para += t
             else:
                 para, meta = t, (font, size, page)
     flush()
     return out
+
+
+# --- 与 PdfText.kt 的 classifyBlock / estimateBodySize / looksLikeFormula 一致 ---
+#
+# ⚠️ 同样是**复刻**，不是重写。预览里看到的排版必须与真机一致，
+#    否则「预览好看、真机难看」这类问题会白跑一轮。
+#    改 Kotlin 侧时这里必须同步（反之亦然）。
+
+BODY_SIZE_MIN_LINE = SHORT_LINE   # 只统计长行来估计正文字号
+
+# ⚠️ 与 Kotlin 的 FORMULA_MAX_CHARS / FORMULA_MIN_SYMBOL_RATIO 一致
+FORMULA_MAX_CHARS = 300
+FORMULA_MIN_SYMBOL_RATIO = 0.08
+TITLE_MAX_CHARS = 80
+
+# ⚠️ 只保留**真正的数学运算符** —— 不含 ()[]/<>，那些是普通标点。
+#    与 Kotlin 的 looksLikeFormula 里的字符集一致。
+MATH_SYMBOLS = set('=+−×÷±∑∏∫√∞≤≥≠≈∈∉⊂⊆∪∩→←↔∂∇^_*<>|()[]{}−-')
+
+# 项目符号（Symbol 字体的 • 落在私用区 U+F0B6）—— 与 Kotlin 的 BULLET_CHARS 一致
+BULLET_CHARS = set('\uF0B6\uF0B7\u2022\u25CF\u25AA\u00B7')
+
+# 公式变量孤字的长度上限（与 Kotlin 的 MATH_RUN_MAX 一致）
+MATH_RUN_MAX = 6
+
+# 明显不是公式的标记
+NOT_FORMULA_MARKS = ('://', 'pp.', 'vol.', 'no.', 'issn')
+NUMBER_ONLY_LINE = re.compile(r'^[\s\d|()\[\].\-–—]+$')
+
+WORD_RE = re.compile(r'[A-Za-z]{4,}')
+HEADING_NUM_RE = re.compile(r'^§?\s*(\d+(?:\.\d+)*)')
+HEADING_NUM_PREFIX = re.compile(r'^§?\s*\d+(?:\.\d+)*\s+\S')
+
+
+def estimate_body_size(raw_lines):
+    """正文字号 = 长行的字号众数（0.5pt 分桶）。与 Kotlin 一致。"""
+    buckets = {}
+    for text, _font, size, _page in raw_lines:
+        if not size or len(text.strip()) <= BODY_SIZE_MIN_LINE:
+            continue
+        key = round(size * 2)
+        buckets[key] = buckets.get(key, 0) + 1
+    if not buckets:
+        return 0.0
+    best = max(buckets.items(), key=lambda kv: kv[1])[0]
+    return best / 2
+
+
+def is_bold_font(name: str) -> bool:
+    if not name:
+        return False
+    n = name.lower()
+    return ('bold' in n) or ('black' in n) or ('heavy' in n) or n.startswith('cmbx')
+
+
+def looks_like_formula(text: str) -> bool:
+    t = text.strip()
+    if len(t) < 2 or len(t) > FORMULA_MAX_CHARS:
+        return False
+    if len(WORD_RE.findall(t)) > 2:
+        return False
+    low = t.lower()
+    if '://' in low or low.startswith('www.'):
+        return False
+    if any(m in low for m in NOT_FORMULA_MARKS):
+        return False
+    if NUMBER_ONLY_LINE.match(t):
+        return False
+    symbols = sum(1 for c in t if c in MATH_SYMBOLS or c in '-*')
+    return (symbols / len(t)) >= FORMULA_MIN_SYMBOL_RATIO
+
+
+def heading_level(text: str) -> int:
+    m = HEADING_NUM_RE.match(text.strip())
+    if m:
+        return min(m.group(1).count('.') + 1, 3)
+    return 1
+
+
+def classify_block(text: str, font: str, size: float, body_size: float) -> dict:
+    """返回 {kind, level}。与 Kotlin 的 classifyBlock 判据一致。"""
+    t = text.strip()
+
+    if looks_like_formula(t):
+        return {'kind': 'formula', 'level': 0}
+
+    # 页码 / 页眉 / 纯编号 → 绝不当标题（实测误判重灾区）
+    if looks_like_page_artifact(t):
+        return {'kind': 'paragraph', 'level': 0}
+
+    has_numbered_title = bool(HEADING_NUM_PREFIX.match(t))
+    all_caps = bool(UPPER_HEAD.match(t)) and len(t) >= 3
+    boldish = is_bold_font(font)
+    bigger = bool(body_size > 0 and size and size > body_size + 0.3)
+
+    if len(t) > TITLE_MAX_CHARS:
+        return {'kind': 'paragraph', 'level': 0}
+
+    # 只靠字体/字号时必须是短行，且不像散文（与 Kotlin 一致）
+    font_only = (boldish or bigger) and len(t) <= SHORT_LINE \
+        and not looks_like_prose(t)
+
+    if has_numbered_title or all_caps or font_only:
+        return {'kind': 'heading', 'level': heading_level(t)}
+
+    return {'kind': 'paragraph', 'level': 0}
+
+
+PAGE_NUMBER = re.compile(r'^\d+(?:\.\d+)?$|^[IVXLC]{1,6}\.?$')
+PAGE_HEADER = re.compile(r'^\d+\s*(?:\||/|of)\s*\d+$')
+
+PROSE_END = set('.?!;。？！；')
+
+
+def looks_like_prose(t: str) -> bool:
+    """是否像散文句子（而非标题）。与 Kotlin 的 looksLikeProse 一致。"""
+    if not t:
+        return False
+    if t[-1] in PROSE_END:
+        return True
+    if ',' in t and len(t) > 30:
+        return True
+    if t[0].islower() and ' ' in t:
+        return True
+    return False
+
+
+def looks_like_page_artifact(t: str) -> bool:
+    """页码 / 页眉 / 纯编号 —— 与 Kotlin 的 looksLikePageArtifact 一致。"""
+    if not t:
+        return True
+    if PAGE_NUMBER.match(t):
+        return True
+    if PAGE_HEADER.match(t):
+        return True
+    # ⚠️ 单个数学符号 / 项目符号不算页面残留：PDF 里公式常被拆成「一行一个符号」，
+    #    当残留丢掉则公式残缺，当新块则正文散落单字符段落。
+    #    返回 False 让它走 is_math_fragment / is_math_run 分支黏到相邻块。
+    if len(t) <= 1:
+        return t not in MATH_SYMBOLS and t not in BULLET_CHARS
+    return False
 
 
 def extract(path: Path):
@@ -166,6 +399,21 @@ def extract(path: Path):
             fonts.append(font)
         rows.append([font_index[font], round(size * 10), page])
 
+    # 结构化块（v0.1.6）：阅读页按它分块渲染，这是「能读」的关键。
+    # ⚠️ 正文字号要在**原始行**上估（不是在合并后的段上）——
+    #    合并后段落变长，长短行的比例失真，众数会偏。
+    body_size = estimate_body_size(raw)
+    blocks = []
+    for text, m in merged:
+        font, size, page = m
+        cls = classify_block(text, font, size, body_size)
+        blocks.append({
+            'kind': cls['kind'],
+            'text': text,
+            'level': cls['level'],
+            'page': page,
+        })
+
     meta = doc.metadata or {}
     title = (meta.get('title') or '').strip()
     author = (meta.get('author') or '').strip()
@@ -194,6 +442,7 @@ def extract(path: Path):
         'text': '\n'.join(t for t, _ in merged),
         'meta': {'fonts': fonts, 'lines': rows},
         'outline': outline,
+        'blocks': blocks,
     }
 
 
@@ -402,6 +651,7 @@ def main():
             '_text': d['text'],
             '_meta': d['meta'],
             '_outline': d['outline'],
+            '_blocks': d['blocks'],
         })
         print(f'  {d["sourceName"]}')
         print(f'    title  : {d["title"][:60]}')
@@ -452,7 +702,7 @@ window.ScholariusDevLibrary.load = function () {
 window.ScholariusDevLibrary.readerText = function (id) {
   var d = this.docs.filter(function (x) { return x.id === id; })[0];
   if (!d) return null;
-  window.ScholariusShell.readerText(id, d._text, d._outline, d._meta);
+  window.ScholariusShell.readerText(id, d._text, d._outline, d._meta, d._blocks);
   return d._text.length;
 };
 

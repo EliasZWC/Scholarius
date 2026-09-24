@@ -585,6 +585,26 @@
                 var btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'sheet-picker-item';
+                /*
+                  ⚠️ opt.muted：把这一项画成**浅色**，表示它不是一个
+                     真正的选项（如发表物类别的「未设定」）。
+
+                     用户 2026-09-24：「类型选项中的未设置请用浅色来凸显
+                     和其他选项的不同」。
+
+                     ⚠️ 为什么需要这个标记：「未设定」在语义上是
+                        「还没判定」，不是七种载体之一。但它在列表里
+                        与 Journal / Conference 长得一样，用户会以为
+                        它是第八种类型 —— 于是可能"主动选择未设定"，
+                        而那是无意义的操作（等于什么都不选）。
+
+                     ⚠️ 标记挂在**按钮**上而不是 label 上：
+                        这样后续要淡化图标 / 对勾也有统一的钩子。
+
+                     ⚠️ 用类名而不是 inline style —— 颜色要跟随主题，
+                        inline 写死会在日间/夜间之一里错。
+                */
+                if (opt.muted) btn.className += ' is-muted';
                 btn.setAttribute('data-value', String(opt.value));
                 btn.setAttribute('aria-pressed',
                     String(opt.value) === String(current) ? 'true' : 'false');

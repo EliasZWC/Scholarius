@@ -554,10 +554,36 @@
     function venueNameOf(doc) {
         if (!doc) return '';
         var keys = VENUE_NAME_FIELDS[doc.venueType] || [];
+        var fields = doc.fields || {};
         for (var i = 0; i < keys.length; i++) {
-            var v = doc[keys[i]];
+            /*
+              ⚠️⚠️ 先从 `fields` 里取值 —— **这是主来源**（踩过的坑）。
+
+                 类别专属字段（journalName / conferenceName / publisher …）
+                 存在 `doc.fields` 里，**不在 doc 顶层**：
+                   · Kotlin 侧 Doc.fields 是一个 Map，索引里作为
+                     `fields` 子对象存（见 LibraryStore.parseFields）；
+                   · 详情页写值走 writeValue()，它按 isTopLevel()
+                     判断后写进 `draft.fields[key]`。
+
+                 而这里原来写的是 `doc[keys[i]]`（顶层）——
+                 于是**永远取不到**，函数静默退化到 `doc.venue`。
+                 后果就是用户报的那个 bug：
+                 「在详情更改了发表物的名称，但文库列表的卡片显示
+                  依旧是错误提取的东西，没有变化」——
+                 因为卡片拿到的始终是导入时从 PDF 抓的旧 venue。
+
+                 ⚠️ 这个函数从写完起就没人调用过（vault.js 直接读 doc.venue），
+                    所以这个错误一直没暴露。修的时候必须连调用点一起改，
+                    否则等于没修。
+            */
+            var v = fields[keys[i]];
             if (v && String(v).trim()) return String(v).trim();
         }
+        /*
+          ⚠️ 兜底到 `doc.venue`：老数据（v0.1.5 之前）只有这个字段；
+             新导入但用户还没填类别字段的文献也只有它。
+        */
         return doc.venue && String(doc.venue).trim() || '';
     }
 

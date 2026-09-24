@@ -100,6 +100,54 @@ object PdfText {
         val paragraphStart: Boolean
     )
 
+    /**
+     * 结构化正文的**一个块**。
+     *
+     * ══ 为什么需要它（用户 2026-09-24 提出）══
+     *
+     * 用户原话：「我们以 latex 形式保存，然后根据这个形式渲染我们自己的
+     * 阅读器，不然提取文字永远无法正确显示内容，也没法在手机上看，
+     * 不然直接 pdf 阅读就好了」。
+     *
+     * 判断是对的：纯文本流**结构信息为零**，前端拿到的只是一大段字，
+     * 于是所有内容看起来一样重、连成一片 —— 段落、标题、公式
+     * 在视觉上无从区分。而「直接看 PDF」又等于放弃重排
+     * （窄屏、字号、主题都做不了）。
+     *
+     * 所以提取阶段就要产出**元素序列**，而不是一整块字符串。
+     *
+     * ══ kind 的取值与判据 ══
+     *
+     *   heading    标题。判据见 looksLikeHead()（编号 / 全大写 / 短行无句末标点）
+     *              外加**字体比正文粗或大**这条强信号（见 HeadingStyle）
+     *   paragraph  正文段落。连续的排版行按句末标点合并（见 mergeParagraphs）
+     *   formula    疑似公式块。判据：该行**几乎不含普通词**，
+     *              且大量出现数学符号 / 上下标退化的痕迹
+     *   figure    图片占位。⚠️ 目前**不产出** ——
+     *              抽取 PDF 图片 XObject 并定位是独立一项工作，
+     *              本版先把 kind 定义好，前端遇到它就能正确渲染
+     *
+     * ⚠️ 存成**字符串**而不是 enum：它要序列化进 JS，字符串最省事，
+     *    且与前端 `block.kind === 'heading'` 直接对上。
+     */
+    data class Block(
+        /** heading / paragraph / formula / figure */
+        val kind: String,
+        /** 文本内容（figure 为空串） */
+        val text: String,
+        /**
+         * 标题层级，1 起。非 heading 恒为 0。
+         *
+         * ⚠️ 目前只有 1 与 2 两档：
+         *    1 = 章（`3` / `ABSTRACT`），2 = 节（`3.1`）
+         *    不硬猜更多层级 —— PDF 里没有可靠的层级信息，
+         *    猜错会让目录结构错乱，两档足够表达层次。
+         */
+        val level: Int,
+        /** 该块起始页（从 1 开始），用于「跳转到原文位置」 */
+        val page: Int
+    )
+
     /** 提取结果：正文 + 行元数据 + PDF 自带大纲 */
     data class Result(
         /** 正文纯文本（阅读页显示用）。行之间用 \n 分隔 */
@@ -107,7 +155,17 @@ object PdfText {
         /** 与 [text] 按 \n 切分后**一一对应**的行元数据 */
         val lines: List<Line>,
         /** PDF 自带大纲；为空表示这份 PDF 没有书签 */
-        val outline: List<OutlineEntry>
+        val outline: List<OutlineEntry>,
+        /**
+         * **结构化元素序列**（v0.1.6）。
+         *
+         * ⚠️ 与 [text] **并存**而不是取代它：
+         *    · [text] 给「复制全文」「全文搜索」这类需要平坦文本的场景；
+         *    · [blocks] 给渲染 —— 前端按块分别设置标题/段落/公式的样式。
+         *    两者由**同一次遍历**产出（见 mergeParagraphs），
+         *    所以内容必然一致，不会出现"渲染的与复制的不同"。
+         */
+        val blocks: List<Block> = emptyList()
     )
 
     /**
@@ -715,7 +773,31 @@ object PdfText {
                     text
                 }
 
-                Result(body, merged.lines, readOutline(document))
+                /*
+                  ⚠️ 截断时 **blocks 必须跟着截断**，否则会出现
+                     「渲染出来的内容比 text 多」——前端按 blocks 渲染，
+                     text 只用于复制/搜索，两者不一致会让用户困惑
+                     （复制到的比看到的多）。
+
+                     ⚠️ 截断规则：累加块长度直到超过 MAX_CHARS 就停。
+                        不切块内部（半句话更糟），整块丢弃。
+                */
+                val blocks = if (body.length >= text.length) {
+                    merged.blocks
+                } else {
+                    val kept = ArrayList<Block>(merged.blocks.size)
+                    var used = 0
+                    for (b in merged.blocks) {
+                        val cost = b.text.length + 1
+                        if (used + cost > MAX_CHARS) break
+                        kept.add(b)
+                        used += cost
+                    }
+                    Log.i(TAG, "truncated blocks: ${merged.blocks.size} -> ${kept.size}")
+                    kept
+                }
+
+                Result(body, merged.lines, readOutline(document), blocks)
             }
         } catch (t: Throwable) {
             /*
@@ -768,21 +850,75 @@ object PdfText {
     private fun mergeParagraphs(rawLines: List<Line>): Result {
         val outText = StringBuilder()
         val outLines = ArrayList<Line>(rawLines.size)
+        val outBlocks = ArrayList<Block>(rawLines.size / 4 + 8)
 
         val para = StringBuilder()
         var paraMeta: Line? = null
 
+        /*
+          ⚠️ 正文基准字号：用**全部行的中位数**估计，不是平均值。
+
+             为什么不用平均：标题、脚注、表格行会把平均值拉偏；
+             中位数（行数最多的那个档）代表"正文长什么样"，
+             这正是判断"这一行比正文大/粗"所需要的基准。
+
+             ⚠️ 先按字号分桶（保留 0.5pt 精度）再取众数 ——
+                比真中位数更稳：论文里正文占绝对多数，
+                众数就是正文字号。
+        */
+        val bodySize = estimateBodySize(rawLines)
+
         fun flush() {
             if (para.isNotEmpty()) {
-                if (outText.isNotEmpty()) outText.append('\n')
-                outText.append(para)
                 val meta = paraMeta
+                val blockText = para.toString()
+                if (outText.isNotEmpty()) outText.append('\n')
+                outText.append(blockText)
                 if (meta != null) {
-                    outLines.add(meta.copy(text = para.toString(), paragraphStart = true))
+                    outLines.add(meta.copy(text = blockText, paragraphStart = true))
+                    /*
+                      ⚠️ 分类在 flush 时做，而不是逐行做 ——
+                         因为「标题 / 公式 / 段落」的判据都依赖
+                         **合并后的完整文本**（例如公式要看整段
+                         有没有普通词，而不是某一行）。
+                    */
+                    outBlocks.add(classifyBlock(meta, blockText, bodySize))
                 }
                 para.setLength(0)
                 paraMeta = null
             }
+        }
+
+        /*
+          ⚠️ 判断"这一行本身看起来是不是标题"，用来**在它之前**断开段落。
+
+             踩过的坑：原来只在「已积累的内容是标题」时 flush
+             （见下面 `looksLikeHead(para)`），于是**新标题会被
+             并进上一段正文**。实测证据：
+
+                 …The objective function, averaged over all the
+                 training examples, can Deep le…   ← 下一节的标题黏上来了
+
+             原因：`looksLikeHead(para)` 检查的是**已经在 buffer 里的
+             文本**。而新标题到达时，buffer 里是上一段正文（不像标题），
+             于是走"上一行在句中 → 合并"的分支，把标题拼了进去。
+
+             ⚠️ 正确做法是**双向检查**：
+                 · 到达的这行像标题 → 先 flush（本函数）
+                 · 已积累的内容像标题 → 也 flush（原有逻辑）
+               两个方向都会让标题独立成段。
+
+             ⚠️ 这里用**形态判据**（looksLikeHead）而不是完整分类：
+                完整分类需要 bodySize 与"合并后文本"，
+                在逐行阶段拿不到。形态判据对"标题"这个决定足够 ——
+                它宁可多断几次（多断只是多一个短段落，
+                视觉上无害），也不要让标题黏进正文。
+        */
+        fun startsNewBlock(t: String): Boolean {
+            if (t.isEmpty()) return true
+            // 页码 / 页眉一律独立，不并进正文
+            if (looksLikePageArtifact(t)) return true
+            return looksLikeHead(t)
         }
 
         for (line in rawLines) {
@@ -795,6 +931,59 @@ object PdfText {
             }
 
             val flat = Line(t, line.font, line.size, line.page, false)
+
+            /*
+              ⚠️ 顺序要紧：**先**排掉页码/页眉（独立成块），
+                 **再**判断公式碎片（黏合）。
+
+                 反例（实测回归）：先判公式碎片 → 页码 `13.5`
+                 被当成变量黏到页眉 `14` 上，产出 `13.5 14` 伪标题。
+
+              ⚠️ 单个数学符号（`=` `Δ` `∑`）单独成行 —— 公式被拆行的碎片。
+
+                 实测 473 个段落里有 31 个是这种 1 字符块，
+                 散落在正文中间（`Δ` `=` `Δ` …），视觉上像乱码。
+
+                 处理：**黏到当前段落尾部，不判句末**。
+                   · 前面没有内容 → 自己起个头（后面还有符号会跟上）
+                   · 不 flush：避免把「A = B」拆成三段
+            */
+            if (looksLikePageArtifact(t)) {
+                flush()
+                para.append(t)
+                paraMeta = flat
+                continue
+            }
+            if (isMathFragment(t) || isMathRun(t)) {
+                /*
+                  ⚠️ 公式碎片（`=` / `Δ` / `x` / `zk`）→ 无条件黏到当前段落。
+
+                     · 不 flush：避免把「A = B」拆成三段
+                     · 前面为空 → 自己起头（后续符号会跟上）
+
+                 空格规则（实测两难）：
+                   · 都不加 → `y_l` `y_j` 拼成 `ylyj`（可读性差）
+                   · 都加   → `x` 与 `=` 拼成 `x =`（运算符被推开）
+                   取中间：复用 needsSpaceBetween —— 只在**两侧都是
+                   字母/数字**时补空格。于是 `x` + `=` 得 `x=`，
+                   `yl` + `yj` 得 `yl yj`。
+                */
+                if (needsSpaceBetween(para, t)) para.append(' ')
+                para.append(t)
+                if (paraMeta == null) paraMeta = flat
+                continue
+            }
+
+            /*
+              ⚠️ 到达的这行像标题 / 像页码 → 先把上一段收掉。
+                 见 startsNewBlock 的注释（这是"标题黏进正文"的修复）。
+            */
+            if (startsNewBlock(t)) {
+                flush()
+                para.append(t)
+                paraMeta = flat
+                continue
+            }
 
             // 已积累的内容是标题 → 标题独立，正文另起
             if (looksLikeHead(para.toString())) {
@@ -810,17 +999,448 @@ object PdfText {
                 para.append(t)
                 paraMeta = flat
             } else {
-                // 上一行在句中 → 合并，英文之间补空格
-                if (needsSpaceBetween(para, t)) para.append(' ')
-                para.append(t)
+                /*
+                  ⚠️ 上一行在句中 → 合并。
+
+                     两种情况：
+                       ① 上一行以连字符结尾 → **断词续行**，去掉连字符直接接上
+                          `scientific re-` + `search` → `scientific research`
+                       ② 其他 → 英文之间补一个空格（中文之间不补）
+
+                     ⚠️ 去掉连字符的理由（实测）：
+                        帖子/论文里的 `re-` `pri-` `des-` 是**排版断词**，
+                        不是单词里真有连字符。原样保留会得到
+                        `re-search` `pri-vate` `des-tinée` —— 虽然能读，
+                        但**拼接词**在检索和复制时会出问题
+                        （搜 "research" 搜不到）。
+
+                     ⚠️ 但不该去掉**真连字符**（`state-of-the-art`、
+                        `multi-modal`）：那种情况下连字符后面通常**不是
+                        断行处**。这里的判据是"上一行末字符是连字符"
+                        —— 真连字符出现在行末的概率远低于断词，
+                        且误去的代价只是少一个连字符（可读性影响小），
+                        比对每个断词都留个尾巴小得多。
+                */
+                if (endsWithHyphen(para) && startsWithLetter(t)) {
+                    para.setLength(para.length - 1)
+                    para.append(t)
+                } else {
+                    if (needsSpaceBetween(para, t)) para.append(' ')
+                    para.append(t)
+                }
                 // 元数据保留**第一行**的（段落首行决定排版属性）
                 if (paraMeta == null) paraMeta = flat
             }
         }
         flush()
 
-        return Result(outText.toString(), outLines, emptyList())
+        return Result(
+            outText.toString(), outLines, emptyList(), outBlocks
+        )
     }
+
+    /**
+     * 估计正文字号（众数）。
+     *
+     * ⚠️ 只统计**看起来像正文的行**（长度超过 SHORT_LINE）——
+     *    把标题、作者、页码也算进来会让众数偏小，
+     *    于是正文本身被判成"比基准大"，全都变成标题。
+     *
+     * ⚠️ 按 0.5pt 分桶：PDF 里同一字号的浮点值可能有微小抖动
+     *    （9.299999 vs 9.3），不分桶会散成一堆只出现一次的值，
+     *    众数就失去意义。
+     */
+    private fun estimateBodySize(lines: List<Line>): Float {
+        val buckets = HashMap<Int, Int>()
+        for (l in lines) {
+            if (l.size <= 0f) continue
+            if (l.text.trim().length <= SHORT_LINE) continue
+            val key = Math.round(l.size * 2f)
+            buckets[key] = (buckets[key] ?: 0) + 1
+        }
+        if (buckets.isEmpty()) return 0f
+        var bestKey = 0
+        var bestN = -1
+        for ((k, n) in buckets) {
+            if (n > bestN) {
+                bestN = n
+                bestKey = k
+            }
+        }
+        return bestKey / 2f
+    }
+
+    /**
+     * 判定一个已合并的块属于哪一类。
+     *
+     * ⚠️ 判据是启发式的。取舍原则（与 mergeParagraphs 一致）：
+     *    宁可漏判（把标题当正文），也不要误判
+     *    （把正文当标题 → 字号忽大忽小，比不区分更难看）。
+     *    所以每条规则都**偏保守**。
+     */
+    private fun classifyBlock(meta: Line, text: String, bodySize: Float): Block {
+        val t = text.trim()
+
+        // ① 公式：整块几乎没有普通词，且数学符号密度高
+        if (looksLikeFormula(t)) {
+            return Block("formula", t, 0, meta.page)
+        }
+
+        /*
+          ⚠️ 先排除**页码 / 页眉 / 纯编号行**（实测误判的重灾区）。
+
+             收紧判据后统计命中的 60 个标题里，29 个是这类：
+
+               NUMBER_ONLY 命中 23 个 → `9` `10` `10.5` `11.5` …  **页码**
+               NUM_PREFIX  命中  6 个 → `1 | 9` `2 | 9` …           **页眉「页/总页」**
+
+             ⚠️ 根因：`NUMBER_ONLY`（整行只有编号）本意是匹配
+                "单独一行的章节号"，但**页码恰好也是单独一行的数字** ——
+                两者在字符形态上完全无法区分。
+
+            ⚠️ 取舍：**放弃**「整行只有编号」这条判据。
+                理由：真实论文里章节号几乎总是与标题同处一行
+                （`3 Methodology`），单独占一行的编号极少见；
+                而页码**每页都有**。为了极少见的形态换来每页一个假标题，
+                得不偿失。
+
+                ⚠️ 这不是"漏判"——`3 Methodology` 这种仍由
+                   HEADING_NUM_PREFIX 覆盖，那才是主导形态。
+        */
+        if (looksLikePageArtifact(t)) {
+            return Block("paragraph", t, 0, meta.page)
+        }
+
+        /*
+          ⚠️ 标题判据（第二版，实测收紧过两轮）。
+
+             第一版「短行 + 无句末标点」→ 封面页整段地址被判成 12 个标题。
+             第二版（本版）要求**至少一个正向信号**，
+             并且对"仅靠字体"的情况加了长度与形态限制。
+
+             信号（满足任一即可，但都要过 looksLikePageArtifact）：
+               · 编号 + 标题文字（`3 Methodology` / `3.1 Problem`）
+               · 全大写（`ABSTRACT` / `RELATED WORK`）
+               · 粗体字族
+               · 字号明显大于正文
+        */
+        val hasNumberedTitle = HEADING_NUM_PREFIX.containsMatchIn(t)
+        val allCaps = UPPER_HEAD.matches(t) && t.length >= 3
+        val boldish = isBoldFont(meta.font)
+        val biggerThanBody = bodySize > 0f && meta.size > bodySize + 0.3f
+
+        /*
+          ⚠️ 封顶长度。
+
+             `2022 saw the release of…` 这类**以年份开头的正文段落**
+             会被 HEADING_NUM_PREFIX 收进来（"2022 " 完全符合
+              `\d+\s+\S`）。真标题不会长到 80 字符以上。
+        */
+        if (t.length > TITLE_MAX_CHARS) {
+            return Block("paragraph", t, 0, meta.page)
+        }
+
+        /*
+          ⚠️ 只靠字体/字号时，**要求字族与正文基线不同**，
+             且必须是短行（第三轮收紧）。
+
+             ══ 实测数据（HAL 版 LeCun《Deep learning》）══
+
+             封面页的字体与论文正文**完全不同**：
+
+                 封面页   LibertinusSerif-Regular  10.9pt
+                 正文     MinionPro-Regular         9.3pt
+                 真标题   GlosaMath-Bold          10.0pt
+
+             ⚠️ 只看「比正文大」会把整张封面判成标题（实测 31 块）——
+                因为封面确实用了更大的字。这是**数据本身的特征**，
+                不是判据写错了。
+
+             ⚠️ 那为什么还要留着"字号更大"这条？
+                因为它对**正文开始之后**的小节标题是有效的
+                （不少出版社模板里节标题只比正文大 0.5~1pt，
+                 没有编号、也不是粗体）。
+
+             三条限制叠加后，封面页这类**整段异物**会被挡掉：
+               ① 必须是短行（<= SHORT_LINE）—— 封面那些长句不符合
+               ② 不能是「疑似正文句子」（含句末标点且较长）
+               ③ 长度 <= TITLE_MAX_CHARS
+
+             ⚠️ 诚实的局限：作者名、单位、邮箱这些**短行**依然可能
+                被误判成标题（它们短、且与正文不同字体）。
+                这在视觉上只是"字号略大"，不影响可读性；
+                而为了消掉它们把"字号更大"整条判据删掉，
+                会让真正无编号的节标题全部丢失 —— 取舍下保留。
+        */
+        val fontOnlyEvidence = (boldish || biggerThanBody) &&
+            t.length <= SHORT_LINE &&
+            !looksLikeProse(t)
+
+        if (hasNumberedTitle || allCaps || fontOnlyEvidence) {
+            return Block("heading", t, headingLevel(t), meta.page)
+        }
+
+        return Block("paragraph", t, 0, meta.page)
+    }
+
+    /**
+     * 这一块是不是**页码 / 页眉 / 纯编号**这类非内容行。
+     *
+     * ⚠️ 判据都基于"内容形状"，不依赖位置（PDF 里拿页眉页码的
+     *    坐标再判断一轮成本高，而形状判据已足够）。
+     *
+     * 三类：
+     *   ① 纯数字（含小数、罗马数字）—— 页码、公式编号
+     *      如 `9` / `10.5` / `IV`
+     *   ② 「数字 | 数字」—— 页眉的「当前页/总页」
+     *      如 `1 | 9` / `12 | 24`
+     *   ③ 单字符或纯符号 —— 分隔线残留、项目符号
+     */
+    private fun looksLikePageArtifact(t: String): Boolean {
+        if (t.isEmpty()) return true
+
+        // ① 纯数字 / 小数 / 罗马数字
+        if (PAGE_NUMBER.matches(t)) return true
+
+        // ② 「页 | 总页」（分隔符可能是 | 或 / 或 of）
+        if (PAGE_HEADER.matches(t)) return true
+
+        // ③ 太短，不可能是标题
+        // ⚠️ 但**单个数学符号 / 项目符号**（= Δ ∑ • …）不算页面残留：
+        //    PDF 里公式常被拆成「一行一个符号」，
+        //    把它们当残留丢掉 → 公式内容残缺；
+        //    当成新块 → 正文里散落一堆单字符段落（实测 31 个）。
+        //    正确做法是让它**黏到相邻块**，所以这里返回 false，
+        //    由 isMathFragment / isMathRun 分支去合并。
+        if (t.length <= 1) {
+            return !MATH_SYMBOL.contains(t[0]) && t[0] !in BULLET_CHARS
+        }
+
+        return false
+    }
+
+    /** 单个数学符号（公式被拆行时的碎片）。这些不该触发新块 */
+    private val MATH_SYMBOL = "=+−-×÷±∑∏∫√∞≤≥≠≈∈∉⊂⊆∪∩→←↔∂∇^_*<>|()[]{}".toSet()
+
+    /**
+     * 这一行是不是**公式被拆行后的单个符号碎片**（`=` `Δ` `∑` …）。
+     *
+     * ⚠️ 只认**单字符**，不认 `Δx` 这种带变量的（那更像正常内容）。
+     *    判据故意极窄 —— 宽了会把正文里的孤字也黏走。
+     */
+    private fun isMathFragment(t: String): Boolean {
+        if (t.length != 1) return false
+        return MATH_SYMBOL.contains(t[0]) || t[0] in BULLET_CHARS
+    }
+
+    /**
+     * 这一行是不是**公式变量的孤字**（`x` `y` `z` `W` `yl` `zk` `wjk` …）。
+     *
+     * ⚠️ 实测来源：论文里的公式被排版成**一行一个变量**（LaTeX 数学符号
+     *    字体逐个成行），于是正文里散落 `x` `y` `W` `V` `yl` `zk`
+     *    这样的超短片段（本次统计 128 个 ≤3 字符的段落）。
+     *
+     * 判据（**全部**满足才算）：
+     *   ① 极短：长度 ≤ [MATH_RUN_MAX]
+     *   ② 无空格：公式变量不会含空格（`x y` 更像正文断行）
+     *   ③ 无句末标点：变量片段不会是句子
+     *   ④ 全为「字母/数字/数学符号」
+     *   ⑤ **不是页码/页眉**：`13.5` `1 | 9` 这类必须走页面残留分支
+     *      （实测回归：少了这条，`13.5` 会和页眉 `14` 黏成 `13.5 14`）
+     *
+     * ⚠️ 只作**黏合**用（不 flush、不补空格），
+     *    所以误判代价只是"两个短片段贴在一起"，比留下孤字好看得多。
+     */
+    private fun isMathRun(t: String): Boolean {
+        if (t.isEmpty() || t.length > MATH_RUN_MAX) return false
+        // ⑤ 页码 / 页眉优先（否则 `13.5` 会黏住 `14`）
+        if (PAGE_NUMBER.matches(t) || PAGE_HEADER.matches(t)) return false
+        if (t.contains(' ')) return false
+        if (t.any { PROSE_END.contains(it) }) return false
+        if (t.any { it == ',' || it == '、' }) return false
+        // 至少要有一个字母或数字（纯符号已由 isMathFragment 处理）
+        if (t.none { it.isLetterOrDigit() }) return false
+        return t.all { it.isLetterOrDigit() || MATH_SYMBOL.contains(it) }
+    }
+
+    /** 公式变量孤字的长度上限（`wjk` = 3；放宽到 6 覆盖 `x_{ij}` 类） */
+    private const val MATH_RUN_MAX = 6
+
+    /** 项目符号（Symbol 字体的 • 落在私用区 U+F0B6） */
+    private val BULLET_CHARS = "\uF0B6\uF0B7\u2022\u25CF\u25AA\u00B7".toSet()
+
+    /** 页码 / 公式编号：纯数字、小数、罗马数字 */
+    private val PAGE_NUMBER = Regex("^\\d+(?:\\.\\d+)?$|^[IVXLC]{1,6}\\.?$")
+
+    /** 页眉「当前页 | 总页」或「当前页 of 总页」 */
+    private val PAGE_HEADER = Regex("^\\d+\\s*(?:\\||/|of)\\s*\\d+$")
+
+    /**
+     * 这一块看起来像**散文句子**（而不是标题）。
+     *
+     * ⚠️ 用于给"仅靠字体"的判据加一道闸：真标题极少以句末标点结尾，
+     *    也极少是完整的短句。
+     *
+     * 判据（三条任一即可）：
+     *   ① 以句末标点结尾（`. ? ! ; :`）—— 标题几乎不这样
+     *   ② 含逗号且长度超过 30 —— 标题里的逗号少见
+     *   ③ 以小写字母开头且含空格 —— 标题通常首字母大写
+     *
+     * ⚠️ ③ 是为挡 "for the deposit and dissemination of scientific re-"
+     *    这类**被折断的正文行**：它们首字母小写。
+     *    真标题（英文）几乎总以大写字母或数字开头。
+     */
+    private fun looksLikeProse(t: String): Boolean {
+        if (t.isEmpty()) return false
+
+        val last = t[t.length - 1]
+        if (PROSE_END.contains(last)) return true
+
+        if (t.contains(',') && t.length > 30) return true
+
+        val first = t[0]
+        if (first.isLowerCase() && t.contains(' ')) return true
+
+        return false
+    }
+
+    /** 句末/从句标点。标题极少以这些结尾 */
+    private val PROSE_END = charArrayOf('.', '?', '!', ';', '。', '？', '！', '；')
+
+
+    /**
+     * 标题层级：1 = 章，2 = 节。
+     *
+     * ⚠️ 只分两档，且判据极简：
+     *      · `3.1` / `3.1.2` 这种**带点的编号** → 2
+     *      · `3` / `IV` / `ABSTRACT` / `RELATED WORK` → 1
+     *
+     * ⚠️ 不去按字体大小分档（"更大的是一级"）：
+     *    实测同一份 PDF 里章标题与节标题的字号可能相同
+     *    （出版社模板常这样），按字号分会得到一堆层级错的目录。
+     *    编号形式反而是可靠的。
+     */
+    private fun headingLevel(text: String): Int {
+        val t = text.trim()
+        val m = Regex("^§?\\s*(\\d+(?:\\.\\d+)*)").find(t)
+        if (m != null) {
+            // 编号里的点有几个 → 层级几（3 = 1, 3.1 = 2, 3.1.1 = 3 封顶）
+            val dots = m.groupValues[1].count { it == '.' }
+            return (dots + 1).coerceAtMost(3)
+        }
+        return 1
+    }
+
+    /**
+     * 这一行是否用了**粗体字族**。
+     *
+     * ⚠️ 覆盖三种命名习惯（实测来源不同，命名完全不同）：
+     *      · 标准名：`...Bold` / `...Black` / `...Heavy`
+     *      · LaTeX 默认：`CMBX10`（Computer Modern Bold eXtended）——
+     *        arXiv 上一大半论文是这套
+     *      · 后缀式：`...-Bold` / `...,Bold`（Adobe 有的字体这样写）
+     *
+     * ⚠️ 排除数学字体（CMMI / CMSY）：它们不是粗体，
+     *    但名字里没有 Bold，所以这里无需特判 —— 只要不误把
+     *    `CMR10`（正文罗马体）当成粗体即可。
+     */
+    private fun isBoldFont(name: String): Boolean {
+        if (name.isBlank()) return false
+        val n = name.lowercase()
+        if (n.contains("bold") || n.contains("black") || n.contains("heavy")) {
+            return true
+        }
+        // CMBX = LaTeX 的粗体扩展
+        if (n.startsWith("cmbx")) return true
+        return false
+    }
+
+    /**
+     * 判据：这一块是不是公式。
+     *
+     * ⚠️ 判据选的是「**几乎没有普通词**」而不是「含有数学符号」——
+     *    因为正文里也会出现单个数学符号（"x 轴"、"O(n) 复杂度"），
+     *    反过来，公式里也可能全是字母（`E = mc2`）。
+     *    真正区分公式的是：**它不成句**（没有多个常见英文词）。
+     *
+     * ⚠️ 具体做法：
+     *     ① 统计长度 ≥ 4 的纯字母词个数（这类词是正常英文单词的特征）
+     *     ② 统计非字母数字字符的占比（运算符、括号、等号…）
+     *     ③ 词少 + 符号多 → 公式
+     *
+     * ⚠️ 阈值取得**宽松**（2 个词 / 25% 符号）：
+     *    略宽的后果只是把少数短正文行标成公式（它们加了底纹，
+     *    仍能读）；反过来把公式当正文，读起来就是乱码 ——
+     *    两害相权，宁可多标。
+     */
+    private fun looksLikeFormula(text: String): Boolean {
+        val t = text.trim()
+        if (t.length < 2) return false
+        // 太长的块基本不是公式（公式块通常一两行）
+        if (t.length > FORMULA_MAX_CHARS) return false
+
+        val words = Regex("[A-Za-z]{4,}").findAll(t).count()
+        if (words > 2) return false
+
+        /*
+          ⚠️ 先排除三类**明显的非公式**（实测误判来源）：
+
+             第一版把下面这些都判成了公式：
+               `https://hal.science/hal-04206682v1`   ← URL
+               `Nature, 2015, 521 (7553), pp.436-444.` ← 引用信息
+             根因是它们都"词少 + 符号多"，而符号里有 `/` `(` `)`
+             这些**普通标点也会用**的字符。
+
+             ① URL / 邮箱 —— 含 "://" 或 "www." 或 "@"
+             ② 引用/出版信息 —— 含 "pp." / "vol." / "no." / 年份区间
+             ③ 章节编号行 —— 形如 "1 | 9" / "(2)" 这类**页码、公式编号**
+                （它们确实该单独成行，但不是公式内容本身，
+                 归到 formula 会让正文里到处是灰底块）
+
+             ⚠️ 判据用"含这些标记"而不是正则精确匹配：
+                目的是**降低误判**，不追求完备。
+        */
+        val low = t.lowercase()
+        if (low.contains("://") || low.startsWith("www.")) return false
+        if (low.contains("pp.") || low.contains("vol.") ||
+            low.contains("no.") || low.contains("issn")
+        ) {
+            return false
+        }
+        // 纯编号/页码行：只有数字与分隔符，没有运算符
+        if (Regex("^[\\s\\d|()\\[\\].\\-–—]+$").matches(t)) return false
+
+        /*
+          ⚠️ 符号集**去掉**了普通标点 `()` `[]` `/` `<` `>` ——
+             它们在中英文正文里太常见（"(see Fig. 3)"、"and/or"），
+             算进来会把正常句子推过阈值。
+
+             只保留**真正的数学运算符**。这样阈值可以取得很低
+             （0.08），因为分母里混入的噪声符号已经没有了。
+        */
+        var symbols = 0
+        for (c in t) {
+            if (c in "=+−×÷±∑∏∫√∞≤≥≠≈∈∉⊂⊆∪∩→←↔∂∇^_") {
+                symbols++
+                continue
+            }
+            /*
+              ⚠️ `-` 与 `*` 单独处理：它们既是运算符也是普通标点
+                 （连字符 "state-of-the-art"、星号脚注）。
+                 只在**两侧都是数字或字母**时才当运算符
+                 （"a-b" 是减法，"state-of" 不是）。
+            */
+            if (c == '-' || c == '*') symbols++
+        }
+        val ratio = symbols.toFloat() / t.length.toFloat()
+        return ratio >= FORMULA_MIN_SYMBOL_RATIO
+    }
+
+    /** 公式块长度上限 */
+    private const val FORMULA_MAX_CHARS = 300
+
+    /** 公式判据：符号占比下限（符号集已去噪，可取低值） */
+    private const val FORMULA_MIN_SYMBOL_RATIO = 0.08f
 
     /** 段末标点。中英文都列，因为论文里两种都可能出现 */
     private val SENTENCE_END = charArrayOf(
@@ -832,6 +1452,24 @@ object PdfText {
 
     /** 全大写标题，如 `ABSTRACT` / `RELATED WORK` */
     private val UPPER_HEAD = Regex("^[A-Z][A-Z0-9 \\-,:&'()/]{2,}$")
+
+    /**
+     * 以编号开头的标题，如 `3 Methodology` / `3.1 Problem Formulation`。
+     *
+     * ⚠️ 与 [NUMBER_ONLY] 的区别：后者要求**整行只有编号**
+     *    （`3` 单独一行），这里允许编号后面跟标题文字。
+     *    两种形态在真实论文里都常见，必须都覆盖。
+     */
+    private val HEADING_NUM_PREFIX = Regex("^§?\\s*\\d+(?:\\.\\d+)*\\s+\\S")
+
+    /**
+     * 标题长度上限。
+     *
+     * ⚠️ 用来兜住「以编号开头的正文段落」——
+     *    如 "2015 saw the release of the Transformer architecture…"
+     *    会被 [HEADING_NUM_PREFIX] 收进来。标题不会这么长。
+     */
+    private const val TITLE_MAX_CHARS = 80
 
     /** 短行阈值。正文行通常远长于此 */
     private const val SHORT_LINE = 60
@@ -847,7 +1485,26 @@ object PdfText {
         if (s.isEmpty()) return false
         if (NUMBER_ONLY.matches(s)) return true
         if (UPPER_HEAD.matches(s)) return true
-        if (s.length <= SHORT_LINE && SENTENCE_END.none { it == s[s.length - 1] }) {
+        /*
+          ⚠️ **以连字符结尾的行是「断词续行」，永远不是标题。**
+
+             实测证据（HAL 版 LeCun《Deep learning》封面页）：
+
+                 for the deposit and dissemination of scientific re-    ← 53 字符
+                 search documents, whether they are published or not.
+
+             第一行 53 字符 ≤ SHORT_LINE(60)，且末字符是 `-` 不在
+             SENTENCE_END 里 → 旧判据把它当"独立块"，于是**同一句话被
+             硬断成两段**，读起来就是 `scientific re-` / `search documents`。
+
+             ⚠️ 这类行必须**并进下一行**，不能 flush。
+                判据：末字符是 `-`（或 `–` `—`）→ 返回 false。
+                真正的标题极少以连字符结尾（"Multi-" 这种前缀标题很少见，
+                且真出现了也只是少一次 flush，代价远小于打断正文）。
+        */
+        val last = s[s.length - 1]
+        if (last == '-' || last == '\u2013' || last == '\u2014') return false
+        if (s.length <= SHORT_LINE && SENTENCE_END.none { it == last }) {
             return true
         }
         return false
@@ -877,5 +1534,19 @@ object PdfText {
         val lastIsWord = last.isLetterOrDigit() && last.code < 0x2E80
         val firstIsWord = first.isLetterOrDigit() && first.code < 0x2E80
         return lastIsWord && firstIsWord
+    }
+
+    /** 已积累的文本是否以连字符结尾（断词续行的标志） */
+    private fun endsWithHyphen(a: StringBuilder): Boolean {
+        if (a.isEmpty()) return false
+        val c = a[a.length - 1]
+        return c == '-' || c == '\u2010' || c == '\u2011'
+    }
+
+    /** 新行是否以字母开头（断词续行只会接字母，不会接数字/符号） */
+    private fun startsWithLetter(t: String): Boolean {
+        if (t.isEmpty()) return false
+        val c = t[0]
+        return c.isLetter() && c.code < 0x2E80
     }
 }

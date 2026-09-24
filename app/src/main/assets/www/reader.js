@@ -460,6 +460,89 @@
     }
 
     /**
+     * 把结构化块渲染成 DOM。
+     *
+     * ══ 为什么要分块（v0.1.6）══
+     *
+     * 纯文本流无法表达「这是标题 / 这是段落 / 这是公式」，
+     * 所以整篇看起来是一团字。分块之后每类元素有自己的
+     * 标签与样式，层次才立得起来。
+     *
+     * ⚠️ 一律用 `document.createElement` + `textContent`，
+     *    **绝不**用 innerHTML 拼字符串。
+     *    正文来自 PDF，可能含 `<` `>` `&` —— 拼字符串会破坏
+     *    页面结构（甚至注入）。这是本项目一贯的硬约束。
+     *
+     * ⚠️ 段落内的换行用 CSS `white-space: pre-wrap` 处理，
+     *    不在这里手工插 <br>。理由：pre-wrap 能正确保留
+     *    连续空格与制表符（公式对齐要用），手工插 <br> 会丢。
+     *
+     * ⚠️ `page` 记在 `data-page` 上：将来做「跳到原页」要用，
+     *    现在只存不用（不加可见 UI，避免引入没做完的功能）。
+     *
+     * @param {Array} blocks [{kind,text,level,page}]
+     */
+    function renderBlocks(blocks) {
+        var frag = document.createDocumentFragment();
+
+        for (var i = 0; i < blocks.length; i++) {
+            var b = blocks[i];
+            if (!b || !b.text) continue;
+
+            var kind = b.kind || 'paragraph';
+            var el;
+
+            if (kind === 'heading') {
+                /*
+                  ⚠️ 标题层级只映射到 h2 / h3，**不用 h1** ——
+                     详情页/页面本身已有 h1 语义（应用标题），
+                     正文里再出 h1 会破坏文档大纲。
+                     超过 2 级的也压到 h3（视觉上三档够了，
+                     再细分在手机上分不出来）。
+                */
+                var lv = b.level >= 3 ? 3 : (b.level >= 2 ? 3 : 2);
+                el = document.createElement('h' + lv);
+                el.className = 'reader-heading';
+
+            } else if (kind === 'formula') {
+                /*
+                  ⚠️ 公式块用等宽字体 + 独立背景。
+                     虽然不是真正的 LaTeX（那需要数学 OCR），
+                     但「单独成块 + 等宽」已经能让用户把它
+                     与正文区分开，不再混在一句话里。
+
+                     ⚠️ 不加 `overflow-x: auto` 之外的交互：
+                        本次不做公式识别，所以它仍是文本。
+                */
+                el = document.createElement('div');
+                el.className = 'reader-formula';
+
+            } else if (kind === 'figure') {
+                /*
+                  ⚠️ 目前**不会**产出 figure（抽取 PDF 图片是独立一项）。
+                     但这里先把渲染路径写好 —— 原生侧将来只要开始
+                     产出 figure，前端立刻就能正确显示，不用再改这里。
+                */
+                el = document.createElement('div');
+                el.className = 'reader-figure';
+                el.textContent = b.text || '';
+
+            } else {
+                el = document.createElement('p');
+                el.className = 'reader-para';
+            }
+
+            if (kind !== 'figure') {
+                el.textContent = b.text;
+            }
+            if (b.page) el.setAttribute('data-page', String(b.page));
+            frag.appendChild(el);
+        }
+
+        contentEl.appendChild(frag);
+    }
+
+    /**
      * 原生推来正文文本。
      *
      * ⚠️ 只接收**当前打开的那篇** —— 用户可能很快点开另一篇，
@@ -470,7 +553,7 @@
      * @param {Array|null}  outline PDF 自带大纲 [{level,title,page}]；没有则为 null
      * @param {Object|null} meta    行排版元数据 {fonts:[名], lines:[[字体下标,字号x10,页]]}
      */
-    function setText(id, text, outline, meta) {
+    function setText(id, text, outline, meta, blocks) {
         if (!currentDoc || currentDoc.id !== id) {
             trace('reader:text-stale', 'ignored ' + id);
             return;
@@ -486,11 +569,38 @@
         }
 
         /*
-          ⚠️ 用 textContent + CSS pre-wrap，不用 innerHTML。
-             正文是从 PDF 提取的任意文本，里面可能有 < > & 之类字符；
-             用 innerHTML 会破坏页面结构（甚至注入）。
+          ══ 渲染：优先用结构化块（v0.1.6）══
+
+          ⚠️ 为什么必须分块渲染（用户 2026-09-24 的反馈）：
+             「阅读内容仍然无法阅读 …… 所有文本也挤在了一起，
+              总之非常难以辨认」。
+
+             纯文本 + pre-wrap 的问题是**结构信息为零** ——
+             标题、段落、公式在视觉上完全一样，
+             于是整篇看起来是一大团字。而 PDF 里它们本来是
+             可以区分的（字号、粗细、间距）。
+
+             所以原生侧现在产出 blocks（heading / paragraph /
+             formula / figure），前端按 kind 给不同标签与样式：
+                heading   → <h2>/<h3>，字号更大、有上间距
+                paragraph → <p>，段距 + 首行缩进
+                formula   → <div class="reader-formula">，等宽 + 底纹
+                figure    → <div class="reader-figure">（暂无产出）
+
+          ⚠️ 没有 blocks 时**退回纯文本**（老数据 / 提取层未升级）。
+            不能因为拿不到 blocks 就白屏 —— 那比排版差严重得多。
         */
-        contentEl.textContent = text;
+        if (blocks && blocks.length) {
+            renderBlocks(blocks);
+        } else {
+            /*
+              ⚠️ 用 textContent + CSS pre-wrap，不用 innerHTML。
+                 正文是从 PDF 提取的任意文本，里面可能有 < > & 之类字符；
+                 用 innerHTML 会破坏页面结构（甚至注入）。
+            */
+            contentEl.textContent = text;
+        }
+
         if (bodyEl) {
             bodyEl.scrollTop = 0;
         }
