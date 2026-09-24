@@ -214,6 +214,16 @@
     var rangeAnchor = null;
 
     /**
+     * 「清空」悬浮按钮（FAB）。
+     *
+     * ⚠️ 它跟着**编辑模式**显示/隐藏（用户 2026-09-25：
+     *    「清除用悬浮按钮，跟着唤醒菜单一起唤醒和隐藏」）。
+     *    开关统一在 [syncBottomBar] 里处理 —— 不要在多处各写一遍，
+     *    那个 bug 犯过（底栏与浮层状态不同步）。
+     */
+    var clearFabEl = null;
+
+    /**
      * 目录条目：[{ level, title, line }]
      * line 是它在**原始提取文本**里的行号，跳转时据此定位。
      */
@@ -1187,22 +1197,26 @@
         }
 
         /*
-          ⚠️ 第五项：清空（用户 2026-09-25 要求）。
-             用户原话：「当自动识别的结果一团乱麻的时候，一个个改太难了，
-                       直接给一个清空选项，确认表单确认之后该性质的所有框
-                       都直接清除」
+          ⚠️ 「清空」**不在这里**（用户 2026-09-25 修正）。
 
-             ⚠️ 它是**动作**不是模式（与那四个开关性质不同），
-                所以不参与 annotateMode、也不会有"按下态"。
-                放在最右边，与四个模式视觉上拉开。
+             用户原话：「清除用悬浮按钮，跟着唤醒菜单一起唤醒和隐藏」
+
+             原来把它当底栏第五项，问题是：
+               · 底栏四项是一个**互斥的开关组**（模式），
+                 而清空是**一次性动作** —— 混在一起语义不齐；
+               · 底栏位置会随菜单一起滑动，用户想清空得先唤出菜单，
+                 但他往往正是在翻看内容时发现"一团乱麻"；
+               · 悬浮按钮可以跟着菜单同时出现/隐藏，
+                 既不抢模式的位置，又随时够得着。
+
+             所以改成 FAB，见下面的 mountClearFab。
         */
-        editBarEl.appendChild(makeClearTab());
 
         annoTipEl = document.createElement('div');
         annoTipEl.className = 'anno-tip';
 
         /*
-          ⚠️ 挂在底部选项栏（#reader-bottom）**内部**，不是挂 root。
+          ⚠️ 提示条挂在底部选项栏（#reader-bottom）**内部**，不是挂 root。
              挂 root 的话它不会跟着选项栏的高度/安全区走，
              实测会与选项栏重叠。
         */
@@ -1213,7 +1227,39 @@
         }
         root.appendChild(annoTipEl);
 
+        mountClearFab();
         syncEditBar();
+    }
+
+    /**
+     * 建「清空」悬浮按钮（FAB）。
+     *
+     * ⚠️ 与编辑模式同生共死 —— 进出编辑模式时一起显示/隐藏
+     *    （用户要求：「跟着唤醒菜单一起唤醒和隐藏」）。
+     *    具体开关在 syncBottomBar 里一起处理，避免两处状态不同步。
+     *
+     * ⚠️ 它**只在编辑模式**出现。阅读视图里不需要它
+     *    （那里没有框可清）。
+     */
+    function mountClearFab() {
+        if (clearFabEl || !root) return;
+
+        clearFabEl = document.createElement('button');
+        clearFabEl.className = 'anno-fab';
+        clearFabEl.type = 'button';
+        clearFabEl.hidden = true;
+        clearFabEl.setAttribute('aria-label', t('reader.clear'));
+
+        var ui = global.ScholariusUI;
+        if (ui && ui.icon) {
+            clearFabEl.innerHTML = ui.icon('annoClear');
+        }
+
+        clearFabEl.addEventListener('click', function () {
+            startClearFlow();
+        });
+
+        root.appendChild(clearFabEl);
     }
 
     /**
@@ -1298,87 +1344,88 @@
     }
 
     /**
-     * 造「清空」按钮（底部选项栏第五项）。
+     * 执行「清空」流程（FAB 点击后走这里）。
      *
-     * ══ ⚠️ 为什么必须有（用户 2026-09-25）══
+     * ══ ⚠️ 为什么必须有这功能（用户 2026-09-25）══
      *
      * 原生自动识别在真论文上错得很离谱：
      *   · ResNet      107 / 1110 块被判成 heading
      *   · Transformer 几乎**整篇**都是 heading
-     * 一块一块改在这种量级下是不可能完成的。
-     * 所以需要一个"整体推翻重来"的出口。
+     * 一块一块改在这种量级下不可能完成 —— 需要"整体推翻重来"的出口。
      *
      * ⚠️ 清空范围 = **当前选中的那一类**（用户：「该性质的所有框」）。
-     *    没选任何类型时问"清空全部"——
-     *    那是最彻底的"一团乱麻"场景。
+     *    没选任何类型时问"清空全部"—— 那是最彻底的"一团乱麻"场景。
      *
-     * ⚠️ 必须走确认表单，且要**说清影响几个框**：
-     *    用户点之前得知道代价。清空是破坏性的、且没有撤销。
+     * ⚠️⚠️ 判据必须是 [countTextMarks]（它内部用 effectiveTypeAt），
+     *    **不能**只数 textMarks。这里踩过用户报的 bug：
+     *      「点击清除提示没有可以删除的，但框都实实在在地在那里」
+     *    因为新导入的论文 textMarks 是空的，而屏幕上有 15 个
+     *    原生判的 `章节标题` 框。**用户看到的是框，框就是识别结果。**
+     *
+     * ⚠️ 必须走确认表单，且要**说清影响几个框** ——
+     *    用户点之前得知道代价。清空没有撤销。
      */
-    function makeClearTab() {
-        var tab = document.createElement('button');
-        tab.className = 'reader-action reader-edit-tab reader-clear-tab';
-        tab.type = 'button';
-        tab.setAttribute('data-edit-mode', 'clear');
+    function startClearFlow() {
+        /*
+          ══ ⚠️⚠️ 两个命名空间不能混！══
+
+          这是用户报的第二个 bug 的真因：
+            「点击清除提示没有可以删除的，但框都实实在在地在那里」
+
+         我原来写 `var scope = annotateMode`，但：
+
+            · `annotateMode` 是**编辑栏那四个选项**：text/formula/table/figure
+            · 而清空要比对的是**文本类型**：title/author/abstract/
+              body/heading/footnote/reference/keyword
+
+          两者**毫无交集**！所以 scope='text' 时，
+          `countTextMarks('text')` 去找"有效类型是 text 的块"——
+          一个都没有（没有任何块的类型叫 text），于是提示"没有可清空的"。
+
+          而屏幕上明明有 15 个 `章节标题` 框。
+
+          ⚠️ 正确做法：清空**默认作用于全部文本类型**（scope=null）。
+             用户「一团乱麻」时想清的就是"所有判错的东西"，
+             而不是某一个他还没指定的类型。
+
+             将来若要"只清某一类"，入口应该在**类型选择弹层**里
+             （那里才知道是 heading 还是 abstract），不是在底栏。
+        */
+        var scope = null;
+
+        var n = countTextMarks(scope);
+        var what = t('reader.clearAllKinds');
+
+        if (!n) {
+            // 真的没有可清的 —— 直接告知，不弹确认表单让用户白点一次
+            showAnnoTip('reader.clearNothing');
+            return;
+        }
 
         var ui = global.ScholariusUI;
-        var iconWrap = document.createElement('span');
-        iconWrap.className = 'reader-action-icon';
-        if (ui && ui.icon) {
-            /*
-              ⚠️ 清空**不用填充态** —— 它不是"选中某个模式"，
-                 而是一次性动作。给两只图标反而暗示它能选中。
-                 （它也不会拿到 aria-pressed=true，见 syncEditBar。）
-            */
-            iconWrap.innerHTML = ui.icon('annoClear');
+        if (!ui || typeof ui.confirmSheet !== 'function') {
+            // 预览环境没有确认表单：直接执行，方便本地验证
+            clearTextMarksByType(scope);
+            return;
         }
-        tab.appendChild(iconWrap);
 
-        var label = document.createElement('span');
-        label.className = 'reader-action-label';
-        label.textContent = t('reader.clear');
-        tab.appendChild(label);
-
-        tab.addEventListener('click', function () {
-            var scope = annotateMode;      // null = 全部
-            var n = countTextMarks(scope);
-            var what = scope
-                ? t(TYPE_LABEL_KEY[scope] || scope)
-                : t('reader.clearAllKinds');
-
-            if (!n) {
-                // 没有可清的 —— 直接告知，不弹确认表单让用户白点一次
-                showAnnoTip('reader.clearNothing');
-                return;
-            }
-
-            var ui2 = global.ScholariusUI;
-            if (!ui2 || typeof ui2.confirmSheet !== 'function') {
-                // 预览环境没有确认表单：直接执行，方便本地验证
+        /*
+          ⚠️ 用项目既有的 confirmSheet（不是自己造弹层）——
+             样式与"删除文献"等破坏性操作保持一致。
+        */
+        ui.confirmSheet({
+            title: t('reader.clearConfirmTitle'),
+            message: t('reader.clearConfirmBody')
+                .replace('{what}', what)
+                .replace('{n}', String(n)),
+            confirmLabel: t('action.clear'),
+            cancelLabel: t('action.cancel'),
+            danger: true,
+            onConfirm: function () {
                 clearTextMarksByType(scope);
-                return;
+                showAnnoTip('reader.clearDone');
             }
-
-            /*
-              ⚠️ 用项目既有的 confirmSheet（不是自己造弹层）——
-                 样式与"删除文献"等破坏性操作保持一致。
-            */
-            ui2.confirmSheet({
-                title: t('reader.clearConfirmTitle'),
-                message: t('reader.clearConfirmBody')
-                    .replace('{what}', what)
-                    .replace('{n}', String(n)),
-                confirmLabel: t('action.clear'),
-                cancelLabel: t('action.cancel'),
-                danger: true,
-                onConfirm: function () {
-                    clearTextMarksByType(scope);
-                    showAnnoTip('reader.clearDone');
-                }
-            });
         });
-
-        return tab;
     }
 
     /**
@@ -1467,13 +1514,6 @@
         for (var i = 0; i < tabs.length; i++) {
             var mode = tabs[i].getAttribute('data-edit-mode');
             /*
-              ⚠️ 「清空」是**动作**不是模式 —— 它永远不该有按下态。
-                 给它 aria-pressed 会让它看起来像被选中了，
-                 而它其实是一次性操作，点完就该回到原样。
-            */
-            if (mode === 'clear') continue;
-
-            /*
               ⚠️ annotateMode 可能是 null（没选任何选项）——
                  那时所有 tab 都不选中。用严格比较就够了。
             */
@@ -1521,6 +1561,16 @@
         var editbar = bottomEl.querySelector('.reader-editbar');
         if (editbar) {
             editbar.hidden = !annotating;
+        }
+
+        /*
+          ⚠️ 「清空」FAB 与编辑模式**同生共死**
+             （用户：「跟着唤醒菜单一起唤醒和隐藏」）。
+             统一在这里开关，不要在别的函数里再改一次 ——
+             两处状态不同步会让按钮该出现时不出现。
+        */
+        if (clearFabEl) {
+            clearFabEl.hidden = !annotating;
         }
 
         if (root) {
@@ -1725,12 +1775,12 @@
         el.appendChild(tag);
 
         /*
-          ⚠️ 样式统一走 [applyBlockStyle]，不要在这里再写一套。
-             之前这里用 textTypeOf() 单独判类型（不读 level），
-             与 refreshTextBlockStyles 是两套逻辑 ——
-             结果刚挂上的块显示不出层级。抽成一个函数就对了。
+          ⚠️ 样式统一走 [applyBlockStyle] + [effectiveMarkAt]，
+             不要在这里再算一套。
+             之前这里用 nativeMark、refreshTextBlockStyles 用 markAtLine，
+             两套步调不一致 —— 结果是"清空后重进又变回标题"。
         */
-        applyBlockStyle(el, markAtLine(block.line != null ? block.line : -1) || nativeMark(block));
+        applyBlockStyle(el, effectiveMarkAt(block.line != null ? block.line : -1));
 
         /*
           ⚠️ 点一下 = 打开类型选择（不是直接删）。
@@ -2256,20 +2306,38 @@
      *            直接给一个清空选项，确认表单确认之后该性质的所有框
      *            都直接清除」
      *
-     * ⚠️ 场景真实且常见：ResNet 首页被原生判出 107 个 heading、
-     *    Transformer 几乎整篇都是 heading。这种量级下逐块改
-     *    不可能完成 —— 必须先整体清掉再重标。
+     * ══ ⚠️⚠️ 关键：必须作用于**有效类型**，不能只看 textMarks ══
      *
-     * ⚠️ 这是**破坏性操作**，必须走确认表单（confirmSheet），
-     *    并且要在确认文案里说清**会影响多少个框** ——
-     *    用户点之前得知道代价。
+     * 这里踩过一个很典型的坑（用户报的）：
+     *   「点击清除提示没有可以删除的，但框都实实在在地在那里」
+     *
+     * 根因是有**两层**类型来源：
+     *   ① 原生自动识别（block.kind）→ 用户**看到**的那些框
+     *   ② 用户标注（textMarks）      → 用户**改过**的
+     * 最初的实现只数 ②。一篇刚导入、还没标过的论文 ② 是空的，
+     * 于是提示"没有可清空的标注" —— 而屏幕上明明写着 15 个
+     * `章节标题` 框（来自 ①）。**用户看到的是框，框就是识别结果本身。**
+     *
+     * 所以清空要把 ① 也算进来，做法是：
+     *   把命中类型的块**显式标成"正文"**，用一条用户标注去**覆盖**
+     *   原生的判断。这样语义上也说得通 —— "我不同意你判的，
+     *   我按我的来"，而且它可保存、可撤销（再改回别的类型即可）。
+     *
+     * ⚠️ 但不能真去改 `block.kind`：那是提取层的产物，
+     *    重进页面就重新算一遍，改动留不下来。
      *
      * @param {String} type 要清空的类型；null 表示清空**全部**类型
-     * @return {Number} 被清掉了几条
+     * @return {Number} 被清掉了几块
      */
     function clearTextMarksByType(type) {
+        var blocks = lastBlocks || [];
         var kept = [];
         var removed = 0;
+
+        /*
+          ⚠️ 第 1 步：丢掉命中类型的**用户标注**。
+             清空"章节标题"时，用户之前标的 heading 也要一起没。
+        */
         for (var i = 0; i < textMarks.length; i++) {
             var m = textMarks[i];
             if (!type || m.type === type) {
@@ -2278,20 +2346,102 @@
             }
             kept.push(m);
         }
+
+        /*
+          ⚠️ 第 2 步：把**原生判成该类型**、且用户没另行标注过的块，
+             显式标成"正文"（覆盖原生判断）。
+             这一步才是用户真正想要的 —— 他看到的那 15 个框。
+        */
+        for (var j = 0; j < blocks.length; j++) {
+            var b = blocks[j];
+            if (!b || !b.text || b.line == null) continue;
+
+            var eff = effectiveTypeAt(b.line, b);
+            if (type && eff !== type) continue;
+
+            /*
+              ⚠️ 已经是 body 的块**不用**再标一条 —— 没有意义，
+                 还白占存储。只有"原生判错了"的才需要覆盖。
+            */
+            if (eff === 'body') continue;
+
+            kept.push({
+                from: b.line,
+                to: b.line + b.text.split('\n').length - 1,
+                type: 'body',
+                level: 0
+            });
+            removed++;
+        }
+
         if (removed) {
             textMarks = kept;
             annotateDirty = true;
             refreshTextBlockStyles();
         }
-        trace('reader:annotate', 'clear by type ' + (type || '(all)') + ' removed=' + removed);
+        trace('reader:annotate', 'clear by type ' + (type || '(all)') + ' affected=' + removed);
         return removed;
     }
 
-    /** 数一下某类型当前有多少条（给确认文案用） */
+    /**
+     * 某一行**当前生效**的类型（用户标注优先，否则用原生判断）。
+     *
+     * ⚠️ 这是"清空"与"高亮"共用的判据 —— 两处必须完全一致，
+     *    否则会出现"高亮说它是章节标题、清空却说不关我事"的矛盾。
+     *    实测踩过：清空只数 textMarks，屏幕上却有 15 个原生判的标题框。
+     */
+    function effectiveTypeAt(line, block) {
+        var m = markAtLine(line);
+        if (m) return m.type;
+        var b = block || blockAtLine(line);
+        return b ? nativeMark(b).type : 'body';
+    }
+
+    /** 按行号找回那个块（lastBlocks 里查） */
+    function blockAtLine(line) {
+        var blocks = lastBlocks || [];
+        for (var i = 0; i < blocks.length; i++) {
+            if (blocks[i] && blocks[i].line === line) return blocks[i];
+        }
+        return null;
+    }
+
+    /**
+     * 数一下清空**实际会影响多少块**（给确认文案用）。
+     *
+     * ⚠️⚠️ 不能只数"有效类型等于 type 的块" —— 那样会把
+     *    **本来就该是正文**的块也算进去。
+     *
+     *    实测：ResNet 全篇 1110 块里只有 107 个是原生判的 heading，
+     *    其余 1003 个本来就是 body。若照单全收会显示
+     *    「将清除 1110 个区域」，而实际只动 107 个 —— 数字夸大十倍，
+     *    用户会被吓到，而且这是**假信息**。
+     *
+     * ⚠️ 判据必须与 [clearTextMarksByType] 完全一致：
+     *    只有"消除后**类型会变**"的块才算。
+     *      · 用户标过的、命中 scope    → 会变（标注被删）
+     *      · 原生判非 body、命中 scope → 会变（会被显式标成 body）
+     *      · 本来就是 body 且没标注    → 不变，不计
+     */
     function countTextMarks(type) {
+        var blocks = lastBlocks || [];
         var n = 0;
-        for (var i = 0; i < textMarks.length; i++) {
-            if (!type || textMarks[i].type === type) n++;
+        for (var i = 0; i < blocks.length; i++) {
+            var b = blocks[i];
+            if (!b || !b.text || b.line == null) continue;
+
+            var mark = markAtLine(b.line);
+            if (mark) {
+                // 用户标过的：命中 scope 就会被删掉
+                if (!type || mark.type === type) n++;
+                continue;
+            }
+
+            // 没标过的：只有原生判成非 body 才需要覆盖
+            var native = nativeMark(b).type;
+            if (native === 'body') continue;
+            if (type && native !== type) continue;
+            n++;
         }
         return n;
     }
@@ -2315,9 +2465,30 @@
                 var line = parseInt(el.getAttribute('data-block-line'), 10);
                 if (isNaN(line) || line < 0) continue;
 
-                applyBlockStyle(el, markAtLine(line));
+                /*
+                  ⚠️ 必须用 [effectiveTypeAt]（标注优先、否则原生）——
+                     不能只传 markAtLine 然后让 applyBlockStyle 默认成 body。
+                     那样会让"清空"后的块全部看起来是正文，
+                     而重进页面（走 makeTextBlockEl）又变回原生判的标题。
+                     两条路径必须同源，否则症状是"改了又变回去"。
+                */
+                applyBlockStyle(el, effectiveMarkAt(line));
             }
         }
+    }
+
+    /**
+     * 某一行**当前生效**的那条标注（合成后的）。
+     *
+     * ⚠️ 与 [effectiveTypeAt] 的区别：这个返回完整的 mark 对象
+     *    （带 level），供样式使用；effectiveTypeAt 只要类型字符串。
+     *    两个都要有 —— 硬合成一个会让调用处到处拆字段。
+     */
+    function effectiveMarkAt(line) {
+        var m = markAtLine(line);
+        if (m) return m;
+        var b = blockAtLine(line);
+        return b ? nativeMark(b) : { type: 'body', level: 0 };
     }
 
     /**

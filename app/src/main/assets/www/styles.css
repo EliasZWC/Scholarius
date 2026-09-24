@@ -2557,16 +2557,81 @@ body {
         留着死样式会让后来的人以为还有这个控件。
 */
 /*
-  ⚠️ 底栏的「清空」项。
+  ⚠️ 「清空」现在是**悬浮按钮**（FAB），不再是底栏第五项
+     （用户 2026-09-25：「清除用悬浮按钮，跟着唤醒菜单一起唤醒和隐藏」）。
 
-     它是**动作**不是模式，所以：
-       · 不做按下态（没有 aria-pressed=true）
-       · 用 --danger 色，与破坏性语义一致（红 = 小心）
-     位置在最右，与四个模式拉开距离 —— 避免误触。
+     为什么改：
+       · 底栏四项是一个**互斥开关组**（模式），清空是**一次性动作**，
+         混在一起语义不齐；
+       · 底栏会随菜单一起滑走，用户想清空得先唤出菜单，
+         而他往往正是在翻看内容时发现"一团乱麻"；
+       · FAB 与菜单同生共死，既不抢模式的位置，又随时够得着。
+
+     ⚠️ 位置贴**左下**，不是右下 ——
+        右下角已被"详情"之类的高频操作占着，
+        且清空是破坏性操作，放在不易误触的位置更合适。
+
+     ⚠️ 它跟着菜单出现/隐藏，所以位移与 .reader-bottom 的
+        transition 用**同一条曲线**，否则一个先到一个后到，看着别扭。
+
+     ⚠️ 绝不能用阴影（用户已明确否定阴影多次）——
+        用实心圆 + --danger 色表达"这是破坏性操作"。
 */
-.reader-clear-tab {
-    color: var(--danger);
-    margin-left: auto;
+.anno-fab {
+    position: absolute;
+    left: calc(16px + var(--safe-left));
+    /* 底栏高 64 + 安全区，再上移 12px 留出呼吸空间 */
+    bottom: calc(64px + var(--safe-bottom) + 12px);
+    z-index: 3;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--danger);
+    color: #FFFFFF;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    /*
+      ⚠️ 与底栏同一条曲线（220ms cubic-bezier(0.2,0,0,1)），
+         菜单收起时一起滑走，不会一个先到一个后到。
+    */
+    transform: translateY(0);
+    opacity: 1;
+    transition: transform 220ms cubic-bezier(0.2, 0, 0, 1), opacity 220ms ease;
+}
+
+.anno-fab svg {
+    width: 24px;
+    height: 24px;
+    fill: currentColor;
+    display: block;
+}
+
+/*
+  ⚠️ 菜单收起时跟着往下滑走 + 淡出 ——
+     与底栏 translateY(100%) 同一个方向，视觉上像"一起收起来"。
+
+  ⚠️ `[hidden]` 必须自己兜底：上面的 display:flex 会盖掉
+     UA 的 `[hidden] { display: none }`（这个坑项目里犯过两次）。
+     见 tools/check_hidden_display.py。
+*/
+.anno-fab[hidden] {
+    display: none;
+}
+
+.reader:not(.is-menu-open) .anno-fab {
+    transform: translateY(24px);
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* 按下只降透明度，与 .nav-item:active 一致（不做缩放/阴影） */
+.anno-fab:active {
+    opacity: 0.6;
 }
 
 
