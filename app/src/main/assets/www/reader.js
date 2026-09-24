@@ -197,6 +197,23 @@
     var annotateMode = 'text';
 
     /**
+     * 区间选择的**起点**（null = 没在选区间）。`{line, text}`
+     *
+     * ⚠️ 为什么需要这个状态（实测逼出来的）：
+     *    原生的 heading 判据把 ResNet 的**摘要切成 14 个交错的
+     *    heading/paragraph 块**（块 7~20）。逐块点的话，
+     *    用户要点 14 次、每次只覆盖一行，"把整段摘要标成摘要"
+     *    这件事根本做不到。
+     *
+     *    于是：点第一下 = 设起点并选类型；点第二下 = 设终点，
+     *    中间所有块一起归入该类型。
+     *
+     * ⚠️ 每次落笔 / 退出编辑模式都要清掉 —— 否则上一次的起点
+     *    会悄悄影响下一次点选（用户完全看不出来为什么多标了一片）。
+     */
+    var rangeAnchor = null;
+
+    /**
      * 目录条目：[{ level, title, line }]
      * line 是它在**原始提取文本**里的行号，跳转时据此定位。
      */
@@ -808,6 +825,15 @@
         'heading', 'footnote', 'reference', 'keyword'
     ];
 
+    /**
+     * 章节标题的最大层级。
+     *
+     * ⚠️ 定 3 是因为正文大纲普遍到三级（`3.1` / `3.1.1`）；
+     *    再深在手机屏上已经看不出缩进差别，反而让左侧竖线糊成一片。
+     *    `AnnotationStore.load()` 会把超范围的 level 夹回这个上限。
+     */
+    var MAX_HEADING_LEVEL = 3;
+
     /** 各类型对应的 i18n key（菜单文案） */
     var TYPE_LABEL_KEY = {
         text: 'reader.typeText',
@@ -1032,6 +1058,12 @@
         }
 
         annotating = next;
+        /*
+          ⚠️ 进出编辑模式都清掉区间起点（见 rangeAnchor 的说明）。
+             不清的话，上次退出前设过起点、这次进来点第一下
+             就会莫名标记一大片。
+        */
+        rangeAnchor = null;
 
         /*
           ⚠️ 进/出编辑模式时底部选项栏要**换内容**
@@ -1043,19 +1075,31 @@
         }
         syncAnnotate();
         syncBottomBar();
-        syncEditBar();
 
         /*
-          ⚠️ 进编辑模式时**强制回到「文本」模式**。
-             上次退出时可能停在「图片」，直接留着会让用户
-             以为一进来就是画框模式 —— 而默认意图通常是改文字归类。
+          ⚠️ 进编辑模式时**什么选项都不选**（annotateMode = null）。
+
+             理由（用户 2026-09-24）：
+             「编辑模式哪个选项都没点，就不需要画框啊，比如滚动页面啥的」
+
+             这是最自然的状态：用户先进编辑模式**看看**，
+             想好要标什么再点选项。此时页面必须能正常滚动 ——
+             否则用户想先翻一遍内容都做不到。
+
+             ⚠️ 不要"顺手选中文本"当默认。那会让文字块铺满页面，
+                而用户还没表达任何意图 —— 视觉上很吵。
         */
         if (annotating) {
-            annotateMode = 'text';
-            syncEditBar();
-            mountAnnotateLayer();
+            annotateMode = null;
+            refreshAnnotateMode();
         } else {
             unmountAnnotateLayer();
+            /*
+              ⚠️ 退出编辑模式要把提示气泡收掉 ——
+                 否则它会残留几秒，而那时编辑选项栏已经换回
+                 「目录 / 设置」了，提示说的操作已经不存在。
+            */
+            hideAnnoTip();
         }
 
         trace('reader:annotate', annotating ? 'enter' : 'exit');
@@ -1069,6 +1113,18 @@
     var annoTipEl = null;
     /** 文本类型选择弹层的元素（打开时非空），便于统一清理 */
     var textPickerEls = [];
+    /** 提示气泡的自动关闭定时器 */
+    var annoTipTimer = null;
+
+    /**
+     * 提示气泡停留时长（毫秒）。
+     *
+     * ⚠️ 取 2600ms：够看完一句短提示（中文 12-16 字），
+     *    又不至于挡着页面太久。
+     *    项目里没有别的 toast 可以对齐，这个数是按中文阅读速度估的
+     *    （约 300 字/分钟 → 16 字约 3 秒，留一点余量）。
+     */
+    var ANNO_TIP_MS = 2600;
 
     /**
      * 建编辑选项栏 + 提示条（**懒建，只建一次**）。
@@ -1144,21 +1200,103 @@
         tab.appendChild(label);
 
         tab.addEventListener('click', function () {
-            if (annotateMode === mode) return;
-            annotateMode = mode;
             /*
-              ⚠️ 切到/切离「文本」模式时要重建浮层：
-                 矩形模式下浮层接手势（画框），
-                 文本模式下浮层必须**不接手势**（要让文字能被选中）。
-                 见 mountAnnotateLayer 的说明。
+              ══ ⚠️ 是**开关**，不是单选（用户 2026-09-24 要求）══
+
+                 用户原话：「就是点击这个选项，再点击就可以取消这个选项」
+
+                 所以再点已选中的那个要**取消**（回到"没选任何选项"），
+                 而不是像单选按钮那样点不动。
+
+              ⚠️ 取消后 `annotateMode = null`（不是回到 'text'）——
+                 因为「文本」也是一个**具体的选项**，
+                 取消应该是"什么选项都没选"，
+                 而不是"跳到文本模式"。这两者在界面上的表现不同：
+                   · annotateMode = 'text' → 文字块显示、可点
+                   · annotateMode = null   → 什么块都不显示、页面纯滚动
+                 用户说的「哪个选项都没点」就是后者。
             */
-            syncEditBar();
-            if (annotating) {
-                mountAnnotateLayer();
-            }
+            annotateMode = (annotateMode === mode) ? null : mode;
+
+            /*
+              ⚠️ 切模式要重建浮层：
+                 没选 / 选「文本」时浮层不接手势（页面照常滚动），
+                 三个矩形模式才接（touch-action: none）。
+                 见 mountAnnotateLayer 与 styles.css 的说明。
+            */
+            refreshAnnotateMode();
         });
 
         return tab;
+    }
+
+    /**
+     * 模式变化后刷新一切依赖它的东西。
+     *
+     * ⚠️ 抽成一个函数，是因为**三个地方**都要调：
+     *    点选项栏、进编辑模式、语言切换。
+     *    分散写会漏掉某一处（比如进编辑模式时忘了刷新提示语）。
+     */
+    function refreshAnnotateMode() {
+        if (annotating) {
+            /*
+              ⚠️ **进编辑模式时不要预设任何"画框"模式**，
+                 默认停在「文本」—— 用户要求：
+                 「编辑模式哪个选项都没点，就不需要画框啊，比如滚动页面啥的」
+
+                 「文本」模式不画框（浮层 pointer-events: none），
+                 所以进编辑模式后页面仍然能正常滚动。
+            */
+            mountAnnotateLayer();
+        }
+        syncEditBar();
+    }
+
+    /**
+     * 显示一条编辑提示，**几秒后自动消失**（用户 2026-09-24 要求）。
+     *
+     * ⚠️ 用户原话：「说明气泡也不要一直停留在页面内」
+     *
+     * 对 —— 常驻的提示条会一直挡着页面内容（它浮在页图下缘），
+     * 而用户看完一遍就不需要它了。所以做成 toast：
+     * 出现 → 停留几秒 → 淡出。
+     *
+     * ⚠️ 每次切模式/选项都**重新计时**（clearTimeout 再设），
+     *    否则连续切几个选项时，气泡会在最后一次切换后
+     *    立刻被前一次的定时器关掉。
+     *
+     * ⚠️ 用 CSS transition 淡出而不是直接 display:none ——
+     *    突然消失会让人以为是渲染出错。
+     */
+    function showAnnoTip(key) {
+        if (!annoTipEl) return;
+
+        annoTipEl.textContent = t(key);
+
+        /*
+          ⚠️ 加 is-visible 才显示（CSS 里 .anno-tip 默认 opacity: 0）。
+             用 opacity 而不是 display，是为了能做过渡动画。
+        */
+        annoTipEl.classList.add('is-visible');
+
+        if (annoTipTimer) {
+            global.clearTimeout(annoTipTimer);
+        }
+        annoTipTimer = global.setTimeout(function () {
+            annoTipEl.classList.remove('is-visible');
+            annoTipTimer = null;
+        }, ANNO_TIP_MS);
+    }
+
+    /** 立即收起提示气泡（退出编辑模式时用） */
+    function hideAnnoTip() {
+        if (annoTipTimer) {
+            global.clearTimeout(annoTipTimer);
+            annoTipTimer = null;
+        }
+        if (annoTipEl) {
+            annoTipEl.classList.remove('is-visible');
+        }
     }
 
     /**
@@ -1177,6 +1315,10 @@
         var tabs = editBarEl.querySelectorAll('.reader-edit-tab');
         for (var i = 0; i < tabs.length; i++) {
             var mode = tabs[i].getAttribute('data-edit-mode');
+            /*
+              ⚠️ annotateMode 可能是 null（没选任何选项）——
+                 那时所有 tab 都不选中。用严格比较就够了。
+            */
             tabs[i].setAttribute(
                 'aria-pressed',
                 mode === annotateMode ? 'true' : 'false'
@@ -1187,16 +1329,20 @@
             }
         }
 
-        if (annoTipEl) {
-            /*
-              ⚠️ 提示语随模式变 —— 两种模式的操作完全不同，
-                 提示必须说清当前该做什么。
-                 否则用户在「文本」模式下看到"拖拽框选"的提示会照着做，
-                 结果框出一堆没用的矩形。
-            */
-            annoTipEl.textContent = (annotateMode === 'text')
-                ? t('reader.annotateTextTip')
-                : t('reader.annotateTip');
+        /*
+          ⚠️ 提示语随状态变，并且**只显示几秒**（见 showAnnoTip）。
+
+             ⚠️ 只在**编辑模式**下弹提示 ——
+                语言切换也会调本函数，那时不该突然冒个气泡出来。
+        */
+        if (annotating) {
+            if (annotateMode === 'text') {
+                showAnnoTip('reader.annotateTextTip');
+            } else if (isDrawingMode()) {
+                showAnnoTip('reader.annotateTip');
+            } else {
+                showAnnoTip('reader.annotatePickTip');
+            }
         }
     }
 
@@ -1230,13 +1376,15 @@
      * ══ ⚠️ 两种模式，浮层职责完全不同 ══
      *
      * **矩形模式**（公式/表格/图片）：
-     *   浮层接手势（画框）。浮层必须与图片实际显示区域**严格重合**，
+     *   浮层接手势（画框，`touch-action: none`）。
+     *   浮层必须与图片实际显示区域**严格重合**，
      *   因为坐标是相对图片归一化的。
      *
-     * **文本模式**：
-     *   ⚠️ 浮层**不能接手势** —— 否则用户没法选中文字。
-     *   但浮层仍然要存在：它负责**承载已有的框**（让用户看得见
-     *   之前画过什么），只是 `pointer-events: none`。
+     * **文本模式**（默认）：
+     *   ⚠️ 浮层**不接手势**，页面照常滚动。
+     *   用户原话：「编辑模式哪个选项都没点，就不需要画框啊，
+     *   比如滚动页面啥的」—— 对，没选画框类选项时必须能滚。
+     *   浮层仍然存在，因为它要承载已有的框 + 可点的文字块。
      *
      * ══ ⚠️ 为什么矩形模式下不直接给 <img> 绑事件 ══
      *
@@ -1253,7 +1401,11 @@
     function mountAnnotateLayer() {
         unmountAnnotateLayer();
 
-        var isTextMode = (annotateMode === 'text');
+        /*
+          ⚠️ 「能不能画框」由**是否选了矩形类选项**决定，
+             不是"在不在编辑模式"。见 styles.css 里 .is-drawing 的说明。
+        */
+        var isDrawing = isDrawingMode();
 
         for (var i = 0; i < pdfPageEls.length; i++) {
             var slot = pdfPageEls[i];
@@ -1264,6 +1416,15 @@
             layer.className = 'anno-layer';
             layer.setAttribute('data-page', String(page));
 
+            /*
+              ⚠️ 只有画框模式才给 is-drawing —— 它同时控制
+                 pointer-events 与 touch-action（见 CSS）。
+                 不给的话页面能正常滚动，这正是默认该有的行为。
+            */
+            if (isDrawing) {
+                layer.classList.add('is-drawing');
+            }
+
             // 已有的矩形框先画出来（用户要继续改，得看得见现状）
             drawRegionsOn(layer, page);
 
@@ -1271,12 +1432,35 @@
             annotateLayers.push(layer);
             positionAnnotateLayer(layer);
 
-            if (isTextMode) {
-                mountTextBlocksOn(layer, page);
-            } else {
+            if (isDrawing) {
                 bindLayerDrawing(layer, page);
+            } else if (isTextMode()) {
+                // 文本模式：画可点的文字块
+                mountTextBlocksOn(layer, page);
             }
+            /*
+              ⚠️ 没选任何选项时不挂任何东西 ——
+                 用户要求「哪个选项都没点，就不需要画框」。
+                 浮层留着只是为了承载**已有的框**（看得见现状），
+                 它自己 pointer-events: none，页面照常滚动。
+            */
         }
+    }
+
+    /**
+     * 当前选的是不是「画矩形」那三个选项之一。
+     *
+     * ⚠️ `annotateMode` 为 **null**（没选任何选项）时返回 false ——
+     *    这是用户明确要求的默认状态：
+     *    「编辑模式哪个选项都没点，就不需要画框啊，比如滚动页面啥的」
+     */
+    function isDrawingMode() {
+        return REGION_TYPES.indexOf(annotateMode) >= 0;
+    }
+
+    /** 当前是不是「文本」选项（要显示可点的文字块） */
+    function isTextMode() {
+        return annotateMode === 'text';
     }
 
     /**
@@ -1308,14 +1492,44 @@
      */
     function mountTextBlocksOn(layer, page) {
         var blocks = lastBlocks || [];
+        var els = [];
         for (var i = 0; i < blocks.length; i++) {
             var b = blocks[i];
             if (!b || !b.text) continue;
             if (b.page !== page) continue;
             // 没有包围盒的块画不出来（原生取不到坐标时）
             if (!(b.x1 > b.x0) || !(b.y1 > b.y0)) continue;
+            els.push(b);
+        }
 
-            layer.appendChild(makeTextBlockEl(b, page));
+        /*
+          ══ ⚠️ 必须**从大到小**挂，小块才会在上面（实测逼出来的）══
+
+          同一段落会被切成两类块：
+             · 整段一个盒（跨多行，area 大）
+             · 每行一个盒（贴在段内，area 小）
+          两者的盒是**包含关系**（行盒落在段盒内部）。
+
+          DOM 里后挂的在上层，`elementFromPoint` 命中的是最上层。
+          若按原始顺序挂（段盒常常在后），段盒会盖住它内部的所有行盒 ——
+          实测 76 个块里 **30 个点不到**（命中率仅 60%），
+          症状是"点了没反应 / 点中的是别的行"。
+
+          按面积**降序**挂 → 大盒先入、小盒后入 → 小盒在上。
+          这样点小盒得小盒（精确到行），点大盒的空白处仍得大盒。
+
+          ⚠️ 这就是「元素存在、display 正常、却点不到」的又一例 ——
+             与项目里 z-index 覆盖那两次事故同一类。
+             判据永远是 `elementFromPoint`，不是"元素在不在"。
+        */
+        els.sort(function (a, b) {
+            var aa = (a.x1 - a.x0) * (a.y1 - a.y0);
+            var bb = (b.x1 - b.x0) * (b.y1 - b.y0);
+            return bb - aa;
+        });
+
+        for (var k = 0; k < els.length; k++) {
+            layer.appendChild(makeTextBlockEl(els[k], page));
         }
     }
 
@@ -1327,14 +1541,11 @@
     function makeTextBlockEl(block, page) {
         var el = document.createElement('div');
         el.className = 'anno-block';
-
         /*
           ⚠️ 已被用户标过的块要显示出来（否则用户不知道哪些改过了）。
-             类型从 textMarks 里查；查不到用原生判的 kind。
+             类型+层级都从 textMarks 里查；查不到用原生判的 kind。
         */
-        var ttype = textTypeOf(block);
-        el.className += ' anno-block-' + ttype;
-        el.setAttribute('data-text-type', ttype);
+        el.setAttribute('data-text-type', 'body');
         el.setAttribute('data-block-line', String(block.line == null ? -1 : block.line));
 
         el.style.left = (block.x0 * 100) + '%';
@@ -1344,8 +1555,15 @@
 
         var tag = document.createElement('span');
         tag.className = 'anno-block-tag';
-        tag.textContent = t(TYPE_LABEL_KEY[ttype] || ttype);
         el.appendChild(tag);
+
+        /*
+          ⚠️ 样式统一走 [applyBlockStyle]，不要在这里再写一套。
+             之前这里用 textTypeOf() 单独判类型（不读 level），
+             与 refreshTextBlockStyles 是两套逻辑 ——
+             结果刚挂上的块显示不出层级。抽成一个函数就对了。
+        */
+        applyBlockStyle(el, markAtLine(block.line != null ? block.line : -1) || nativeMark(block));
 
         /*
           ⚠️ 点一下 = 打开类型选择（不是直接删）。
@@ -1359,11 +1577,19 @@
         return el;
     }
 
-    /** 查一个块当前的文本类型（用户标过的优先，否则用原生判的） */
-    function textTypeOf(block) {
-        if (block.textType) return block.textType;
-        if (block.kind === 'heading') return 'heading';
-        return 'body';
+    /**
+     * 原生判断的`kind`包装成一个"伪标注"，让未标过的块也有初值。
+     *
+     * ⚠️ 只用 kind，**不借原生的 level** ——
+     *    实测原生 level 要么是 0（判不出）要么猜错，
+     *    借它会让未标过的块显示一个假的层级（如 `L2`），
+     *    用户以为自己标过。统一从 L1 起，用户想改再改。
+     */
+    function nativeMark(block) {
+        if (block.kind === 'heading') {
+            return { type: 'heading', level: 1 };
+        }
+        return { type: 'body', level: 0 };
     }
 
     /**
@@ -1385,6 +1611,24 @@
         title.textContent = t('reader.pickTextType');
         sheet.appendChild(title);
 
+        /*
+          ⚠️ 区间提示与「选到这里为止」按钮：
+             起点已设且当前块不同行时才出现。
+             它把「把整段摘要标成摘要」从 14 次点击降为 2 次。
+
+             ⚠️ 用 replace 填行号时必须**同时**替换 {a} 和 {b}，
+                漏掉一个会在界面上直接显示 `{b}` ——
+                check_i18n_keys 只查键对称，查不出占位符没替换。
+        */
+        if (canUseRange(block)) {
+            var hint = document.createElement('div');
+            hint.className = 'anno-rangehint';
+            hint.textContent = t('reader.rangeFrom')
+                .replace('{a}', String(rangeAnchor.line))
+                .replace('{b}', String(block.line));
+            sheet.appendChild(hint);
+        }
+
         var grid = document.createElement('div');
         grid.className = 'anno-typegrid';
 
@@ -1393,11 +1637,35 @@
         }
         sheet.appendChild(grid);
 
+        /*
+          「选到这里为止」：把当前块设为**起点**，让用户接着点终点。
+          ⚠️ 放在类型网格**下面**：它是附加动作，不是主流程，
+             放上面会抢掉八个类型的注意力。
+        */
+        if (!canUseRange(block)) {
+            var rangeBtn = document.createElement('button');
+            rangeBtn.className = 'btn anno-rangebtn';
+            rangeBtn.type = 'button';
+            rangeBtn.textContent = t('reader.startRange');
+            rangeBtn.addEventListener('click', function () {
+                startRangeFrom(block, page);
+            });
+            sheet.appendChild(rangeBtn);
+        }
+
         var cancel = document.createElement('button');
         cancel.className = 'btn';
         cancel.type = 'button';
         cancel.textContent = t('action.cancel');
-        cancel.addEventListener('click', closeTextTypePicker);
+        cancel.addEventListener('click', function () {
+            /*
+              ⚠️ 「取消」要**连区间起点一起清**。
+                 （而点背景只关弹层、保留起点 —— 见 backdrop 处说明）
+                 用户按取消 = 我这一次整个不要了。
+            */
+            rangeAnchor = null;
+            closeTextTypePicker();
+        });
 
         var actions = document.createElement('div');
         actions.className = 'form-actions';
@@ -1406,6 +1674,17 @@
 
         var backdrop = document.createElement('div');
         backdrop.className = 'anno-typebackdrop';
+        /*
+          ⚠️ 点背景**只关弹层，不清区间起点**。
+
+             这里踩过一次：最初写成 backdrop 也清 rangeAnchor，
+             结果「点起点 → 选区间 → 关弹层 → 点终点」的流程
+             到终点时起点已经没了，终点只标了自己一块 ——
+             区间功能等于没用（实测确认）。
+
+             用户关掉弹层多半是想**看清页面再决定终点**，
+             不是想放弃区间。真正要清的是「取消」按钮。
+        */
         backdrop.addEventListener('click', closeTextTypePicker);
 
         if (root) {
@@ -1431,7 +1710,156 @@
         btn.appendChild(label);
 
         btn.addEventListener('click', function () {
-            applyTextType(block, type);
+            /*
+              ⚠️ 「章节标题」多一步：先问**哪一级**，再落笔。
+
+                 用户要求「先分…各个一级大纲标题所表示的区域，
+                 然后每个一级章节区域可以再分」——
+                 "再分"就是靠这里的层级表达的。
+                 其余类型没有层级概念，点一下直接落笔（保持一步操作）。
+
+              ⚠️ 层级那一步同样要**带上区间**（rangeEndFor）——
+                 否则「区间 + 章节标题」组合会把区间吞掉，
+                 用户选了区间却只标中一块，而提示语还说标了一片。
+                 实测验过：漏传时 7~19 全是 body。
+            */
+            if (type === 'heading') {
+                openHeadingLevelPicker(block, page, rangeEndFor(block));
+                return;
+            }
+            applyTextType(block, type, 0, rangeEndFor(block));
+            closeTextTypePicker();
+        });
+
+        return btn;
+    }
+
+    /**
+     * 这次点选的**终点行号**（没有选起点时返回 null）。
+     *
+     * ⚠️ 见 [applyTextType] 里 RangeSpan 的说明 —— 摘要被原生切成
+     *    14 个交错块，必须能一次覆盖一整个区间。
+     *
+     * ⚠️ 终点**必须晚于起点**。用户先点下面、再点上面时，
+     *    要把两者对调而不是报错（否则得重新点一遍，很恼人）。
+     */
+    function rangeEndFor(block) {
+        if (!rangeAnchor || block.line == null) return null;
+        if (block.line === rangeAnchor.line) return null;   // 同一点两下 = 取消区间
+        if (block.line < rangeAnchor.line) {
+            // 反向选：把锚点改到上面那块，终点取原来的锚点
+            var lower = block.line;
+            var upper = rangeAnchor.line;
+            rangeAnchor = { line: lower, text: block.text };
+            return upper;
+        }
+        return block.line;
+    }
+
+    /**
+     * 区间选择的第一步：把某块设为**起点**，并打开类型选择。
+     *
+     * ⚠️ 为什么起点也要弹类型选择（而不是"选起点→选终点→再选类型"）：
+     *    用户点第一下时心里已经有目标类型了。让他先选类型、
+     *    再点终点确认，比"点两下再选类型"少一步。
+     */
+    function startRangeFrom(block, page) {
+        rangeAnchor = { line: block.line, text: block.text };
+        openTextTypePicker(null, block, page);
+    }
+
+    /**
+     * 区间是否可用（有起点，且当前块不与起点同行）。
+     */
+    function canUseRange(block) {
+        return !!(rangeAnchor && block.line != null && block.line !== rangeAnchor.line);
+    }
+
+    /**
+     * 第二步：选章节标题的层级（一级 / 二级 / 三级）。
+     *
+     * ⚠️ 复用同一个弹层外壳（`.anno-typesheet`），只是把内容换成层级 ——
+     *    不新造一个风格不同的弹层（用户明确要求样式通用：
+     *    「不能随便一个新场景就用新字体样式」）。
+     *    所以标题仍用 `.title-text`、按钮仍用 `.anno-typeopt`。
+     */
+    function openHeadingLevelPicker(block, page, toLine) {
+        closeTextTypePicker();
+
+        var sheet = document.createElement('div');
+        sheet.className = 'anno-typesheet';
+        sheet.setAttribute('role', 'dialog');
+
+        var title = document.createElement('div');
+        title.className = 'anno-typesheet-title title-text';
+        title.textContent = t('reader.pickHeadingLevel');
+        sheet.appendChild(title);
+
+        var grid = document.createElement('div');
+        grid.className = 'anno-typegrid';
+
+        for (var lv = 1; lv <= MAX_HEADING_LEVEL; lv++) {
+            grid.appendChild(makeHeadingLevelOption(lv, block, toLine));
+        }
+        sheet.appendChild(grid);
+
+        var cancel = document.createElement('button');
+        cancel.className = 'btn';
+        cancel.type = 'button';
+        cancel.textContent = t('action.cancel');
+        cancel.addEventListener('click', function () {
+            // 返回上一步而不是全关：用户多半是点错了
+            openTextTypePicker(null, block, page);
+        });
+
+        var actions = document.createElement('div');
+        actions.className = 'form-actions';
+        actions.appendChild(cancel);
+        sheet.appendChild(actions);
+
+        var backdrop = document.createElement('div');
+        backdrop.className = 'anno-typebackdrop';
+        /*
+          ⚠️ 同样**保留区间起点**（与类型弹层一致）。
+             两处行为不一致会让人不敢相信任何一处。
+        */
+        backdrop.addEventListener('click', closeTextTypePicker);
+
+        if (root) {
+            root.appendChild(backdrop);
+            root.appendChild(sheet);
+        }
+        textPickerEls = [backdrop, sheet];
+    }
+
+    /** 造层级选择里的一个选项 */
+    function makeHeadingLevelOption(lv, block, toLine) {
+        var btn = document.createElement('button');
+        btn.className = 'anno-typeopt anno-levelopt';
+        btn.type = 'button';
+        btn.setAttribute('data-level', String(lv));
+
+        /*
+          ⚠️ 用「L1/L2/L3」而不是再画一只图标。
+             层级是**数值关系**，文字比图标更直接；
+             而且 8 个类型各有图标时再来 3 只同族图标只会更乱。
+        */
+        var mark = document.createElement('span');
+        mark.className = 'anno-levelmark';
+        mark.textContent = 'L' + lv;
+        btn.appendChild(mark);
+
+        var label = document.createElement('span');
+        label.textContent = t('reader.headingLevel' + lv);
+        btn.appendChild(label);
+
+        btn.addEventListener('click', function () {
+            /*
+              ⚠️ toLine 必须**原样透传**。
+                 漏传的话「区间 + 章节标题」会把区间吞掉，
+                 用户选了区间却只标中一块（实测过）。
+            */
+            applyTextType(block, 'heading', lv, toLine);
             closeTextTypePicker();
         });
 
@@ -1448,9 +1876,35 @@
      * ⚠️ 同类型的旧标注要先**替换**，不能叠加 ——
      *    同一个块被标两次会留下两条记录，渲染时谁生效取决于顺序，
      *    那是不可预期的。
+     *
+     * @param {Number} lv 仅对 `heading` 有意义：大纲层级 1/2/3。
+     *
+     *     ══ ⚠️ 为什么必须由用户给层级（2026-09-24 实测）══
+     *     此前写死 `block.level || 1`，而 `block.level` 是**原生猜的**，
+     *     实测在这篇论文上要么是 0（判不出）要么猜错，导致：
+     *         · 用户标的所有标题都变成 level 1
+     *         · 阅读视图永远是 78 个**平坦** lv1 区域，层级立不起来
+     *         · 用户要求的「每个一级章节区域可以再分」**无法表达**
+     *     所以层级改成用户显式指定，不再从原生借。
      */
-    function applyTextType(block, type) {
-        var from = (block.line == null) ? null : block.line;
+    function applyTextType(block, type, lv, toLineOverride) {
+        /*
+          ══ ⚠️ 区间选择：起点是**锚点**，不是这次点的块 ══
+
+          这里踩过一次：最初写成 `from = block.line`（本次点的块 = 终点），
+          而 `to` 只往后延伸（`toLineOverride > to` 才生效），
+          于是「起点 7 → 终点 20」算出 from=20、to=19 —— 区间为空，
+          最后**只有终点那一块**被标注（实测：块 20 变 abstract，
+          7~19 全是 body）。界面上提示语却老老实实写着
+          "将把第 7 行到第 20 行一起标注" —— 提示和结果不一致。
+
+          正确：区间生效时 from 取锚点（较小那端），to 取终点。
+        */
+        var hasRange = (toLineOverride != null && rangeAnchor &&
+                        toLineOverride !== rangeAnchor.line);
+        var from = hasRange
+            ? Math.min(rangeAnchor.line, toLineOverride)
+            : ((block.line == null) ? null : block.line);
 
         /*
           ⚠️ 块没有行号时无法存（见 AnnotationStore.TextMark 的说明）。
@@ -1467,6 +1921,35 @@
         var n = block.text.split('\n').length;
         var to = from + n - 1;
 
+        /*
+          ══ ⚠️ 区间选择（RangeSpan，2026-09-24）══
+
+          为什么必须有：原生的 heading 判据在这篇论文上把**摘要切成
+          14 个交错的 heading/paragraph 块**（实测块 7~20）。
+          逐块标的话用户要点 14 次、且每次都只覆盖一行 ——
+          根本不可能把整段摘要标成"摘要"。
+
+          做法：用户先点**起点**，再点**终点**，中间全部归入同一类型。
+          起点存在 `rangeAnchor`，终点就是本次点的那一块。
+
+          ⚠️ 用**行号**而不是块号表达区间：
+             与 TextMark 的存储单位一致（都是全局行号），
+             存下来就是一条 mark，不需要新数据结构。
+        */
+        if (hasRange) {
+            to = Math.max(to, toLineOverride);
+        }
+
+        /*
+          ⚠️ 层级必须夹在 1..MAX_HEADING_LEVEL 内。
+             渲染侧的单行标记按 `border-left` 宽度区分层级，
+             层级过大没有对应样式（也不会报错，只是看不出差别）。
+        */
+        var level = 0;
+        if (type === 'heading') {
+            level = (lv > 0 && lv <= MAX_HEADING_LEVEL) ? lv : 1;
+        }
+
         // 先删掉与该区间重叠的旧标注
         var kept = [];
         for (var i = 0; i < textMarks.length; i++) {
@@ -1478,10 +1961,15 @@
             from: from,
             to: to,
             type: type,
-            level: type === 'heading' ? (block.level || 1) : 0
+            level: level
         });
         textMarks = kept;
         annotateDirty = true;
+        /*
+          ⚠️ 落笔后清掉区间起点 —— 一次区间只服务一次落笔。
+             不清的话下一次点选会静默地带上一片区间。
+        */
+        rangeAnchor = null;
 
         /*
           ⚠️ 改完立刻局部重画 —— 用户要看到"这块现在被标成摘要了"。
@@ -1489,7 +1977,8 @@
         */
         refreshTextBlockStyles();
 
-        trace('reader:annotate', 'text ' + type + ' @' + from + '-' + to);
+        trace('reader:annotate', 'text ' + type +
+            (type === 'heading' ? ' L' + level : '') + ' @' + from + '-' + to);
     }
 
     /** 关掉类型选择弹层 */
@@ -1511,22 +2000,84 @@
                 var line = parseInt(el.getAttribute('data-block-line'), 10);
                 if (isNaN(line) || line < 0) continue;
 
-                var ttype = typeAtLine(line);
-                el.className = 'anno-block anno-block-' + ttype;
-                el.setAttribute('data-text-type', ttype);
-                var tag = el.querySelector('.anno-block-tag');
-                if (tag) tag.textContent = t(TYPE_LABEL_KEY[ttype] || ttype);
+                applyBlockStyle(el, markAtLine(line));
             }
         }
     }
 
-    /** 查某一行属于哪个文本类型（用户标过优先） */
-    function typeAtLine(line) {
+    /**
+     * 把一个块的样式/标签按它当前的标注刷新。
+     *
+     * ⚠️ 抽出来是因为有**两个**调用点：
+     *    · refreshTextBlockStyles（改完标注后整层刷）
+     *    · makeTextBlockEl（新挂的块要显示已存标注）
+     *    两边写法不一致过 —— 一处显示层级一处不显示，
+     *    用户就会觉得"标注没生效"。
+     */
+    function applyBlockStyle(el, mark) {
+        var ttype = mark ? mark.type : 'body';
+        var lv = (ttype === 'heading' && mark && mark.level > 0) ? mark.level : 0;
+
+        /*
+          ⚠️ 只换 `anno-block-*` 这一个类，**不能整串覆盖 className**。
+             makeTextBlockEl 和这里都往块上加类，整串覆盖会把
+             对方加的类抹掉（现在只有 anno-block-*，但两边写法
+             必须一致，否则将来加类的人会踩坑）。
+        */
+        var keep = [];
+        var parts = String(el.className).split(/\s+/);
+        for (var q = 0; q < parts.length; q++) {
+            if (parts[q] && parts[q].indexOf('anno-block-') !== 0) {
+                keep.push(parts[q]);
+            }
+        }
+        keep.push('anno-block-' + ttype);
+        /*
+          ⚠️ 层级也做成类（`anno-block-heading-lv2`），
+             因为渲染侧的左缩进/竖线粗细由 CSS 给 ——
+             把层级写进 style 会让"层级→样式"的定义散在 JS 里。
+             （CSS 不搭字体，只管布局与缩进；用户要求样式集中通用。）
+        */
+        if (lv > 0) {
+            keep.push('anno-block-heading-lv' + lv);
+        }
+        el.className = keep.join(' ');
+
+        el.setAttribute('data-text-type', ttype);
+        el.setAttribute('data-text-level', String(lv));
+
+        var tag = el.querySelector('.anno-block-tag');
+        if (tag) tag.textContent = blockTagText(ttype, lv);
+    }
+
+    /**
+     * 块小标签的文案。
+     *
+     * ⚠️ 章节标题要带上层级（`章节标题 L2`）。
+     *    不带的话用户根本分不清自己标的是哪一级 ——
+     *    而层级正是这个功能的全部意义（用户要求"可以再分"）。
+     */
+    function blockTagText(ttype, lv) {
+        var base = t(TYPE_LABEL_KEY[ttype] || ttype);
+        if (ttype === 'heading' && lv > 0) {
+            return base + ' L' + lv;
+        }
+        return base;
+    }
+
+    /** 查某一行对应的标注（没有则 null） */
+    function markAtLine(line) {
         for (var i = 0; i < textMarks.length; i++) {
             var m = textMarks[i];
-            if (line >= m.from && line <= m.to) return m.type;
+            if (line >= m.from && line <= m.to) return m;
         }
-        return 'body';
+        return null;
+    }
+
+    /** 查某一行属于哪个文本类型（用户标过优先） */
+    function typeAtLine(line) {
+        var m = markAtLine(line);
+        return m ? m.type : 'body';
     }
 
 
@@ -2173,8 +2724,19 @@
 
             var mark = markFor(j);
             var type = mark ? mark.type : guessKind(blk, sawBody);
+            /*
+              ⚠️ 层级：**用户标的优先且不合并原生猜测**。
+
+                 用户显式选了「章节标题 L2」就是 L2 —— 不能再 `|| blk.level`
+                 退到原生。原生的 level 实测要么 0（判不出）要么猜错，
+                 一旦被借来用，用户标 L2 却渲染成 L1（或反之），
+                 而他**无法从界面上看出被改了**。
+
+                 未标过的块才用原生 level（那是自动识别的初值，
+                 用户没表态，只能信它）。
+            */
             var level = mark
-                ? (mark.type === 'heading' ? (mark.level || blk.level || 1) : 0)
+                ? (mark.type === 'heading' ? (mark.level > 0 ? mark.level : 1) : 0)
                 : blk.level;
 
             /*

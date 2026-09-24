@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>图表页处理 · 三种形态对比</title>
+<style>
+  :root {
+    --bg: #EFEFED;
+    --surface: #FFFFFF;
+    --on-surface: #1B1B1B;
+    --on-surface-variant: #6E6E6E;
+    --outline: #D5D5D1;
+    --outline-faint: #E4E4E0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--on-surface);
+    font-family: Roboto, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  header {
+    padding: 20px 24px 4px;
+  }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  .sub { color: var(--on-surface-variant); font-size: 13px; margin: 0 0 4px; }
+  .cols {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    padding: 14px 18px 32px;
+    max-width: 430px;
+  }
+  .col { width: 100%; }
+  .col-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .col h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  .col .tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--outline-faint);
+    color: var(--on-surface-variant);
+  }
+  .phone {
+    background: var(--surface);
+    border: 1px solid var(--outline);
+    border-radius: 12px;
+    padding: 16px 14px;
+    height: 340px;
+    overflow-y: auto;
+  }
+  .note {
+    font-size: 12px;
+    color: var(--on-surface-variant);
+    margin-top: 8px;
+  }
+  .note b { color: var(--on-surface); font-weight: 600; }
+
+  /* ---- 阅读器样式（与 app 的 styles.css 对齐） ---- */
+  .reader-para {
+    margin: 1em 0 0;
+    white-space: pre-wrap;
+  }
+  .reader-para:first-child { margin-top: 0; }
+  .reader-heading {
+    margin: 1.6em 0 0.4em;
+    font-weight: 700;
+  }
+  .reader-heading:first-child { margin-top: 0; }
+  .reader-formula {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    white-space: pre;
+    overflow-x: auto;
+    background: var(--surface);
+    border: 1px solid var(--outline);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin: 0.8em 0 0;
+  }
+
+  /* 形态 A：碎片原样（现状） */
+  .frag { }
+
+  /* 形态 B：整页折叠成占位 */
+  .figure-page {
+    border: 1px dashed var(--outline);
+    border-radius: 10px;
+    padding: 18px 14px;
+    text-align: center;
+    color: var(--on-surface-variant);
+    font-size: 13px;
+    margin-top: 1em;
+  }
+  .figure-page .icon { font-size: 20px; display: block; margin-bottom: 4px; }
+  .figure-page .who { color: var(--on-surface); }
+
+  /* 形态 C：碎块降级 */
+  .reader-figure-strip {
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--on-surface-variant);
+    margin-top: 0.7em;
+    padding-left: 10px;
+    border-left: 2px solid var(--outline-faint);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>图表页处理 · 三种形态对比</h1>
+  <p class="sub">取真实数据：LeCun《Deep learning》第 3 页（神经网络结构图，86 块中 59 块是 ≤6 字符碎片）</p>
+</header>
+
+<div class="cols">
+
+  <!-- ============ A 现状 ============ -->
+  <div class="col">
+    <div class="col-head">
+      <h2>A · 保持现状</h2>
+      <span class="tag">原样展示碎片</span>
+    </div>
+    <div class="phone">
+      <p class="reader-para">Learning algorithms have a long history and a wide range of applications. The first wave occurred in the 1940s–1960s…</p>
+      <h2 class="reader-heading">Backpropagation to train multilayer architectures</h2>
+      <p class="reader-para">The second wave of interest in neural networks started in the early 1980s…</p>
+
+      <div class="frag">
+        <div class="reader-formula">a</div>
+        <div class="reader-formula">b</div>
+        <div class="reader-formula">c</div>
+        <div class="reader-formula">d</div>
+        <div class="reader-formula">x</div>
+        <div class="reader-formula">x□□=</div>
+        <div class="reader-formula">y□□</div>
+        <div class="reader-formula">z□□</div>
+        <div class="reader-formula">y□□=</div>
+        <div class="reader-formula">ozk.input(z)</div>
+        <div class="reader-formula">Output(1 sigmoid)</div>
+        <div class="reader-formula">hidden(z sigmoid)</div>
+      </div>
+
+      <p class="reader-para">Backpropagation is a procedure used to adjust the weights…</p>
+    </div>
+    <p class="note">碎片按公式块渲染 —— <b>灰色底纹框里塞无意义字符</b>，一行一个框。</p>
+  </div>
+
+  <!-- ============ B 整页折叠 ============ -->
+  <div class="col">
+    <div class="col-head">
+      <h2>B · 整页折叠成占位</h2>
+      <span class="tag">短块占比超阈值 → 折叠</span>
+    </div>
+    <div class="phone">
+      <p class="reader-para">Learning algorithms have a long history and a wide range of applications. The first wave occurred in the 1940s–1960s…</p>
+      <h2 class="reader-heading">Backpropagation to train multilayer architectures</h2>
+      <p class="reader-para">The second wave of interest in neural networks started in the early 1980s…</p>
+
+      <div class="figure-page">
+        <span class="icon">◻</span>
+        <span class="who">图示页 3</span><br>
+        原文此处为神经网络结构示意图<br>
+        <span style="opacity:.75">（标注文字无法可靠还原）</span>
+      </div>
+
+      <p class="reader-para">Backpropagation is a procedure used to adjust the weights…</p>
+    </div>
+    <p class="note">整页折叠成一个占位块 —— <b>干净，但读者看不到图里有什么</b>。</p>
+  </div>
+
+  <!-- ============ C 降级 ============ -->
+  <div class="col">
+    <div class="col-head">
+      <h2>C · 碎块降级</h2>
+      <span class="tag">不画底纹、缩小字号</span>
+    </div>
+    <div class="phone">
+      <p class="reader-para">Learning algorithms have a long history and a wide range of applications. The first wave occurred in the 1940s–1960s…</p>
+      <h2 class="reader-heading">Backpropagation to train multilayer architectures</h2>
+      <p class="reader-para">The second wave of interest in neural networks started in the early 1980s…</p>
+
+      <div class="reader-figure-strip">a　b　c　d　x　x□□=　y□□　z□□　y□□=
+ozk.input(z)　Output(1 sigmoid)　hidden(z sigmoid)</div>
+
+      <p class="reader-para">Backpropagation is a procedure used to adjust the weights…</p>
+    </div>
+    <p class="note">碎片压成一条小字 —— <b>不占版面，字迹还在，但不假装它是公式</b>。</p>
+  </div>
+
+</div>
+</body>
+</html>

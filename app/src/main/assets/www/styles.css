@@ -1878,32 +1878,78 @@ body {
      不在这里写死 —— 因为必须与 `object-fit: contain` 后
      图片**实际显示区域**严格重合。见 reader.js positionAnnotateLayer。
 
-  ⚠️ `touch-action: none` 是必须的：不写的话手指拖拽会被
-     浏览器解释成**滚动页面**，pointermove 收不到几个点，
-     画出来的框会是一小段。这是 Pointer Events 画图最常见的坑。
+  ⚠️ 手势 / touch-action 的规则在**下面**，与 `.is-drawing` 一起写 ——
+     因为"接不接手势"完全取决于当前选的编辑选项，
+     写在这里会让人以为它无条件接管。
 */
 .anno-layer {
     position: absolute;
     z-index: 1;
-    touch-action: none;
     /*
       ⚠️ 默认不给背景 —— 浮层必须"看不见"，
-         否则会挡住下面的页图。只在编辑态显示一层淡色描边，
-         让用户知道"这页可以画"。
+         否则会挡住下面的页图。
     */
     background: transparent;
 }
 
-/* 编辑模式下给浮层一点视觉暗示：可画区域有一圈虚线 */
-.reader.is-annotating .anno-layer {
+/*
+  ⚠️ 浮层**默认不接手势**，只有「画矩形」的模式才打开。
+
+  ══ ⚠️⚠️ 为什么默认必须是 none（用户 2026-09-24 指出）══
+
+  用户原话：「编辑模式哪个选项都没点，就不需要画框啊，比如滚动页面啥的」
+
+  对。进入编辑模式后**没有选任何"要画框"的选项时**，
+  页面必须能正常滚动 —— 否则用户被卡在编辑模式里动不了。
+
+  ══ 三道闸门，都要满足才接手势 ══
+
+    ① `.is-annotating`        —— 在编辑模式（由 JS 在 root 上切换）
+    ② `.is-drawing`           —— 选的是**画矩形**那三个选项之一
+                                 （公式/表格/图片；「文本」不是）
+    ③ 作用在浮层自身，不是 slot —— 避免把页图的滚动区也一起掐了
+
+  三个类都由 JS 在 [syncBottomBar] / [mountAnnotateLayer] 里切换。
+
+  ⚠️ `touch-action: none` 是**必须的**（只在②成立时给）：
+     不写的话手指拖拽会被浏览器解释成"滚动页面"，
+     `pointermove` 收不到几个点，画出来的框只有一小段。
+     但它一旦给了，滚动就**彻底没了** —— 所以绝不能无条件下发。
+*/
+.anno-layer {
+    pointer-events: none;
+    touch-action: auto;
+}
+
+/* 只有"画矩形"的模式才接管手势 */
+.reader.is-annotating .anno-layer.is-drawing {
+    pointer-events: auto;
+    touch-action: none;
+}
+
+/*
+  ⚠️ 编辑模式下给浮层一点视觉暗示，但**只在能画框时给** ——
+     不能画的时候画一圈虚线会误导用户以为可以拖。
+
+     深色主题下用白色虚线（黑色在深底上看不见）。
+*/
+.reader.is-annotating .anno-layer.is-drawing {
     outline: 1px dashed rgba(0, 0, 0, 0.22);
     outline-offset: -1px;
     cursor: crosshair;
 }
 
-/* 深色主题下白色虚线才看得见 */
-[data-theme="dark"] .reader.is-annotating .anno-layer {
+[data-theme="dark"] .reader.is-annotating .anno-layer.is-drawing {
     outline-color: rgba(255, 255, 255, 0.3);
+}
+
+/*
+  ⚠️ 编辑模式下「文本」选项时的文字块要能点，所以它们自己接手势；
+     而承载它们的浮层是 `pointer-events: none` ——
+     子元素可以单独打开，不受父级 none 的影响（CSS 规范如此）。
+*/
+.reader.is-annotating .anno-block {
+    pointer-events: auto;
 }
 
 /*
@@ -1911,6 +1957,10 @@ body {
 
   ⚠️ 用 `pointer-events: none` 而不是给 img 也绑事件 ——
      绑事件会重复实现一套坐标换算（见 makePageImg 的说明）。
+
+  ⚠️ 只在**能画框**时禁用页图手势。
+     文本模式下页图不接手势也没关系（字在里面选不中），
+     但保持一致更容易理解：反正浮层已经能穿透了。
 */
 .reader.is-annotating .pdf-page-img {
     pointer-events: none;
@@ -2049,6 +2099,29 @@ body {
 .anno-block-heading {
     border-left-color: #7B1FA2;
     background: rgba(123, 31, 162, 0.1);
+}
+
+/*
+  ⚠️ 章节标题的**层级**用色条粗细表达（L1 最粗 → L3 最细）。
+
+     为什么用粗细而不用缩进：原始视图里的框是**绝对定位**的
+     （left/width 由 PDF 坐标算出），改缩进会和真实版面错位 ——
+     框就盖不住它对应的那行字了。色条不参与定位，安全。
+
+     为什么不用三种不同颜色：颜色已经用在「类型」上（标题紫、
+     作者青、摘要橙…），再拿颜色表层级会让两套语义打架，
+     用户分不清「紫是因为它是标题还是因为它是 L1」。
+*/
+.anno-block-heading-lv1 {
+    border-left-width: 5px;
+}
+
+.anno-block-heading-lv2 {
+    border-left-width: 4px;
+}
+
+.anno-block-heading-lv3 {
+    border-left-width: 3px;
 }
 
 .anno-block-author {
@@ -2198,22 +2271,81 @@ body {
      这与 .reader-view-toggle 的处理**完全同源** ——
      两者都是"一个状态的两个面"，都靠切图标表达。
      所以这里照抄那条规则（见 .reader-view-toggle 的注释）。
+
+     ⚠️⚠️ 选择器**必须带 `.icon-button` 前缀**（写成两个类）。
+         只写 `.reader-annotate-btn` 会**被覆盖**：
+         `.icon-button:active` 是 (0,2,0)，与单类选择器 + 伪类同优先级，
+         而它定义在文件**后面** → 后出现的赢，底色照旧变化。
+         加前缀变成 (0,3,0) 才真正压住。
+         实测踩过：`.reader-view-toggle` 当初就是这个原因失效的。
 */
-.reader-annotate-btn:active,
-.reader-annotate-btn[aria-pressed="true"] {
+.icon-button.reader-annotate-btn,
+.icon-button.reader-annotate-btn:active,
+.icon-button.reader-annotate-btn[aria-pressed="true"] {
     background: transparent;
+    color: var(--on-surface-variant);
+    transform: none;
+    opacity: 1;
+    transition: none;
 }
 
 /*
-  ⚠️ 图标尺寸与 .reader-top 里其他按钮一致（24x24）。
-     .icon-button 已经给了，这里只兜住"两个 span 叠加"这个结构。
+  ⚠️ 两只图标叠在同一格里，靠 hidden 切显示。
+     尺寸与 .reader-view-icon 完全一致（24px）——
+     同一条顶栏里的按钮，图标不一样大一眼就看得出来。
 */
-.reader-annotate-btn .reader-annotate-icon {
-    display: block;
-    line-height: 0;
+.reader-annotate-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
-/* 编辑模式下的提示条（告诉用户当前该做什么） */
+/*
+  ⚠️⚠️ **必须显式给 [hidden] 写 display: none**。
+
+     踩过的坑（2026-09-24 实测，同一个 bug 犯了两次）：
+     `hidden` 属性只对应 UA 样式表的 `display: none`，
+     而**任何作者样式里的 display 都会覆盖它**。
+     上面 `.reader-annotate-icon { display: flex }` 正好覆盖了它，
+     于是两只图标**同时可见、上下摞成两行**，
+     按钮被撑到 40px 高（用户一眼就看出来：「编辑按钮是两个摞起来了吗？」）。
+
+     ⚠️ `.reader-view-icon` 之所以没出问题，正是因为它有自己的
+        `[hidden]` 规则 —— 我这里一开始漏了，就立刻出事了。
+        凡是"预置多个、切 hidden"的写法，**每一组都要配一条 [hidden] 规则**。
+
+     ⚠️ 判断"藏没藏"要看 `getComputedStyle().display`
+        或 `offsetParent === null`，**不要信 `el.hidden`**
+        （它读出来是 `true`，看起来"已经隐藏了"）。
+*/
+.reader-annotate-icon[hidden] {
+    display: none;
+}
+
+.reader-annotate-icon svg {
+    width: 24px;
+    height: 24px;
+    fill: currentColor;
+}
+
+/*
+  编辑模式下的操作提示（**会自己消失的 toast**）。
+
+  ⚠️ 用户 2026-09-24：「说明气泡也不要一直停留在页面内」
+
+  对 —— 它浮在页图下缘，常驻会一直挡着内容，
+  而用户看完一遍就不需要了。所以做成 toast：
+  出现 → 停留几秒 → 淡出（时长见 reader.js 的 ANNO_TIP_MS）。
+
+  ⚠️ 用 `opacity` + `visibility` 而不是 `display: none/block` ——
+     只有前者能做过渡动画。直接切换 display 会"啪"地消失，
+     看起来像渲染出错。
+
+  ⚠️ `visibility: hidden` 是必要的（不能只靠 opacity: 0）：
+     只设 opacity 的话元素**仍然占据点击命中区**，
+     虽然本元素已经是 pointer-events: none 了，
+     但保持"不可见 = 不可见"更不容易出意外。
+*/
 .anno-tip {
     position: absolute;
     z-index: 12;
@@ -2230,7 +2362,14 @@ body {
     color: #FFFFFF;
     font-size: 12px;
     line-height: 1.4;
-    display: none;
+    /*
+      ⚠️ 默认不可见 —— 由 JS 加 `.is-visible` 才显示。
+         不要在 CSS 里用 `.reader.is-annotating` 控制显示：
+         那样它会**一直**跟着编辑模式常驻（正是用户要修的问题）。
+    */
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 220ms ease, visibility 0s linear 220ms;
     /*
       ⚠️ 只是提示，**不能接手势** ——
          它浮在页图下缘，接了会挡住那一块的画框操作。
@@ -2240,8 +2379,11 @@ body {
     text-align: center;
 }
 
-.reader.is-annotating .anno-tip {
-    display: block;
+.anno-tip.is-visible {
+    opacity: 1;
+    visibility: visible;
+    /* 显示时要立刻可见，所以 visibility 的延迟是 0 */
+    transition: opacity 220ms ease, visibility 0s linear 0s;
 }
 
 /* --------------------------------------------------------------------------
@@ -2315,6 +2457,53 @@ body {
     height: 22px;
     fill: currentColor;
     display: block;
+}
+
+/*
+  ⚠️ 层级选项（第二步弹层）复用 `.anno-typeopt` 的外观 ——
+     同一个弹层里的按钮必须长得一样（用户要求样式通用）。
+     只把网格改成**等宽三列**：层级是 3 个并列选项，
+     auto-fill 在宽屏下会把它们拉得很散，看不出是一组。
+
+     并给当前已有的层级一个选中态，但**只用边框**（不用底色）——
+     免得和上面类型网格的选中语言打架。
+*/
+.anno-typegrid:has(.anno-levelopt) {
+    grid-template-columns: repeat(3, 1fr);
+}
+
+.anno-levelmark {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: var(--on-surface-variant);
+}
+
+.anno-levelopt {
+    min-height: 56px;
+}
+
+/*
+  ⚠️ 区间提示与「选择一段区间」按钮。
+
+     提示是**说明性文字**而不是标题 —— 按项目规则：
+     句子用正常书写（只句首大写），只有短语才首字母大写。
+     所以这里用小字号、常规字重，不套 .title-text。
+*/
+.anno-rangehint {
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--surface-raised);
+    color: var(--on-surface-variant);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+/* 区间入口：整行宽的次要按钮（不是主操作，所以不用绿色） */
+.anno-rangebtn {
+    width: 100%;
+    margin-bottom: 12px;
 }
 
 

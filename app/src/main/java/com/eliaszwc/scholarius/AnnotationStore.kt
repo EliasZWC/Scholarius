@@ -284,8 +284,13 @@ object AnnotationStore {
                       ⚠️ level 只在 heading 上有意义。其他类型一律归零 ——
                          否则前端会遇到「一个 abstract 的 level=2」这种
                          自相矛盾的数据（手改 JSON 就能造出来）。
+
+                      ⚠️ 上限与前端 `MAX_HEADING_LEVEL`(=3) 保持一致。
+                         夹到 6 的话会出现「存得下、但渲染不出层级差别」
+                         的数据 —— 界面上一二级有左竖线粗细之分，
+                         四级以上没有对应样式，用户会以为标注丢了。
                     */
-                    level = if (type == TEXT_HEADING) level.coerceIn(1, 6) else 0
+                    level = if (type == TEXT_HEADING) level.coerceIn(1, 3) else 0
                 )
             )
         }

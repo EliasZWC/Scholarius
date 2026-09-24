@@ -175,7 +175,17 @@
             // --- 阅读页 ---
             'reader.loading': 'Extracting Text...',
             'reader.extractFailed': 'Could Not Extract Text From This PDF.',
-            'reader.noBridge': 'Reader Is Unavailable In This Preview.',
+            /*
+              ⚠️ 这条文案说的是**原始视图取不到页图**，不是"阅读页不能用"。
+
+                 原来写成 'Reader Is Unavailable In This Preview.' ——
+                 把范围说错了：阅读页在预览里是**能用**的（正文由
+                 requestDocText 推回，垫片喂的是真实论文）。
+                 用不了的只有原始视图（要原生 PdfRenderer 渲染页图）。
+
+                 说错范围会把排查方向带偏（本项目为此吃过一次亏）。
+            */
+            'reader.noBridge': 'Original Page Is Unavailable In This Preview.',
 
             // 底部选项栏
             'reader.toc': 'Content',
@@ -219,6 +229,7 @@
             'reader.annotateTextTip': 'Tap a text region to reclassify it.',
             'reader.pickTextType': 'Reclassify As',
             'reader.annotateNoLine': 'This Region Has No Line Data.',
+            'reader.annotatePickTip': 'Pick An Option Below To Start.',
 
             // 标注类型（全是短语 → 首字母大写）
             'reader.typeText': 'Text',
@@ -233,6 +244,16 @@
             'reader.typeFootnote': 'Footnote',
             'reader.typeReference': 'Reference',
             'reader.typeKeyword': 'Keyword',
+
+            // 章节标题的层级（二级选择弹层）
+            'reader.pickHeadingLevel': 'Heading Level',
+            'reader.headingLevel1': 'Level 1',
+            'reader.headingLevel2': 'Level 2',
+            'reader.headingLevel3': 'Level 3',
+
+            // 区间选择（把连续多块一次标完）
+            'reader.startRange': 'Select A Range',
+            'reader.rangeFrom': 'Will Apply From Line {a} To Line {b}.',
 
             // 阅读设置：字体
             'reader.font': 'Font',
@@ -493,7 +514,12 @@
             // --- 阅读页 ---
             'reader.loading': '正在提取文本…',
             'reader.extractFailed': '无法从这份 PDF 提取文本。',
-            'reader.noBridge': '预览环境不支持阅读页。',
+            /*
+              ⚠️ 同英文那条：说的是**原始视图取不到页图**，不是"阅读页不能用"。
+                 原来写成「预览环境不支持阅读页」—— 范围说错了，
+                 会把人往错误方向带（阅读页在预览里其实是能用的）。
+            */
+            'reader.noBridge': '预览环境无法显示原始版面。',
 
             // 底部选项栏
             'reader.toc': '目录',
@@ -516,6 +542,7 @@
             'reader.annotateTextTip': '点一下文字区域即可重新归类。',
             'reader.pickTextType': '改为哪一类',
             'reader.annotateNoLine': '该区域没有行号数据，无法标注。',
+            'reader.annotatePickTip': '选一个下方选项开始。',
 
             // 标注类型
             'reader.typeText': '文本',
@@ -530,6 +557,16 @@
             'reader.typeFootnote': '脚注',
             'reader.typeReference': '参考文献',
             'reader.typeKeyword': '关键词',
+
+            // 章节标题的层级（二级选择弹层）
+            'reader.pickHeadingLevel': '标题层级',
+            'reader.headingLevel1': '一级',
+            'reader.headingLevel2': '二级',
+            'reader.headingLevel3': '三级',
+
+            // 区间选择（把连续多块一次标完）
+            'reader.startRange': '选择一段区间',
+            'reader.rangeFrom': '将把第 {a} 行到第 {b} 行一起标注。',
 
 
             // 阅读设置：字体

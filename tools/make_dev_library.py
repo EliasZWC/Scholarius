@@ -361,6 +361,158 @@ def looks_like_page_artifact(t: str) -> bool:
     return False
 
 
+# --- 块的包围盒（窄旁路，不从 merge_paragraphs 的元组带）---------------------
+#
+# ⚠️ 为什么不直接给 merge_paragraphs 的元组加坐标：
+#    它是 PdfText.kt 的**逐行复刻**，动元组结构就得同步改 Kotlin；
+#    两边一旦不同步，预览与真机的排版分叉，预览就失去"能代替验证"的意义。
+#
+# ══ ⚠️⚠️ 而"用顺序游标猜哪些原始行属于这个段落"是**错的**（实测）══
+#
+#    第一版就是这么做的：找到段落首行 → 往后连续收文本出现在段落里的行。
+#    ResNet 第 1 页是**双栏**，于是游标从左边栏一路收到右边栏 ——
+#    实测 96 个块里有 86 个与别人坐标完全相同，等于全挤在一起。
+#
+#    正确的信息源就在手边：pymupdf 的 `get_text('dict')` 已经给出了
+#    **段落级的 block**（每个 block 有 bbox + 若干 line）。
+#    它的切分正是我们要的（一个文本块一段），而且天然是栏内连续的。
+#
+# 做法：把 pymupdf 的段落 block 按"该 block 的文本"建索引，
+#      块的包围盒取"段落文本所覆盖的 pymupdf block"的盒子。
+
+
+def build_box_index(doc):
+    """
+    建「页 -> [(归一化键, bbox, 页宽, 页高, 是否行级)]」。
+
+    ══ ⚠️ 为什么要**行级**而不只是段落级（实测逼出来的）══
+
+    v0.1.18 一度只用 pymupdf 的**段落 block** 建索引，结果：
+        ResNet 第 1 页 `Kaiming He / Xiangyu Zhang / Shaoqing Ren /
+        Jian Sun / Microsoft Research / {kahe,...}@microsoft`
+        六行在 pymupdf 里是**同一个 block**，
+        于是六行拿到**完全相同的盒**（都是 108,150 255x34）。
+
+    后果不是"少匹配一些"，而是**功能坏掉**：
+      · 六个块坐标像素级重合 → 只有最上面那个能被点到
+        （实测 elementFromPoint 命中的永远是最末一个）
+      · 用户看到的是一行，点下去的却是另一行 → 改不对类型
+      · 全篇 840 个块塌成 183 个唯一盒，**657 行点不到**
+
+    所以必须同时登记**行级**盒：每行有自己紧凑的 bbox
+    （`Kaiming He` = x136..195、`Xiangyu Zhang` = x222..297），
+    六行就能各得其所。
+
+    ⚠️ 匹配时**行级优先**（见 [block_box]）：
+       行的键比它所属 block 的键短，用"取最长键"那条会选错，
+       所以要先按行级过滤。
+    """
+    index = {}
+    for pno, page in enumerate(doc, 1):
+        rect = page.rect
+        if rect.width <= 0 or rect.height <= 0:
+            continue
+        items = []
+        for b in page.get_text('dict').get('blocks', []):
+            if b.get('type') != 0:
+                continue
+            bb = b.get('bbox')
+            if bb:
+                key = _box_key(' '.join(
+                    ''.join(sp.get('text', '') for sp in ln.get('spans', []))
+                    for ln in b.get('lines', [])
+                ))
+                if key:
+                    items.append((key, bb, rect.width, rect.height, False))
+            # 行级 —— 用于把"同 block 内的不同行"分开定位
+            for ln in b.get('lines', []):
+                lbb = ln.get('bbox')
+                if not lbb:
+                    continue
+                lt = ''.join(sp.get('text', '') for sp in ln.get('spans', [])).strip()
+                lkey = _box_key(lt)
+                if lkey:
+                    items.append((lkey, lbb, rect.width, rect.height, True))
+        index[pno] = items
+    return index
+
+
+def _box_key(s):
+    """
+    把一段文本压成"只留字母数字"的键，用于两侧比对。
+
+    ⚠️ 必须归一化**两侧**，不能只归一化一侧（实测踩过）：
+
+       pymupdf 的 block 文本：   `Kaiming He Xiangyu Zhang Shaoqing Ren`
+       我合并后的段落文本：      `Kaiming He, Xiangyu Zhang, Shaoqing Ren`
+
+       两者的**标点与空白不同**（合并时会补空格、插逗号），
+       直接取前 12 字符比对 —— `'Kaiming He, '` vs `'Kaiming He X'` ——
+       永远对不上。实测覆盖率因此掉到 33%（正确做法应接近 95%）。
+
+    ⚠️ 只保留字母数字（含 CJK）—— 标点、空格、连字符全部丢掉。
+       `difficult` 与 `difﬁcult`（连字）也会被抹平差异中的一部分，
+       但连字已在 PdfText 侧还原，这里不额外处理。
+    """
+    return ''.join(c for c in s if c.isalnum())
+
+
+def block_box(text, page, box_index):
+    """
+    返回块在页面上的归一化包围盒（0~1，左上原点）。取不到返回空表。
+
+    ══ 匹配方式：**行级优先，其次段落级，都用子串包含** ══
+
+    ⚠️ 第一优先：**行级**（is_line=True）
+       实测 ResNet 首页六行作者（`Kaiming He` … `{kahe,...}@microsoft`）
+       在 pymupdf 里是**一个 block**，只用段落级会让六行拿到同一个盒，
+       坐标像素级重合 → 只有最末一个能被点到 → 用户改不对类型。
+       行级盒每行独立（x136..195 vs x222..297），六行各自可点。
+
+    ⚠️ 第二优先：**段落级**兜底
+       我方 merge_paragraphs 会把一个 block 切成多段
+       （摘要 12 段 = pymupdf 的 1 个 block），那些段落
+       匹配不到任何行键（它们是跨行的），只能落到段落盒。
+       —— 这没问题：跨行的段落本来就该占整块。
+
+    ⚠️ 每级内部取**最长键**：短块（如 `Abstract`）可能是长块的子串。
+       实测这个 tie-break 是必要的。
+
+    ⚠️ 包含匹配必须**限本页内** —— 跨页会让 "the" 命中别的页。
+    """
+    items = box_index.get(page)
+    if not items or not text:
+        return {}
+
+    key = _box_key(text)
+    if len(key) < 4:
+        # 太短（页码、`0 1 2`）无法可靠定位 —— 宁可留空，
+        # 也不要随便匹配一个 block 让它盖住半页
+        return {}
+
+    def pick(only_line):
+        best = None
+        for other, bb, w, h, is_line in items:
+            if is_line != only_line:
+                continue
+            if key in other:
+                if best is None or len(other) > len(best[0]):
+                    best = (other, bb, w, h)
+        return best
+
+    best = pick(True) or pick(False)
+    if best is None:
+        return {}
+
+    _other, bb, w, h = best
+    return {
+        'x0': round(max(0.0, min(1.0, bb[0] / w)), 4),
+        'y0': round(max(0.0, min(1.0, bb[1] / h)), 4),
+        'x1': round(max(0.0, min(1.0, bb[2] / w)), 4),
+        'y1': round(max(0.0, min(1.0, bb[3] / h)), 4),
+    }
+
+
 def extract(path: Path):
     doc = pymupdf.open(str(path))
 
@@ -384,7 +536,8 @@ def extract(path: Path):
                     fw[sp['font']] = fw.get(sp['font'], 0) + n
                     k = round(sp['size'] * 10)
                     sw[k] = sw.get(k, 0) + n
-                raw.append((text.strip(),
+                line_text = text.strip()
+                raw.append((line_text,
                             max(fw, key=fw.get),
                             max(sw, key=sw.get) / 10,
                             pno))
@@ -403,16 +556,19 @@ def extract(path: Path):
     # ⚠️ 正文字号要在**原始行**上估（不是在合并后的段上）——
     #    合并后段落变长，长短行的比例失真，众数会偏。
     body_size = estimate_body_size(raw)
+    box_index = build_box_index(doc)
     blocks = []
     for text, m in merged:
         font, size, page = m
         cls = classify_block(text, font, size, body_size)
-        blocks.append({
+        block = {
             'kind': cls['kind'],
             'text': text,
             'level': cls['level'],
             'page': page,
-        })
+        }
+        block.update(block_box(text, page, box_index))
+        blocks.append(block)
 
     meta = doc.metadata or {}
     title = (meta.get('title') or '').strip()
@@ -443,7 +599,63 @@ def extract(path: Path):
         'meta': {'fonts': fonts, 'lines': rows},
         'outline': outline,
         'blocks': blocks,
+        'pageImages': extract_page_images(doc),
     }
+
+
+# --- 页面位图（供浏览器预览的"原始视图"用）----------------------------------
+#
+# ══ ⚠️ 为什么需要它 ══
+#
+# 真机上"原始视图"是原生用 PdfRenderer 把每页渲染成 JPEG 再给网页的
+# （见 PdfPages.kt）。浏览器里没有 PdfRenderer，也没有那个 PDF 文件 ——
+# 所以预览里点"原始视图"只能报错。
+#
+# 但**页图本身是可以离线生成的**：构建预览数据时就渲染好，
+# 以 data URL 内嵌进 dev-library.js，垫片直接返回它。
+# 于是预览里能完整走通原始视图（连续滚动、懒加载、标注浮层）。
+#
+# ⚠️ 这样预览与真机的**契约就一致了**：
+#     `getPdfPage(id, page)` 返回 `data:image/jpeg;base64,...`。
+#     两端产出同一种东西，前端代码不必分叉。
+#
+# ⚠️ 分辨率刻意与原生对齐（RENDER_WIDTH=1600、JPEG 质量 85，
+#     见 PdfPages.kt）—— 不一致的话，预览里量出来的框位置
+#     与真机不同，就失去了"预览能代替验证"的意义。
+#
+# ⚠️ 体积：4 篇 × 约 10 页 × 1600px JPEG ≈ 每页 150-400KB。
+#     全部内嵌会让 dev-library.js 涨到十几 MB。
+#     生成物本来就不进版本库（见 tools/.gitignore），
+#     且只在本地预览加载，所以可以接受。
+#     为控制体积，这里只渲染**前 N 页**（够验证滚动与分页逻辑）。
+MAX_PREVIEW_PAGES = 12
+PREVIEW_RENDER_WIDTH = 1600
+PREVIEW_JPEG_QUALITY = 85
+
+
+def extract_page_images(doc):
+    """把前若干页渲染成 data URL 列表（下标 0 = 第 1 页）。"""
+    import base64
+
+    out = []
+    n = min(doc.page_count, MAX_PREVIEW_PAGES)
+    for i in range(n):
+        page = doc[i]
+        rect = page.rect
+        if rect.width <= 0:
+            out.append('')
+            continue
+        # 按目标宽度算缩放（与原生 PdfPages.targetSize 同一思路：
+        # 以宽为准，不放大）
+        zoom = PREVIEW_RENDER_WIDTH / rect.width
+        mat = pymupdf.Matrix(zoom, zoom)
+        # ⚠️ alpha=False —— JPEG 不支持透明通道；
+        #    真机那边也做了"先铺白底再用 JPEG"（见 PdfPages.render）。
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        data = pix.tobytes('jpeg', jpg_quality=PREVIEW_JPEG_QUALITY)
+        out.append('data:image/jpeg;base64,' + base64.b64encode(data).decode('ascii'))
+    return out
+
 
 
 # --- 与 PdfMeta.extractYearFromInfo 保持一致 ---------------------------------
@@ -652,6 +864,8 @@ def main():
             '_meta': d['meta'],
             '_outline': d['outline'],
             '_blocks': d['blocks'],
+            # 原始视图要用（数据 URL 列表，下标 0 = 第 1 页）
+            '_pages': d['pageImages'],
         })
         print(f'  {d["sourceName"]}')
         print(f'    title  : {d["title"][:60]}')
@@ -660,6 +874,12 @@ def main():
         print(f'    lines  : {len(d["meta"]["lines"])}  fonts: {len(d["meta"]["fonts"])}'
               f'  outline: {len(d["outline"])}')
         print(f'    text   : {len(d["text"]):,} chars')
+        imgs = d['pageImages']
+        if imgs:
+            kb = sum(len(x) for x in imgs) / 1024
+            print(f'    pageimg: {len(imgs)} 张内嵌（约 {kb:,.0f} KB 的 base64）')
+        else:
+            print('    pageimg: (无 —— 预览里原始视图不可用)')
 
     OUT.write_text(
         '/* 由 tools/make_dev_library.py 生成 —— 含真实论文全文，请勿提交。\n'
@@ -780,6 +1000,78 @@ if (typeof window.ScholariusNative.updateDoc !== 'function') {
       window.ScholariusDevLibrary.load();
       window.ScholariusShell.docUpdated(id, ok);
     }, 80);
+  };
+}
+
+/* ---- 原始视图：页图 -------------------------------------------------------
+
+   真机上由原生 PdfRenderer 渲染（见 PdfPages.kt），返回
+   `data:image/jpeg;base64,...`。这里直接返回构建时渲染好的同一形态，
+   所以预览与真机的契约**完全一致**，前端代码不必分叉。
+
+   ⚠️ 同步返回（不是异步）—— 网页的 `img.src` 要立刻拿到值。
+      真机上这个方法是 @JavascriptInterface 同步方法，行为一致。
+*/
+if (typeof window.ScholariusNative.getPdfPageCount !== 'function') {
+  window.ScholariusNative.getPdfPageCount = function (id) {
+    var d = window.ScholariusDevLibrary.docs.filter(function (x) {
+      return x.id === id;
+    })[0];
+    return (d && d._pages) ? d._pages.length : 0;
+  };
+}
+
+if (typeof window.ScholariusNative.getPdfPage !== 'function') {
+  window.ScholariusNative.getPdfPage = function (id, page) {
+    var d = window.ScholariusDevLibrary.docs.filter(function (x) {
+      return x.id === id;
+    })[0];
+    if (!d || !d._pages) return '';
+    var i = (page | 0) - 1;   /* 网页传 1 起，数组 0 起 */
+    if (i < 0 || i >= d._pages.length) return '';
+    return d._pages[i] || '';
+  };
+}
+
+/* ---- 标注读写 -------------------------------------------------------------
+
+   ⚠️⚠️ 为什么必须补这两个（2026-09-24 发现）
+
+   reader.js 的 loadAnnotations / saveAnnotations 对"桥没有这个方法"
+   是**静默降级**的：
+       loadAnnotations → 留空（当作还没标过）
+       saveAnnotations → 返回 true（**当作保存成功**）
+
+   于是在预览里画框、选类型，界面全都正常反应，
+   但**退出后数据就没了** —— 而预览显示"成功"。
+   这类 bug 最贵：本地怎么测都是绿的，真机上才发现。
+
+   补上之后预览能完整走通「画框 → 退出（保存）→ 重进（读回）」，
+   与真机同一套读写语义。
+
+   ⚠️ 存 localStorage 而不是内存变量 —— 刷新页面也要还在，
+      这样"重进阅读页"能真的验证到读路径。
+   ⚠️ 键名带 docId，与真机的"一篇文献一份标注"一致。
+*/
+if (typeof window.ScholariusNative.getAnnotations !== 'function') {
+  window.ScholariusNative.getAnnotations = function (id) {
+    try {
+      var raw = window.localStorage.getItem('devanno:' + id);
+      return raw || '{"regions":[],"texts":[]}';
+    } catch (e) {
+      return '{"regions":[],"texts":[]}';
+    }
+  };
+}
+
+if (typeof window.ScholariusNative.setAnnotations !== 'function') {
+  window.ScholariusNative.setAnnotations = function (id, json) {
+    try {
+      window.localStorage.setItem('devanno:' + id, json);
+      return true;
+    } catch (e) {
+      return false;
+    }
   };
 }
 '''
