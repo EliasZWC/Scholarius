@@ -472,425 +472,53 @@
 
         if (field.kind === 'date') {
             /*
-              ══ 日期：年 / 月 / 日 三个分段输入框 ══
+              ══ 日期：YYYY-MM-DD 逐位输入 ══
 
-              ⚠️ 这套交互是**照搬 Livolog** 的（E:\product\Livolog 的
-                 datetime.js buildDateGroup + styles.css 的 .seg）。
+              ⚠️ 交互是「单个输入框 + 视觉覆盖层」，不是 8 个真输入框。
 
-                 抄而不是自己设计，理由：两个 app 是同一人手下的姊妹项目，
-                 用户已在 Livolog 里用惯这套输入（统计页的起止日期）。
-                 这里换个花样会让他学两遍。
+                 外表仍是一行「8 个圆角小格 + 两个 '-' 分隔符」
+                 （用户要求：八个数字框占满一行、每格一位）——
+                 但那 8 个格子是**纯展示的 span**，
+                 真正接收输入的是**一个铺满整行的透明 <input>**。
 
-              ⚠️ 为什么不用 <input type="date">：
-                 · 它只接受**完整日期**，塞 "2015" 会被浏览器静默清空
-                   （实测），「只填年」这条根本做不到；
-                 · 显示格式由系统 locale 决定 —— 中文环境显示「年/月/日」，
-                   而不是想要的 YYYY-MM-DD；
-                 · 它强制带原生日历弹窗，与手输的交互不是一回事。
+              ══ 为什么要这样改（v0.1.6 的真机 bug）══
 
-              ⚠️ Livolog 的实现里有三个细节，自己写很容易漏：
+                 原方案是 8 个真的单字输入框，靠每格的 `keydown`
+                 自己写值、自己决定「写哪一格」。真机上表现为
+                 **输入卡在第二个框**：后续任何数字都只改第二格。
 
-                 ① placeholder 用 `YYYY`/`MM`/`DD` 提示位数，
-                    不能只靠 aria-label（那是给读屏的，眼睛看不见）；
-                 ② focus 时 `select()` 全选 —— 点进去直接打字就能覆盖，
-                    不用先按退格删掉旧值；
-                 ③ 在**空**框里按退格要回退到上一格 ——
-                    否则连按退格会卡住，用户得手动点回去改前一位。
+                 根因（已实测复现）：Android 的软键盘（尤其输入法、
+                 数字键盘）输入数字时**不派发带字符的 keydown** ——
+                 事件是 `keydown`(key=Unidentified/229) + `input`(IME 上屏)。
+                 而所有逻辑（覆盖位判定、找下一个空格、移动焦点）
+                 全写在 keydown 分支里 → **在真机上这段代码从不执行**。
+                 于是字符被浏览器默认插进当前聚焦的那一格，
+                 input 分支只看到 length===1、只调用同步函数，
+                 **不推进**。第二格因此越攒越长（"20"、"203"…），
+                 整行再也不会前进。
 
-                 补充：填满自动跳下一格（Livolog 也有）。
+                 桌面浏览器 keydown 正常，所以以前在 PC 上测不出来。
+
+              ══ 为什么「单输入框」是正解 ══
+
+                 多格方案的脆弱之处在于：**格子的推进必须在
+                 keydown 里做**，因为键盘事件才带「要写哪一格」的意图。
+                 而真实键盘的事件模型不保证 keydown 给字符。
+
+                 单输入框方案把「哪一格」交给**值本身的位置**决定：
+                 "2015" 的第 0 位显示在第 0 格，第 1 位显示在第 1 格 ——
+                 不需要任何事件做推进，光标位置天然就是索引。
+                 于是 keydown / input / beforeinput / 粘贴 / 输入法
+                 / 语音输入**全部自动正确**，因为都是同一条路径：
+                 浏览器往 value 里插字符 → 我们剥出数字 → 重画覆盖层。
+
+              ══ 与旧方案的兼容 ══
+
+                 存储格式完全不变（仍是 "2015" / "2015-06" / "2015-06-24"），
+                 输入形式也没变（看起来还是 8 个格子），
+                 用户无感知，老数据无需迁移。
             */
-            var group = document.createElement('div');
-            group.className = 'detail-date';
-
-            /*
-              ⚠️ 八个**单字符**输入框，均分整行宽度（用户要求
-                 「八个数字框占满一行」）。
-
-                 位置：0-3 年、4-5 月、6-7 日。
-                 中间两个分隔符 "-" 插在 4 和 6 之前。
-
-              ⚠️ 为什么用 8 个单字框，而不是 3 个多位框：
-                 单字框的「填满即跳下一格」是**逐位**发生的，
-                 用户连续敲 20150624 就能自动走完，
-                 不用在年/月/日之间手动点三次。
-
-              ⚠️ 值按**位**取，不按字段取。
-                 存储里的 "2015-06-24" 要先剥成 "20150624" 再逐位填 ——
-                 否则分隔符的位置和位数对不上（见 parseDateDigits）。
-            */
-            var digits = parseDateDigits(value);
-
-            /*
-              ⚠️⚠️ 必须给每一格开一个**独立的作用域**（IIFE），
-                     不能直接在 for 循环里用 `var seg` 绑事件。
-
-                     踩过的坑（本项目最隐蔽的一个）：写的是
-
-                         for (var i = 0; i < 8; i++) {
-                             var seg = document.createElement('input');
-                             seg.addEventListener('keydown', function () {
-                                 ... seg.value = event.key; ...
-                             });
-                         }
-
-                     `var` 是**函数作用域**，8 次循环共用同一个 `seg` 变量。
-                     等用户按键时循环早已结束，`seg` 停在最后一次赋的值上
-                     —— 也就是第 8 格。
-
-                     实测症状：**无论点进哪一格，输入都写进最后一格**，
-                     焦点也跳到最后一格。逐个格派发 keydown 验证：
-                     从第 0/1/2/3 格发起，结果全都是 `_______9`。
-
-                     ⚠️ 这个 bug 极难从现象反推：「输入跑到最后一格」
-                     看起来像焦点管理或索引算错（我先后怀疑过 4 种时序
-                     问题，都不是）。**判据**：如果「所有元素表现一致，
-                     且都指向最后一个」，先怀疑循环变量捕获。
-
-                     ⚠️ 用 IIFE 而不是 `let`：这个文件通篇是 ES5 写法
-                     （为了兼容老 WebView），混用 let 会不一致。
-            */
-            for (var i = 0; i < DATE_SLOTS; i++) {
-                (function (slotIndex) {
-                // 4 位（年后）与 6 位（月后）之前插 "-"
-                if (slotIndex === 4 || slotIndex === 6) {
-                    var sep = document.createElement('span');
-                    sep.className = 'detail-date-sep';
-                    sep.setAttribute('aria-hidden', 'true');
-                    sep.textContent = '-';
-                    group.appendChild(sep);
-                }
-
-                var seg = document.createElement('input');
-                seg.className = 'detail-date-seg';
-                seg.type = 'text';
-                seg.inputMode = 'numeric';
-                seg.autocomplete = 'off';
-                seg.autocapitalize = 'off';
-                seg.spellcheck = false;
-                /*
-                  ⚠️ **不要设 maxLength**。
-
-                     踩过的坑：设了 maxLength=1 之后，连续输入 "2015"
-                     只有第 1 个字符进得去 —— 因为格子填满后，
-                     maxLength 会在字符插入**之前**就拦掉后续按键，
-                     连 `input` 事件都不触发，于是「填满即跳下一格」
-                     的代码根本没机会执行。实测表现为：
-                     8 格永远只有第 1 格有值，焦点不动。
-
-                     正确做法：**不限制 DOM 层面的长度**，
-                     由下面的 input 处理器自己取「最后一位数字」
-                     并把多余的丢掉。这样每次按键都会触发 input，
-                     跳格逻辑才跑得起来。
-                */
-                seg.value = digits[slotIndex] || '';
-                /*
-                  ⚠️ placeholder 逐位给「YYYYMMDD」里的对应字符。
-
-                     用户要求：「里面的提示填充文字也得是 YYYY-MM-DD」。
-
-                     于是 8 个格子依次显示：
-                        Y Y Y Y - M M - D D
-                     拼起来读就是 YYYY-MM-DD —— 用户一眼知道
-                     「第 1 格填年的千位、第 5 格填月的十位」，
-                     不用猜每一格该填什么。
-
-                  ⚠️ 不能给整串 "YYYY-MM-DD"（那样每格都显示全部，
-                     反而看不懂）。所以按位取字符。
-
-                  ⚠️ 这个 placeholder 同时承担另一个职责：
-                     它是 `:placeholder-shown` 的触发条件 ——
-                     空格子的边框画淡靠它（见 styles.css）。
-                     所以**绝不能留空**。
-                */
-                seg.placeholder = DATE_HINT.charAt(slotIndex) || ' ';
-                seg.setAttribute('aria-label', dateSlotLabel(slotIndex));
-                seg.dataset.index = String(slotIndex);
-
-                /*
-                  ⚠️ `overwriteArmed`：这一格是否处于「用户要来改这一位」状态。
-
-                     背景（两个 bug 互相拉扯，必须同时满足）：
-
-                       bug A（连打）：用户依次打 20150624，
-                         焦点不动，每次按键都要落到**顺序的下一个空格**。
-                       bug B（修改）：用户点进某个已填的格子改一位，
-                         按键必须**覆盖这一格**，而不是往后找空位。
-
-                     单看"当前格有没有值"分不出这两者 ——
-                     连打时第一键之后当前格就有值了，
-                     若一律覆盖，结果就是 `4_______`（实测踩到）。
-
-                     ⚠️ 判据：**这一格的 focus 是不是由"点击"引发的**。
-                        · 点击进入 → 用户有明确的"改这一位"意图 → 覆盖；
-                        · 连打过程中焦点自己移过来（或压根没动）
-                          → 没有点击意图 → 顺序往后找空位。
-
-                     ⚠️ 为什么用 focus 事件而不是 click 事件：
-                        格子可能被**键盘/Tab**聚焦，也可能被
-                        spreadDigits 里的逻辑聚焦 —— 那些都不该
-                        触发覆盖。focus 是"焦点真的落到这里"的唯一
-                        统一入口，click 只是其中一种成因。
-                        所以这里在 focus 里置位，并在第一次
-                        按键后立刻消费掉（见 keydown）。
-                */
-                var overwriteArmed = false;
-
-                /*
-                  ⚠️ 输入走 keydown，焦点**不逐格移动** ——
-                     改为「把这一位写进第一个空格」。
-
-                     ══ 为什么不用「填一格跳一格」（踩了 4 轮坑）══
-
-                     最初的写法是：每格填上就 focus() 下一格。
-                     试过 4 种做法，全都不成立（弹层确认是打开的）：
-
-                       ① input 里同步 focus()      → 被本次按键后续处理覆盖
-                       ② setTimeout(fn, 0)         → 同一批次，仍被覆盖
-                       ③ requestAnimationFrame     → 同样无效
-                       ④ keydown 里 preventDefault + focus()
-
-                     ④ 看起来对了（焦点确实动了），但产生新问题：
-                     连打 20150624 时，每次按键都把焦点推一格，
-                     而**打字速度比焦点落定快** ——
-                     实测结果变成 `[0,0,0,0,0,0,0,1]`，
-                     只有最后一位落进末格，前面全空。
-
-                     根因：在「按键」这个粒度上挪焦点，就等于
-                     假设每次按键之间焦点一定已经落定。这个假设
-                     在真实设备上也不可靠（尤其输入法、快速连打）。
-
-                     ══ 现在的做法 ══
-
-                     焦点**留在用户点的那个格子里不动**；
-                     每次按键把这一位写进「从当前格起第一个空位」。
-                     写完把光标留在那一格，用户继续打就行。
-
-                     于是连打 20150624 的结果必然是 2,0,1,5,0,6,2,4
-                     依次落进 8 个格子 —— 不依赖任何时序假设。
-
-                     ⚠️ 覆盖已填的格子：若用户点回第 3 格重打，
-                        会把第 3 格改掉，**不会**往后堆。
-                        这是刻意的（见下）。
-                */
-                seg.addEventListener('keydown', function (event) {
-                    /*
-                      ⚠️ 退格：当前格有值就清掉，空格就回上一格清掉。
-                    */
-                    if (event.key === 'Backspace') {
-                        event.preventDefault();
-                        if (seg.value) {
-                            seg.value = '';
-                        } else {
-                            var prev = siblingSeg(seg, -1);
-                            if (prev) {
-                                prev.value = '';
-                                prev.focus();
-                            }
-                        }
-                        syncDateToDraft(field.key);
-                        return;
-                    }
-
-                    // 只接管单个数字键；其余（Tab / 方向键 / 组合键）放行
-                    if (event.key.length !== 1 || !/\d/.test(event.key)) return;
-                    if (event.ctrlKey || event.metaKey || event.altKey) return;
-
-                    /*
-                      ⚠️ preventDefault：不让浏览器自己插入。
-                         由我们写入并同步值，避免"浏览器先插一次、
-                         我们再覆盖"造成的双写与焦点竞争。
-                    */
-                    event.preventDefault();
-
-                    /*
-                      ══ 写入位置 ══
-
-                      两种意图，靠 `overwriteArmed` 区分（见它的声明处）：
-
-                      ⚠️① **overwriteArmed = true**：用户刚点进这一格，
-                            明确要来改这一位 → **覆盖当前格**。
-
-                            消费掉标记（一帧只服务一次点击）——
-                            否则连打时第一次按键覆盖了当前格，
-                            后续按键还会继续覆盖同一格，
-                            结果就是 `4_______`（实测踩过）。
-
-                      ⚠️② **未 armed**：连打中。从当前格起往后找第一个空位。
-
-                      ⚠️③ 往后也找不到空位（8 格全满且未 armed）→
-                            退回覆盖**当前格**，而不是丢弃按键。
-
-                            丢弃会让用户以为输入坏了 ——
-                            这正是"卡在前两位不动"那个 bug 的成因。
-                */
-                    var target = null;
-
-                    if (overwriteArmed) {
-                        // 消费掉：这一格只在"刚点进来"的第一次按键时覆盖
-                        overwriteArmed = false;
-                        target = seg;
-                    } else {
-                        target = seg;
-                        while (target && target.value) {
-                            target = siblingSeg(target, 1);
-                        }
-                        /*
-                          ⚠️ 连打走到这里说明**当前格是空**（所以第一轮
-                             while 不执行，target 仍是 seg）。
-                             若 while 走完变成 null，说明从当前格到末尾
-                             全满 —— 覆盖当前格比丢弃好。
-                        */
-                        if (!target) target = seg;
-                    }
-
-                    target.value = event.key;
-
-                    /*
-                      ⚠️ 光标要落在**真正被写入的那一格**上。
-
-                         连打时焦点可能停在别的格（比如第 1 格），
-                         而写入落到了后面的空格 —— 把光标移过去，
-                         后续输入才连贯，用户也能看到"写到哪了"。
-                    */
-                    if (target !== seg && document.activeElement !== target) {
-                        target.focus();
-                    }
-
-                    syncDateToDraft(field.key);
-                });
-
-                seg.addEventListener('input', function () {
-                    /*
-                      ⚠️ input 只处理**粘贴**（keydown 拿不到剪贴板内容）。
-
-                         单次按键已在 keydown 里防止了默认插入，
-                         所以走到这里的多字符必然来自粘贴/输入法上屏 ——
-                         铺开正合适。
-                    */
-                    var d = seg.value.replace(/\D/g, '');
-                    if (d.length > 1) {
-                        spreadDigits(seg, d, field.key);
-                        return;
-                    }
-                    syncDateToDraft(field.key);
-                });
-
-                /*
-                  ⚠️ 显式监听 paste，**不要只靠 input**。
-
-                     踩过的坑：Android WebView 里粘贴一个 "20150624"，
-                     若起始格已有值且被 select() 全选，浏览器会
-                     用粘贴内容**替换**选区，但仍只放进这一格 ——
-                     input 里 seg.value 变成 "20150624"，理论上是能铺开的，
-                     但实测某些 WebView 版本会把插入截断到 1 个字符
-                     （受 inputMode=numeric 影响），input 里只剩 1 位，
-                     于是铺开分支根本进不去，多出的位次直接丢失。
-
-                     显式拿 clipboardData 自己铺，就绕开了浏览器的插入行为。
-                */
-                seg.addEventListener('paste', function (event) {
-                    var clip = event.clipboardData || window.clipboardData;
-                    if (!clip) return;   // 拿不到就让浏览器按默认行为走
-                    var text = clip.getData('text') || '';
-                    var d = text.replace(/\D/g, '');
-                    if (!d) return;
-                    event.preventDefault();
-                    spreadDigits(seg, d, field.key);
-                });
-
-                /*
-                  ⚠️ 用 pointerdown（不是 click）来标记「用户是点进来的」。
-
-                     理由：click 在 **mouseup 之后**才触发，而用户
-                     点一下立刻打字时，keydown 可能早于 click ——
-                     那时标记还没置上，按键会走"往后找空位"，
-                     表现为"点了却改不了"。pointerdown 早于一切
-                     输入事件，时序上必然已经置好位。
-
-                     ⚠️ 它只负责记录"这一次 focus 是点击引起的"；
-                        真正决定是否覆盖在 focus 里做（见下），
-                        因为覆盖还要求「格子已有值」。
-                */
-                var pointerArmed = false;
-                seg.addEventListener('pointerdown', function () {
-                    pointerArmed = true;
-                });
-
-                seg.addEventListener('focus', function () {
-                    /*
-                      ⚠️ 判定「用户要来改这一位」并 arm 覆盖模式。
-
-                         两个条件缺一不可：
-                           ① 这次 focus 由 pointerdown 引起
-                              （或由键盘 Tab 引起 —— 见下面的说明）；
-                           ② 这一格**已有值**（空格子没有"改"的语义）。
-
-                         ⚠️ 为什么必须排除「连打时 keydown 里的
-                            target.focus()」这条路径：
-                            它也会触发 focus。若无条件 arm，
-                            连打的每一键都会变成覆盖同一格 ——
-                            实测结果 `4_______`（只留最后一位）。
-                            而 pointerArmed 在那条路径上是 false
-                            （是代码调 focus()，没有 pointerdown），
-                            所以能正确区分。
-
-                         ⚠️ 键盘用户（Tab）没有 pointerdown。
-                            这里用「focus 时没有 pointerArmed 且
-                            不是连打路径」无法与连打区分 ——
-                            所以键盘场景**不做 arm**：
-                            键盘用户可以用 Backspace 清掉一位再填，
-                            而连打（最常见的输入方式）绝不能被破坏。
-                            取舍明确：宁可键盘改一位要多按一下退格，
-                            也不能让连打失效。
-                    */
-                    if (seg.value && pointerArmed) overwriteArmed = true;
-                    pointerArmed = false;
-
-                    /*
-                      ⚠️ 只对**已有内容**的格子全选。
-
-                         空格子是「准备接下一个字符」的状态，
-                         全选会把它变成覆盖模式，看起来像输入被吃掉。
-
-                      ⚠️⚠️ 但**不能只靠 select()**（踩过的坑）。
-
-                         实测（Android WebView + Playwright 都复现）：
-                         点击一个有值的单字格，`select()` 之后
-                         `selectionStart/selectionEnd` 是 `0-0`
-                         —— 也就是**光标没选中任何字符**，
-                         而不是期望的 `0-1` 全选。
-
-                         ⚠️ 所以这里**不依赖 select() 的结果**：
-                            覆盖行为完全由 `overwriteArmed` 决定
-                            （见上面的写入位置注释 ①），
-                            select() 只是**尽力**给出视觉反馈。
-
-                         ⚠️ 用 requestAnimationFrame 再 select 一次：
-                            点击时浏览器会在 mouseup 后重置选区，
-                            同步调用 select() 会被这次重置覆盖掉。
-                            推迟一帧才落得住 —— 这是修复
-                            `0-0` 那个现象的实际措施。
-                    */
-                    if (!seg.value) return;
-                    seg.select();
-                    if (typeof global.requestAnimationFrame === 'function') {
-                        global.requestAnimationFrame(function () {
-                            /*
-                              ⚠️ 再确认一次仍是当前焦点格。
-                                 一帧之内用户可能已经点到别处了，
-                                 那时不该抢他的选区。
-                            */
-                            if (document.activeElement === seg) seg.select();
-                        });
-                    }
-                });
-
-                group.appendChild(seg);
-                inputs[field.key + '-slot' + slotIndex] = seg;
-                })(i);
-            }
-
-            wrap.appendChild(group);
+            wrap.appendChild(buildDateField(field, value));
             return wrap;
         }
 
@@ -993,7 +621,7 @@
      *    collectPatch() 拿到的仍是 `10.1038/nature14539`。
      *
      * ⚠️ 两个子框分别登记在 inputs 表里（`<key>-registrant` /
-     *    `<key>-suffix`），与日期的 `-slotN` 同一套约定。
+     *    `<key>-suffix`），与 DOI 的另一套约定一致。
      *    但 **`inputs[field.key]` 不登记** —— 它不是一个真实控件，
      *    真正的值在 draft 里（由 collectPatch 读 draft 还是读 inputs？
      *    见下面 collectPatch 的特判）。
@@ -1167,7 +795,7 @@
     var DATE_SLOTS = 8;
 
     /**
-     * 逐位提示文字，**只含数字位的字母**，不含分隔符。
+     * 逐位提示文字，**只含数字位**，不含分隔符。
      *
      * ⚠️ 长度必须等于 DATE_SLOTS（8），且**不能**写成 "YYYY-MM-DD"。
      *
@@ -1177,156 +805,25 @@
      *    `Y Y Y Y - M M -`，最后两个日的位置还取不到字符（空）。
      *
      *    根因：提示串里有没有分隔符，与**格子有没有分隔符**是两件事。
-     *    分隔符是 HTML 里的 span，不占格子；提示串只服务格子。
+     *    分隔符是 DOM 里的 span，不占格子；提示串只服务格子。
      *    两者混在一起数位就会错。
      *
-     *    显示效果（- 是 HTML 的 span）：
+     *    显示效果（- 是 DOM 的 span）：
      *      [Y][Y][Y][Y] - [M][M] - [D][D]
      */
     var DATE_HINT = 'YYYYMMDD';
 
     /**
-     * 某一格的读屏标签。
+     * 存储值 → 纯数字串。
      *
-     * ⚠️ 单字框没有可见标签（8 格并排不可能每个都写标签），
-     *    所以 aria-label 是**唯一**能让读屏用户知道
-     *    「现在在第几位」的信息。
-     *
-     * ⚠️ 不去 i18n 里为每一格建键 —— 那样要 8 个键且语义重复。
-     *    这里按「属于哪一段」拼出来更直接。
-     */
-    function dateSlotLabel(i) {
-        var part = i < 4 ? 'year' : (i < 6 ? 'month' : 'day');
-        // 段内序号：年是 1-4，月/日是 1-2
-        var posInPart = i < 4 ? (i + 1) : (i < 6 ? (i - 4 + 1) : (i - 6 + 1));
-        return t('detail.datePart.' + part) + ' ' + posInPart;
-    }
-
-    /**
-     * 把一串数字从某一格开始顺次铺到后面的格子里。
-     *
-     * ⚠️ 用途：**粘贴**（以及部分输入法一次上屏多个字符）。
-     *    单字格的 maxLength 已被刻意去掉（见 buildField 的注释），
-     *    所以「一次进来 8 个字符」是可能发生的 ——
-     *    这时不能让它们挤在一格里然后丢掉大部分，
-     *    而要铺开，让粘贴 "20150624" 能一次填满整行。
-     *
-     * ⚠️ 起点是**传入的那一格**，不是第 0 格 ——
-     *    用户可能在第 5 格粘贴（想从月的位置开始填），
-     *    从第 0 格开始会覆盖他已有的年份。
-     *
-     * ⚠️ 铺完后焦点落在**下一个空格**（没有空格就留在最后一格），
-     *    这样用户接着打字是自然的续写。
-     *
-     * @param {HTMLElement} startSeg 起始格
-     * @param {string} digits 纯数字串
-     * @param {string} [fieldKey] 字段名；给了就直接用它同步 draft
-     */
-    function spreadDigits(startSeg, digits, fieldKey) {
-        var wrap = startSeg.parentNode;
-        if (!wrap) return;
-        var all = Array.prototype.slice.call(
-            wrap.querySelectorAll('.detail-date-seg')
-        );
-        var start = all.indexOf(startSeg);
-        if (start < 0) return;
-
-        for (var i = 0; i < digits.length; i++) {
-            var cell = all[start + i];
-            if (!cell) break;   // 超出末尾就丢弃多余字符
-            cell.value = digits.charAt(i);
-        }
-
-        // 清掉起始格后面、本次未被覆盖的残留（粘贴短串时避免旧值还在）
-        for (var j = start + digits.length; j < all.length; j++) {
-            all[j].value = '';
-        }
-
-        /*
-          ⚠️ **不要在这里 focus**。
-
-             实测：粘贴后调 focus() 会被 WebView 回退，
-             并且焦点争夺会让随后的一次输入落错格。
-             焦点保持不动即可 —— keydown 的写入逻辑
-             本来就是"从当前格往后找空位"，不依赖焦点。
-        */
-
-        // ⚠️ 铺开后要刷一次 draft —— 否则只更新了 DOM，值没进 draft
-        if (fieldKey) {
-            syncDateToDraft(fieldKey);
-        } else {
-            syncDateToDraftByWrap(wrap);
-        }
-    }
-
-    /**
-     * 从容器反查它属于哪个字段，然后同步 draft。
-     *
-     * ⚠️ 存在的理由：spreadDigits 只拿到 DOM 容器（它由 startSeg.parentNode
-     *    取得），没有字段 key。而 key 是我们自己生成的 `-slotN` 前缀，
-     *    从 inputs 表反查得到 —— 比给容器挂 dataset 更省事。
-     */
-    function syncDateToDraftByWrap(wrap) {
-        var segs = wrap.querySelectorAll('.detail-date-seg');
-        if (!segs.length) return;
-        for (var key in inputs) {
-            if (inputs[key] === segs[0]) {
-                /*
-                  ⚠️ key 形如 `year-slot0`，**必须**去掉 `-slot0` 后缀
-                     才是字段名。直接传 key 会让 writeValue 写到
-                     `draft['year-slot0']` 上去（一个不存在的顶层键），
-                     表现为「粘贴后保存丢了」。
-                */
-                syncDateToDraft(key.replace(/-slot0$/, ''));
-                return;
-            }
-        }
-    }
-
-    /**
-     * 取相邻的格子（不移动焦点）。
-     *
-     * ⚠️ 作用域限定在同一个 .detail-date 容器内，不是整页找 `.detail-date-seg`。
-     *    将来若有第二个日期字段，全局查找会跨字段乱跳。
-     *
-     * @param {HTMLElement} seg 当前格
-     * @param {number} step +1 下一格 / -1 上一格
-     * @returns {HTMLElement|null} 相邻格；越界返回 null
-     */
-    function siblingSeg(seg, step) {
-        var wrap = seg.parentNode;
-        if (!wrap) return null;
-        var all = Array.prototype.slice.call(
-            wrap.querySelectorAll('.detail-date-seg')
-        );
-        var idx = all.indexOf(seg);
-        if (idx < 0) return null;
-        return all[idx + step] || null;
-    }
-
-    /**
-     * 焦点移到相邻格。
-     *
-     * ⚠️ 只在**退格**路径使用（把光标退回上一格）。
-     *    输入数字时**不**用这个 —— 逐格跳的时序不可靠，
-     *    见 buildField 里日期输入那段的长注释。
-     */
-    function focusDateSibling(seg, step) {
-        var next = siblingSeg(seg, step);
-        if (next) next.focus();
-    }
-
-    /**
-     * 存储值 → 8 个格子的初值（按位）。
-     *
-     * ⚠️ 先**剥成纯数字串**再按位填，不是把 "2015-06-24" 切三段。
+     * ⚠️ 先**剥成纯数字串**，不把 "2015-06-24" 切三段。
      *
      *    理由：8 格方案里每格只放一个字符，
-     *    而分隔符（"-"）自己占一格位置 ——
-     *    若按「年段/月段/日段」填，分隔符的位置就无处安放。
+     *    而分隔符（"-"）由我们自己按位插入 ——
+     *    若按「年段/月段/日段」处理，分隔符的位置就无处安放。
      *    剥成 "20150624" 后逐位对照，位置天然对齐。
      *
-     * ⚠️ 补到 8 位时**不补零**，只按已有位数填。
+     * ⚠️ **不补零**，只按已有位数填。
      *    "2015" → 前 4 格有值、后 4 格空 —— 这样用户一眼看出
      *    自己只填到了年，而不是被自动补成 "2015-00-00"。
      *
@@ -1336,69 +833,242 @@
     function parseDateDigits(raw) {
         var s = String(raw || '').trim();
         if (!s) return '';
-        var digits = s.replace(/\D/g, '');
-        return digits.slice(0, DATE_SLOTS);
+        return s.replace(/\D/g, '').slice(0, DATE_SLOTS);
     }
 
     /**
-     * 8 个格子 → 存储值，写进 draft。
+     * 纯数字串 → 存储值。
      *
      * ⚠️ 按**用户填到的最高位**决定粒度，不补零：
-     *      只填到第 4 格        → "2015"
-     *      填到第 6 格          → "2015-06"
-     *      填到第 8 格          → "2015-06-24"
+     *      4 位 → "2015"
+     *      6 位 → "2015-06"
+     *      8 位 → "2015-06-24"
      *
-     * ⚠️ **必须从第 1 格起连续**，中间不能空。
-     *    踩不到的坑要提前堵：用户可能只填了年和日、漏了月，
-     *    此时把格子的值直接拼起来会得到 "2015" + "" + "24" = "201524"，
-     *    长度是 6 → 会被当成 "2015-24"（12 月？）—— 完全错乱。
+     * ⚠️ 不足 4 位（年不完整）**返回空串** —— "201" 不是年份。
+     *    空串的语义是「清空该字段」，比存一个假年份安全。
+     *    （判据同 PDF 元数据：宁可留空，不可存错值。）
      *
-     *    所以这里**先找出最后一个已填格**，若它之前有空位
-     *    就**整串丢弃**（返回空）。宁可暂时不存，也不能存错的。
-     *    用户填完月那一刻，空位消失，值自然就存进去了。
+     * ⚠️ 只保留偶数位的月/日（4→年、6→年月、8→年月日）。
+     *    5 位（"20150"）这种半截状态按「只到年」处理，
+     *    因为它连月份的第一位都还没凑齐。
      *
-     * ⚠️ 年不足 4 位也丢弃（"201" 不是年份）。
+     * @param {string} digits 纯数字串
+     * @returns {string} 存储用的日期字符串
      */
-    function syncDateToDraft(key) {
-        if (!draft) return;
+    function formatDateValue(digits) {
+        var d = String(digits || '').replace(/\D/g, '').slice(0, DATE_SLOTS);
+        if (d.length < 4) return '';
+        var out = d.slice(0, 4);
+        if (d.length >= 6) out += '-' + d.slice(4, 6);
+        if (d.length >= 8) out += '-' + d.slice(6, 8);
+        return out;
+    }
 
-        var cells = [];
+    /**
+     * 造日期行：**一个铺满整行的透明 input + 8 个纯展示的格子**。
+     *
+     * ══ 结构 ══
+     *
+     *   .detail-date                      （position: relative 的容器）
+     *     ├─ .detail-date-input           （透明 input，绝对定位铺满，真正接收输入）
+     *     └─ .detail-date-cells           （pointer-events: none 的展示层）
+     *          ├─ .detail-date-seg × 4     （年，每格显示一位或占位字母）
+     *          ├─ .detail-date-sep         （"-"）
+     *          ├─ .detail-date-seg × 2     （月）
+     *          ├─ .detail-date-sep         （"-"）
+     *          └─ .detail-date-seg × 2     （日）
+     *
+     * ══ 为什么是「一个 input」而不是「8 个 input」══
+     *
+     * 见 buildField 里 date 分支的长注释。一句话：
+     * 真机上软键盘不派发带字符的 keydown，而 8 格方案的
+     * 「推进到下一格」逻辑必须挂在 keydown 上 → 整行卡死。
+     * 单 input 方案里「哪一格」由**值的位置**决定，不依赖事件类型。
+     *
+     * ⚠️ 展示层必须 `pointer-events: none`，否则点在格子上
+     *    不会把焦点交给下面的 input（点哪儿都没反应）。
+     *    这与「覆盖层不能挡住点击」是同一个教训（elementFromPoint）。
+     *
+     * @param {Object} field meta.js 里的字段定义
+     * @param {string} value 当前存储值（如 "2015-06-24"）
+     * @returns {HTMLElement} 完整的 .detail-date 容器
+     */
+    function buildDateField(field, value) {
+        var group = document.createElement('div');
+        group.className = 'detail-date';
+
+        /*
+          ⚠️ 真正的输入控件。
+
+             `type="text"` + `inputMode="numeric"`：手机弹数字键盘，
+             但仍允许退格、粘贴、输入法 —— 不用 type="number"
+             （它会在部分 WebView 里显示调节箭头，且非法值时
+             `.value` 返回空串，表现为"打一个字母整格清空"）。
+
+             ⚠️ 设 maxLength = 8 —— 超过就插不进来，
+                省得我们自己再截断（截断会造成光标跳动）。
+                粘贴 "2015-06-24" 共 10 字符会被截到 8，
+                但我们在 input 里先剥非数字，所以粘贴的连字符
+                不占额度：剥完是 8 位数字，正好。
+                实测：先剥后截的顺序必须如此 ——
+                若先按原始长度截断会把结尾的 "24" 切掉。
+        */
+        var input = document.createElement('input');
+        input.className = 'detail-date-input';
+        input.id = 'detail-input-' + field.key;
+        input.type = 'text';
+        input.inputMode = 'numeric';
+        input.autocomplete = 'off';
+        input.autocapitalize = 'off';
+        input.spellcheck = false;
+        /*
+          ⚠️ 可见的占位提示不能靠 input 自己（它是透明的，
+             caret 之外什么都看不见），由下面的格子显示
+             "YYYY-MM-DD"。但这里仍给个 aria-label 供读屏使用。
+        */
+        input.setAttribute('aria-label', t('vault.field.date'));
+        input.value = parseDateDigits(value);
+
+        /* 展示层：8 个格子 + 2 个分隔符，纯展示 */
+        var cells = document.createElement('div');
+        cells.className = 'detail-date-cells';
+        // ⚠️ 挡住点击就等于整行点不动（用户会以为控件坏了）
+        cells.setAttribute('aria-hidden', 'true');
+
+        var segEls = [];
         for (var i = 0; i < DATE_SLOTS; i++) {
-            var el = inputs[key + '-slot' + i];
-            var ch = el ? String(el.value || '').replace(/\D/g, '') : '';
-            cells.push(ch ? ch.charAt(0) : '');
-        }
-
-        // 最后一个已填格的下标；全空则 -1
-        var last = -1;
-        for (var j = DATE_SLOTS - 1; j >= 0; j--) {
-            if (cells[j]) { last = j; break; }
-        }
-        if (last < 0) {
-            writeValue(key, '');
-            return;
-        }
-
-        // ⚠️ 从第 1 格到 last 必须连续，有一个空位就整串作废
-        for (var k = 0; k <= last; k++) {
-            if (!cells[k]) {
-                writeValue(key, '');
-                return;
+            // 4 位（年后）与 6 位（月后）之前插 "-"
+            if (i === 4 || i === 6) {
+                var sep = document.createElement('span');
+                sep.className = 'detail-date-sep';
+                sep.textContent = '-';
+                cells.appendChild(sep);
             }
+            var seg = document.createElement('span');
+            seg.className = 'detail-date-seg';
+            cells.appendChild(seg);
+            segEls.push(seg);
         }
 
-        // 年不够 4 位 → 还不是合法年份
-        if (last < 3) {
-            writeValue(key, '');
-            return;
+        /**
+         * 把 input 的当前值画到 8 个格子上。
+         *
+         * ⚠️ 每格显示「该位的数字」或「DATE_HINT 里对应的字母」——
+         *    用户要求「提示填充文字也得是 YYYY-MM-DD」。
+         *    于是空格子依次显示 Y Y Y Y - M M - D D。
+         *
+         * ⚠️ 不要给整串 "YYYY-MM-DD"（每格都显示全部反而看不懂），
+         *    所以按位取字符。
+         *
+         * ⚠️ 用 `is-filled` 类而不是 `:placeholder-shown` 来决定
+         *    边框深浅 —— 已经没有 placeholder 了（span 没有这个概念）。
+         */
+        function paint() {
+            var d = input.value.replace(/\D/g, '');
+            for (var k = 0; k < DATE_SLOTS; k++) {
+                var ch = d.charAt(k);
+                segEls[k].textContent = ch || DATE_HINT.charAt(k);
+                if (ch) {
+                    segEls[k].classList.add('is-filled');
+                } else {
+                    segEls[k].classList.remove('is-filled');
+                }
+            }
+            /*
+              ⚠️ 光标位置要跟格子里的数字对齐 —— 不然用户点在第 5 格
+                 打字，光标却停在第 1 格，看起来像没反应。
+
+                 做法：把 selection 当作「数字串里的下标」，
+                 但由于 input 里存的**就是**纯数字串（无分隔符），
+                 浏览器自己的光标位置与格子下标天然一一对应，
+                 不需要额外映射。这里只做画格子。
+            */
         }
 
-        var buf = cells.slice(0, last + 1).join('');
-        var out = buf.slice(0, 4);
-        if (buf.length >= 6) out += '-' + buf.slice(4, 6);
-        if (buf.length >= 8) out += '-' + buf.slice(6, 8);
+        /*
+          ⚠️ 输入处理：**唯一**的入口。
 
-        writeValue(key, out);
+             不需要 keydown / paste / beforeinput 分开处理 ——
+             浏览器负责插入（含粘贴、输入法上屏），
+             我们只做两件事：
+               ① 剥掉非数字、截到 8 位（规范值）
+               ② 重画格子
+
+             ⚠️ 这就是修复的核心：**不再有「往哪一格写」的逻辑**。
+                哪一格由字符在值里的下标决定，任何输入方式都一样。
+
+             ⚠️ 只在值真的变了时才回写 input.value ——
+                无条件回写会重置光标到末尾，用户想在中间插入
+                一位时就会"跳到末尾"。
+        */
+        input.addEventListener('input', function () {
+            var cleaned = input.value.replace(/\D/g, '').slice(0, DATE_SLOTS);
+            if (cleaned !== input.value) {
+                /*
+                  ⚠️ 保留光标：把光标放在「它前面有多少个数字」
+                     对应的位置上。剥掉非数字后长度会变短，
+                     直接用原 selectionStart 会越界飘走。
+                */
+                var pos = input.selectionStart || 0;
+                var before = input.value.slice(0, pos).replace(/\D/g, '').length;
+                input.value = cleaned;
+                try {
+                    input.setSelectionRange(before, before);
+                } catch (e) {
+                    // 某些老 WebView 在非聚焦状态下会抛 —— 忽略即可
+                }
+            }
+            writeValue(field.key, formatDateValue(input.value));
+            paint();
+        });
+
+        /*
+          ⚠️ 点击 / 聚焦时把光标放到**末尾**（已有的值之后）。
+
+             理由：日期是「从左往右逐位填」的，用户点进来
+             几乎总是要继续往后填。若光标停在中间，
+             新输入会插在中间，与"续填"的预期不符。
+
+             ⚠️ 只在**空格子**（cursor 已在末尾）时无所谓；
+                已有值时 `setSelectionRange(len, len)` 保证续填。
+        */
+        input.addEventListener('focus', function () {
+            var len = input.value.length;
+            /*
+              ⚠️ 用 requestAnimationFrame 推迟一帧：
+                 点击时浏览器会在 mouseup 后重置选区，
+                 同步设置会被这次重置覆盖掉（老 WebView 实测）。
+            */
+            var place = function () {
+                try {
+                    input.setSelectionRange(len, len);
+                } catch (e) { /* 同上，忽略 */ }
+            };
+            place();
+            if (typeof global.requestAnimationFrame === 'function') {
+                global.requestAnimationFrame(function () {
+                    if (document.activeElement === input) place();
+                });
+            }
+        });
+
+        group.appendChild(input);
+        group.appendChild(cells);
+        paint();
+
+        /*
+          ⚠️ 登记 input 供 collectPatch 读取。
+             collectPatch 走的是通用分支（`inputs[key].value`），
+             所以这里给的 **必须已经是存储格式**的字符串 ——
+             而 input.value 是纯数字串（"20150624"）。
+             故 collector 里对 date 有特判（见 collectPatch）。
+             为保持一致，这里把规范化后的值同步进 draft 即可，
+             collectPatch 的 date 分支直接读 draft。
+        */
+        inputs[field.key] = input;
+        writeValue(field.key, formatDateValue(input.value));
+
+        return group;
     }
 
     /**
@@ -1540,10 +1210,14 @@
             author: draft.author,
             /*
               ⚠️ 日期取 draft 里的值，**不再需要归一化** ——
-                 三个分段框每次输入都经 syncDateToDraft() 直接拼好
-                 写进 draft（粒度天然由「填了几格」决定）。
+                 每次 input 都由 formatDateValue() 规范好写进 draft
+                 （粒度天然由「填了几位」决定）。
                  早先用 <input type="date"> 时得把「补全的 01-01」
                  还原成原始粒度，那套 normalizeDate() 已随之删除。
+
+                 ⚠️ 也不能走下面「读 inputs[key].value」的通用分支 ——
+                    日期 input 里存的是**纯数字串**（"20150624"），
+                    而存储格式是 "2015-06-24"。
             */
             year: draft.year,
             /*
@@ -1583,6 +1257,20 @@
             */
             if (field.kind === 'doi') {
                 patch[field.key] = String(draft.fields && draft.fields[field.key] || '');
+                return;
+            }
+
+            /*
+              ⚠️ 日期同样要**走 draft 特判**。
+
+                 它的 <input> 里存的是**纯数字串**（"20150624"），
+                 而存储格式是 "2015-06-24" —— 两者不同。
+                 通用分支会直接把数字串存进去，表现为
+                 「保存后日期变成 20150624」。所以这里读 draft
+                 （每次 input 都由 formatDateValue 规范化后写入）。
+            */
+            if (field.kind === 'date') {
+                patch[field.key] = String(draft[field.key] || '');
                 return;
             }
 

@@ -2269,8 +2269,68 @@ body {
      所以不要自创下划线样式，直接复用 .detail-input 那套视觉。
 */
 .detail-date {
+    /*
+      ⚠️ 三层结构：透明 input 铺满整行，展示层压在它上面（pointer-events: none）。
+
+         这里只给定位上下文与整体尺寸 —— 具体尺寸由下面的
+         .detail-date-input / .detail-date-cells 各自撑出来。
+    */
+    position: relative;
+    width: 100%;
+    font-variant-numeric: tabular-nums;
+}
+
+/*
+  ⚠️ 真正接收输入的控件：**透明铺满整行**。
+
+     用户看到的 8 个格子是它上面的展示层画的，它自己不可见
+     （但 caret 可见 —— 光标要能看见，否则用户不知道在打字）。
+
+     ⚠️ 用 opacity 而不是 visibility:hidden —— 后者会让它
+        不接收点击。也不能用 `color: transparent` 之外的办法，
+        因为 caret 的颜色跟随 color。所以这里是：
+          · 文字透明（用户看到的是展示层的数字）
+          · caret 用 caret-color 单独给回可见颜色
+          · 背景透明（圆角框由展示层的格子画）
+*/
+.detail-date-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: transparent;
+    /*
+      ⚠️ caret 必须可见，否则用户点进去完全看不出焦点在哪
+         （透明输入框里唯一的位置提示就是它）。
+    */
+    caret-color: var(--on-surface);
+    font: inherit;
+    font-size: 15px;
+    outline: none;
+    /* 让 caret 从最左边开始，与第 1 格的位置对齐 */
+    text-align: left;
+}
+
+/*
+  ⚠️ 展示层：8 个格子 + 分隔符，**不接收任何指针事件**。
+
+     踩过的坑（同 z-index 覆盖那类）：这层盖在 input 上面，
+     若它吃掉 pointer 事件，用户点哪个格子都不会把焦点
+     交给下面的 input —— 表现就是「点哪儿都没反应」。
+
+     ⚠️ 判据仍然是 elementFromPoint：点格子中心应当命中的是
+        .detail-date-input（或它的祖先），不是 .detail-date-seg。
+*/
+.detail-date-cells {
+    position: relative;
     display: flex;
     align-items: center;
+    pointer-events: none;
     /*
       ⚠️ 格子之间留 **8px**（用户要求「框与框之间的间隔稍微大一点」）。
 
@@ -2284,19 +2344,15 @@ body {
     */
     gap: 8px;
     width: 100%;
-    font-variant-numeric: tabular-nums;
 }
 
 /*
   ⚠️ flex: 1 1 0 + min-width: 0 才能真正等分。
-
-     只写 flex: 1 时，input 的默认 size 属性会给出一个最小内容宽度，
-     8 个格子加起来会超出容器（实测：必须显式 min-width: 0）。
+     元素默认有 min-content 宽度，8 个格子加起来会超出容器。
 */
 .detail-date-seg {
     flex: 1 1 0;
     min-width: 0;
-    width: auto;
     box-sizing: border-box;
     /* 与 .detail-input 同一套：圆角框 + 边框 + 同样的内边距 */
     padding: 9px 0;
@@ -2309,7 +2365,6 @@ body {
     font-weight: 400;
     font-variant-numeric: tabular-nums;
     text-align: center;
-    outline: none;
     /*
       ⚠️ 高度必须与 .detail-input 一致（它也是 min-height: 38px
          + padding 9px，但 box-sizing: border-box 后实际 38px）。
@@ -2319,6 +2374,14 @@ body {
          同一张表单里两种框高，一眼就能看出来。
     */
     height: 38px;
+    /*
+      ⚠️ 高度上要**垂直居中**：它是 span（display 默认 inline），
+         line-height 不给的话文字会贴在顶部。用 flex 居中最稳。
+    */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
     transition: border-color 160ms ease;
 }
 
@@ -2329,11 +2392,14 @@ body {
         浅太多，看起来像两种控件。这里改用与 --outline 同色系、
         仅降一点点透明度，做到「看得出有区别但不觉得是别的控件」。
 
-  ⚠️ 用 `:placeholder-shown` 判断空值，靠 placeholder=" "（一个空格）
-     触发（见 detail.js）。
-     不用 `:empty` —— 那对 <input> 无效（input 永远不是 :empty）。
+  ⚠️ 判据是 `.is-filled` 类（由 detail.js 的 paint() 维护），
+     **不是** `:placeholder-shown` —— 展示层是 span，没有 placeholder。
+     早期用 :placeholder-shown 是针对真 input 的写法，已不适用。
+
+  ⚠️ 边框淡化与提示字母弱化合并在下面**同一条**规则里 ——
+     它们的判据相同，拆开容易被改漏一半。
 */
-.detail-date-seg:placeholder-shown {
+.detail-date-seg:not(.is-filled) {
     /*
       ⚠️ 原来这里写死 rgba(51,51,51,0.7) —— 那是**只在日间模式成立**的值。
          夜间模式 --surface 是 #242424，51,51,51 的边框几乎看不见，
@@ -2347,21 +2413,46 @@ body {
 }
 
 /*
-  ⚠️ 日期格的占位提示颜色。
+  ⚠️ 空格子：边框轻微淡化 + 提示字母用弱化色。
 
-     不写这条时用浏览器默认（实测 rgb(117,117,117)）——
-     日间勉强可用，夜间模式在 #242424 上对比度不足。
+     ⚠️ 两件事合并成一条规则 —— 它们的判据相同（都看 `.is-filled`），
+        拆成两条会让人以为可以独立调整，实际上必须同步增删。
 
-     显式绑 --on-surface-variant，两个主题都正确。
-     注意别用 .detail-input 那条规则：日期格的类是
-     .detail-date-seg，选择器不匹配，必须单写。
+     ⚠️ 判据是 `.is-filled` 类（由 detail.js 的 paint() 维护），
+        **不是** `:placeholder-shown` —— 展示层是 span，没有 placeholder。
+        早期用 :placeholder-shown 是针对真 input 的写法，已不适用。
 */
-.detail-date-seg::placeholder {
+.detail-date-seg:not(.is-filled) {
+    /*
+      ⚠️ 原来这里写死 rgba(51,51,51,0.7) —— 那是**只在日间模式成立**的值。
+         夜间模式 --surface 是 #242424，51,51,51 的边框几乎看不见，
+         空格子会"消失"。
+
+         改用主题令牌 --outline-faint（三个主题块里都定义了）。
+      ⚠️ 不要用 color-mix()：它需要 Chrome 111+，
+         而 minSdk 26 的机器上 WebView 版本无法保证。
+    */
+    border-color: var(--outline-faint);
+    /*
+      ⚠️ 提示字母（YYYYMMDD）用弱化色。
+
+         这层文字由 paint() 写入 textContent，**不是** placeholder ——
+         早期那两条 ::placeholder 规则（.detail-date-seg::placeholder）
+         针对的是真 input，现在展示层是 span。
+         不写这条的话夜间模式在 #242424 上对比度不足。
+    */
     color: var(--on-surface-variant);
-    opacity: 1;
 }
 
-.detail-date-seg:focus {
+/*
+  ⚠️ 聚焦时**整行**的格子都描深一点。
+
+     因为真正的焦点在透明 input 上、不落在任何单个格子上，
+     没法只高亮"某一格"。整行一起变，用户能看出"这一行被选中了"。
+
+     ⚠️ 用 `:focus-within`（父级）而不是 `:focus` —— 焦点在子元素 input 上。
+*/
+.detail-date:focus-within .detail-date-seg {
     border-color: var(--on-surface-variant);
 }
 
