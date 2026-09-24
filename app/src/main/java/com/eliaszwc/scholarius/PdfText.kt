@@ -113,25 +113,33 @@ object PdfText {
 
                   ① 行分隔符。
                      必须显式设为 "\n"。PDFBox 默认用的也是换行，
-                     但 Android 版的默认值受系统属性影响，不可依赖。
+                     但取值来自 System.getProperty("line.separator")，不可依赖。
 
-                  ② 段落分隔符（setParagraphSeparator）。
-                     PDF 的行与**段**是两回事：一行的结束不代表段落结束
-                     （正文行也是逐行输出的）。要看出段落，必须让
-                     PDFBox 在段落边界输出**两个**换行。
-                     这一步是关键 —— 只做 ① 得到的是「每行一句、
-                     行行等距」的一大坨，仍然没法读。
+                  ② 段落分隔。
+                     ⚠️ API 是 paragraphStart / paragraphEnd（成对），
+                        **不是** paragraphSeparator —— 后者是 desktop
+                        PDFBox 的写法，Android 版没有，写上去编译不过。
+                        默认 paragraphStart/End 都是空串，也就是**段落之间
+                        没有任何分隔**，正文会连成一整块。这里显式给出
+                        结尾双换行，段落之间才会空一行。
 
-                  ③ 页间分隔符。
-                     默认只用 paragraphSeparator，页码会与正文粘住。
-                     显式用 "\n\n" 隔开每一页。
+                  ③ 页分隔。
+                     同上，API 是 pageStart / pageEnd（默认 pageEnd 是
+                     单个换行，页码会与正文粘住）。这里用双换行隔开每一页。
 
-                  ⚠️ 关掉 setShouldSeparateByBeads？不 —— 保留默认 true。
+                  ⚠️ 不要关掉 setShouldSeparateByBeads（保留默认 true）。
                      它是分栏/分区块的辅助，关掉反而让双栏串行。
+
+                  ⚠️ addMoreFormatting 不要打开。它会把 paragraphEnd /
+                     pageStart / articleStart 都**强制改写成 lineSeparator**
+                     （见 PDFTextStripper.writeText 的开头几行），
+                     等于把我们上面设的段落分隔全部抹掉。
                 */
                 stripper.lineSeparator = "\n"
-                stripper.paragraphSeparator = "\n\n"
-                stripper.pageSeparator = "\n\n"
+                stripper.paragraphStart = ""
+                stripper.paragraphEnd = "\n\n"
+                stripper.pageStart = "\n\n"
+                stripper.pageEnd = "\n\n"
 
                 /*
                   ⚠️ 用 writeText(Writer) 而不是 getText()。
