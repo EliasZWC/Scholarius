@@ -50,9 +50,29 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
 
     /**
+     * **原始视图（PDF）专用**的 WebView，盖在主 WebView 之上。
+     *
+     * ══ 为什么需要第二个 WebView ══
+     *
+     * Android WebView 的内置 PDF 查看器只在**顶层文档**里工作
+     * （塞进 iframe 是空白 —— 实测过）。所以 PDF 必须由某个
+     * WebView 的**主文档**承载。
+     *
+     * 但若让 [webView] 自己去 loadUrl(PDF)，整个应用界面就被替换掉了，
+     * 顶栏跟着消失 —— 用户**没法切回阅读视图**。
+     *
+     * 所以另开一个 WebView 专管 PDF：主 WebView 与我们的 UI 完好无损，
+     * 返回时把这一层 `visibility = GONE` 即可。
+     *
+     * ⚠️ 它与 [webView] 是两个独立文档，**不共享 JS 环境** ——
+     *    别试图从这个 WebView 里调 ScholariusNative。
+     */
+    private lateinit var rawView: WebView
+
+    /**
      * 布局根视图。必须存成字段，并且**不能叫 rootView**：
      * - 在 `with(webView) { ... }` 作用域里写 `findViewById(...)` 会被解析成
-     *   `webView.findViewById(...)`，从 WebView 往下找是找不到父级的根视图的；
+     *   `webView.findViewById(...)`，从 WebView 往下找找不到父级的根视图的；
      * - `View` 有 `getRootView()`，Kotlin 会暴露成合成属性 `rootView`，同名字段会被遮蔽。
      */
     private lateinit var layoutRoot: View
@@ -157,21 +177,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 把某篇文献的 PDF 装入 WebView（阅读页的「原始视图」）。
+     * 把某篇文献的 PDF 装入 [rawView]，并把它显示出来（阅读页的「原始视图」）。
      *
-     * ══ 为什么是「顶层导航」而不是网页里的 iframe ══
+     * ══ 演进过程（两次都栽在同一个限制上）══
      *
-     * 原始实现是网页里放 `<iframe src=".../pdf/<id>">`，
-     * 实测（用户反馈「看不见 pdf」）：iframe 尺寸正常、URL 也真的
-     * 发出去了，但**画面是空的**。
+     * ① 网页里放 `<iframe src=".../pdf/<id>">`
+     *    实测（用户反馈「看不见 pdf」）：iframe 尺寸正常、URL 也真的
+     *    发出去了，但**画面是空的**。
+     *    根因：Android WebView 的内置 PDF 查看器是为**顶层文档**设计的，
+     *    在子框架里不渲染。这是查看器的行为，不是我们的代码错。
      *
-     * 根因：Android WebView 的内置 PDF 查看器是为**顶层文档**设计的，
-     * 它在子框架里不渲染。这是查看器的行为，不是我们的代码错。
+     * ② 让主 WebView 自己 loadUrl(PDF)（顶层，能渲染）
+     *    但整个应用界面被替换掉了 —— **顶栏跟着消失，切不回阅读视图**
+     *    （用户反馈「没有成功转换视图」）。
      *
-     * 所以改成这里做一次 loadUrl —— 等同用户直接打开一个 PDF 链接。
-     *
-     * ⚠️ 代价：调用后网页**不在前台**了（WebView 只有一条主文档）。
-     *    所以返回键必须先 pop 回网页（见 [isShowingRawPdf]）。
+     * ③ 本方案：另开一个 WebView（[rawView]）盖在上面
+     *    PDF 是它的**顶层文档**，所以查看器肯渲染；
+     *    主 WebView 与我们的 UI 完好无损，顶栏还在，随时能切回来。
      *
      * ⚠️ 必须在主线程调用 —— WebView 的所有方法都要求创建它的线程。
      *    桥的回调跑在 JavaBridge 线程上，所以这里 runOnUiThread。
@@ -183,7 +205,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         runOnUiThread {
-            if (!::webView.isInitialized) return@runOnUiThread
+            if (!::rawView.isInitialized || !::webView.isInitialized) return@runOnUiThread
 
             val file = LibraryStore.pdfFile(this, id)
             if (!file.isFile) {
@@ -204,11 +226,20 @@ class MainActivity : AppCompatActivity() {
                     优雅接管；但那属于另一个功能（下载），
                      现在不引入。当前只保证"把 PDF 交给 WebView"。
             */
-            debugLog("[raw] loading pdf: $id")
+            debugLog("[raw] loading pdf into overlay: $id")
             try {
-                webView.loadUrl(rawPdfUrlFor(id))
+                /*
+                  ⚠️ 先 loadUrl 再显示，而不是先显示再 loadUrl。
+                     顺序反了会有一瞬间"空白覆盖层"（深色底）糊在界面上，
+                     观感像闪了一下黑屏。
+                */
+                rawView.loadUrl(rawPdfUrlFor(id))
+                rawView.visibility = View.VISIBLE
+                rawView.bringToFront()
+                debugLog("[raw] overlay visible")
             } catch (t: Throwable) {
                 Log.w(TAG, "原始视图：加载 PDF 失败 $id", t)
+                rawView.visibility = View.GONE
                 notifyRawClosed()
             }
         }
@@ -221,9 +252,15 @@ class MainActivity : AppCompatActivity() {
     /**
      * 通知网页「已经从 PDF 回来了」，让它把视图状态归位。
      *
-     * ⚠️ 只在**异常路径**（PDF 不存在 / loadUrl 抛异常）调用。
-     *    正常返回走 `webView.goBack()`，网页本来就是阅读视图，
-     *    不需要这一下（多调反而会让按钮闪）。
+     * ⚠️ 为什么**每次**关闭都要通知，而不是只在异常路径通知：
+     *    网页在切过去时已经把图标切成"原始视图"了（它要即时反馈），
+     *    但 PDF 是盖在别的 WebView 上的独立文档 —— 网页全程收不到
+     *    任何事件（看不见覆盖层的显示/隐藏）。没有这条通知，
+     *    用户回来后图标会一直停在"原始视图"上，与画面不符。
+     *
+     * ⚠️ 这是**跨 WebView 的唯一通信方式**：
+     *    `rawView` 与 `webView` 是两个独立文档，不共享 JS 环境，
+     *    桥也没有装到 `rawView` 上（它只显示 PDF，不需要桥）。
      */
     private fun notifyRawClosed() {
         if (!::webView.isInitialized || !pageReady) return
@@ -417,6 +454,18 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.web_view)
         configureWebView()
 
+        /*
+          ⚠️ 原始视图的 WebView **只做一件事**：显示 PDF。
+             它不注入桥、不加载网页资源、不参与主题同步 ——
+             给它的设置越少越好（每项设置都是潜在的意外来源）。
+
+          ⚠️ 它仍然需要 shouldInterceptRequest 才能拿到 PDF 文件流
+             （文件在应用私有目录，网页侧访问不到），
+             所以这里复用同一个 [pdfResponseFor]。
+        */
+        rawView = findViewById(R.id.raw_view)
+        configureRawView()
+
         // 后台久置被系统回收后重建 Activity 时，WebView 想把「旧状态」恢复回来，
         // 但渲染进程已经没了，恢复出来就是一片空白（用户看到的白屏）。
         // 我们的数据在 localStorage / 本地文件里，网页载入后自己会同步，
@@ -461,8 +510,8 @@ class MainActivity : AppCompatActivity() {
                         特征是：历史里多了一条，且当前 URL 是 PDF 通道。
                 */
                 if (isShowingRawPdf()) {
-                    debugLog("[back] raw pdf: going back to web")
-                    webView.goBack()
+                    debugLog("[back] raw pdf: closing overlay")
+                    closeRawView()
                     return
                 }
 
@@ -493,21 +542,32 @@ class MainActivity : AppCompatActivity() {
     /**
      * 当前 WebView 是否正在显示原始视图（PDF）。
      *
-     * ⚠️ 判据用 **URL** 而不是 `canGoBack()` ——
-     *    后者只说明「历史里还有上一条」，未来若加入别的导航
-     *    （比如网页内的锚点跳转）会误判。
-     *    URL 直接说明「现在看的这个东西是不是我们的 PDF 通道」。
+     * ⚠️ 判据是**覆盖层是否可见**，而不是主 WebView 的 URL ——
+     *    PDF 现在装在独立的 [rawView] 里，主 WebView 的 URL
+     *    始终是入口页，用它判断永远为 false（实测踩过这个坑）。
      */
-    private fun isShowingRawPdf(): Boolean {
-        if (!::webView.isInitialized) return false
-        val url = try { webView.url } catch (t: Throwable) { null } ?: return false
-        return try {
-            val uri = Uri.parse(url)
-            uri.host == APP_ASSETS_HOST &&
-                uri.pathSegments.firstOrNull() == PDF_URL_PREFIX.trim('/')
+    private fun isShowingRawPdf(): Boolean =
+        ::rawView.isInitialized && rawView.visibility == View.VISIBLE
+
+    /**
+     * 隐藏原始视图，回到网页。
+     *
+     * ⚠️ 三件事缺一不可：
+     *   ① 隐藏覆盖层（用户重新看到网页）
+     *   ② 把 rawView 导航回 about:blank —— 释放内置查看器。
+     *      **只隐藏不释放不行**：查看器会一直持有 PDF 文件句柄与
+     *      渲染资源，连读十几篇内存明显上涨（隐藏 != 卸载）。
+     *   ③ 通知网页把按钮状态归位（图标/aria-pressed 切回阅读视图）。
+     */
+    private fun closeRawView() {
+        if (!::rawView.isInitialized) return
+        rawView.visibility = View.GONE
+        try {
+            rawView.loadUrl("about:blank")
         } catch (t: Throwable) {
-            false
+            Log.w(TAG, "释放原始视图失败", t)
         }
+        notifyRawClosed()
     }
 
     /**
@@ -761,6 +821,105 @@ class MainActivity : AppCompatActivity() {
                 Log.w(TAG, "WebView 渲染进程退出（didCrash=${detail?.didCrash()}），重建 WebView")
                 rebuildWebView()
                 return true
+            }
+        }
+    }
+
+    /**
+     * 配置**原始视图**专用的 WebView（[rawView]）。
+     *
+     * ══ 设计原则：不要用「和主 WebView 一样」的配置 ══
+     *
+     * 它只显示 PDF，**不需要** JS 桥、不需要 localStorage、不需要
+     * `setOnLongClickListener` 的拦截、也不需要 ChromeClient 的文件选择器。
+     * 每多一项配置就多一处可能的意外（配置越像主 WebView，
+     * 越容易让人以为"它也能跑我们的网页"—— 它不能，它没有桥）。
+     *
+     * ══ 必须有的三项 ══
+     *
+     *  ① `javaScriptEnabled = true` —— **必须开**，原因见下方注释。
+     *     这看起来反直觉（"只看 PDF 要什么 JS"），但内置 PDF 查看器
+     *     本身就是用 JS 写的，关掉它就是一片空白（实测）。
+     *
+     *  ② `shouldInterceptRequest` 里接上 [pdfResponseFor]
+     *     **这是唯一能拿到 PDF 文件的途径** —— 文件在应用私有目录，
+     *     而且 allowFileAccess=false。漏了这条，覆盖层只会白屏。
+     *
+     *  ③ `allowFileAccess/allowContentAccess = false`
+     *     与主 WebView 保持同样的隔离姿态。
+     *
+     * ⚠️ **不要**给它加 `addJavascriptInterface`。
+     *    PDF 查看器内部是原生实现，不经过我们的 JS；
+     *    加了桥反而把 `ScholariusNative` 暴露给一份我们控制不到的文档。
+     *
+     * ⚠️ **不要**给它设 `WebChromeClient`。
+     *    内置查看器偶尔需要通过 ChromeClient 回调（例如全屏、下载提示）
+     *    才行为正常；但在没有 ChromeClient 时 WebView 会走默认实现，
+     *    实测 PDF 仍能正常渲染。少一个 client 就少一处状态。
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun configureRawView() = with(rawView) {
+        // 深色底：PDF 页与页之间露出的空隙用主题色，默认白底会闪眼
+        setBackgroundColor(Color.parseColor("#FF1E1E1E"))
+        overScrollMode = View.OVER_SCROLL_NEVER
+
+        settings.apply {
+            /*
+              ⚠️ 必须开！内置 PDF 查看器**自己就是用 JS 写的**
+                 （WebView 把查看器页面注入到 PDF 文档里）。
+                 `javaScriptEnabled = false` 时它渲染不出来 ——
+                 实测表现为「一片空白」。
+
+                 ⚠️ 这与"不需要 JS"不矛盾：我们只是**不执行外部网页的脚本**，
+                    而查看器是 WebView 自带的可信代码。
+            */
+            javaScriptEnabled = true
+
+            domStorageEnabled = false
+            allowFileAccess = false
+            allowContentAccess = false
+
+            // 查看器自己带缩放控件；交给它管，别叠加我们的
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+            useWideViewPort = true
+            loadWithOverviewMode = true
+
+            textZoom = 100
+            cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+        }
+
+        webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest,
+            ): WebResourceResponse? {
+                // ① PDF 文件流（应用私有目录，只有这条通道能拿到）
+                pdfResponseFor(request.url)?.let { return it }
+
+                /*
+                  ⚠️ ② 其余请求**一律不要**交给 assetLoader。
+                     内置 PDF 查看器会注入自己的资源（chrome-extension://
+                      或 appassets 下的 mime 资源）。若这里回落到
+                      assetLoader，它对未知路径返回 null，WebView 就当
+                      「资源不存在」处理，查看器可能因此渲染不出来。
+                     返回 null（= 不拦截，走默认流程）才是对的。
+                */
+                return null
+            }
+
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
+                request: WebResourceRequest,
+            ): Boolean {
+                // 覆盖层里不跟随任何跳转：里面的链接应当交给系统浏览器
+                val url = request.url
+                if (url.scheme == "http" || url.scheme == "https") {
+                    if (url.host == APP_ASSETS_HOST) return false
+                    return openExternally(url.toString())
+                }
+                return false
             }
         }
     }

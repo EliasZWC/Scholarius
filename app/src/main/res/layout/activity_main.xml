@@ -11,4 +11,37 @@
         android:layout_height="match_parent"
         android:overScrollMode="never" />
 
+    <!--
+      原始视图（PDF）专用的第二个 WebView，**盖在网页之上**。
+
+      ⚠️ 为什么必须单独开一个，而不是复用主 WebView：
+         内置 PDF 查看器只在**顶层文档**里工作（塞 iframe 是空白），
+         所以 PDF 必须由某个 WebView 主文档承载。
+         但若让**主 WebView** 去 loadUrl(PDF)，整个应用界面就被替换掉了 ——
+         顶栏消失，用户**没法切回阅读视图**（用户明确指出这个问题）。
+
+         用第二个 WebView 承载 PDF，主 WebView 与我们的 UI 完好无损，
+         返回时只要把这一层隐藏即可。
+
+      ⚠️ 默认 visibility="gone"。gone 而不是 invisible：
+         gone 不参与布局也不绘制，不为一个常驻不可见的 WebView
+         付出渲染开销。
+
+      ⚠️ 背景给黑（与网页的深色底一致）：PDF 页面之间露出的底色
+         若为透明会闪出下面的网页内容。
+
+      ⚠️⚠️ XML 注释里**不能出现「连续两个减号」**（XML 规范的硬限制），
+         aapt 会直接报 "not permitted within comments"，
+         在 mergeReleaseResources 阶段就挂掉 —— 实测踩过。
+         所以写 CSS 变量名（形如减号减号加名字）时**必须绕开**，
+         例如拆成「减号 减号 bg」来描述，别原样写出来。
+    -->
+    <WebView
+        android:id="@+id/raw_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FF1E1E1E"
+        android:overScrollMode="never"
+        android:visibility="gone" />
+
 </FrameLayout>

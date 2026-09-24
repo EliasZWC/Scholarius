@@ -1191,18 +1191,20 @@ body {
 
 /*
   ⚠️ 视图切换按钮的**选中态**在这里**不写** ——
-     它和「不要点击特效」那条同优先级，必须紧挨着写在那条之后
-     （见下面 .icon-button.reader-view-toggle[aria-pressed="true"]）。
+     它必须紧挨着「不要点击特效」那条一起写，
+     否则会被那条的 `background: transparent` 盖住（见下方长注释）。
      在这里再写一份会与那份冲突，两处都失效。
 */
 
 /*
   PDF 视图。
 
-  ⚠️ 网页里**没有** PDF 容器了 —— 原始视图由原生把 PDF
-     装入 WebView 本身（顶层导航），因为 Android WebView 的
-     内置 PDF 查看器只为顶层文档工作，塞进 iframe 会是空白。
-     详见 reader.js setView 的长注释。
+  ⚠️ 网页里**没有** PDF 容器 —— 原始视图由原生在**另一个 WebView**
+     （覆盖层）里显示，PDF 是那个 WebView 的顶层文档。
+     两个原因：① Android WebView 的内置 PDF 查看器只在顶层文档工作，
+     塞进 iframe 是空白；② 若让主 WebView 自己导航过去，
+     我们的界面（含顶栏）就被替换掉，用户切不回来。
+     详见 reader.js setView 的长注释与 MainActivity.configureRawView。
 */
 
 /*
@@ -1226,7 +1228,8 @@ body {
         否则键盘用户不知道焦点在哪。
 */
 .icon-button.reader-view-toggle,
-.icon-button.reader-view-toggle:active {
+.icon-button.reader-view-toggle:active,
+.icon-button.reader-view-toggle[aria-pressed="true"] {
     background: transparent;
     color: var(--on-surface-variant);
     transform: none;
@@ -1235,14 +1238,27 @@ body {
 }
 
 /*
-  ⚠️ 选中态（当前正在看原始视图）必须写在上面那条**之后** ——
-     两者优先级相同 (0,3,0)，靠源序决定胜负。
-     放到前面会被 `background: transparent` 盖掉，按钮永远不高亮。
+  ⚠️ 选中态**只换图标**，不换底色。
+ 
+     用户 2026-09-24 明确指出：「你怎么还是做了阴影？我说了只转换图标本身」。
+ 
+     也就是说：这两只图标（visibility / visibility_off）是**同一状态的两个面**，
+     不是"两个按钮"。切过去时用户已经在看 PDF 了，那本身就是最强的反馈；
+     底栏再加一块色块，反而把顶栏切成"一个个按钮"，
+     与它作为阅读页工具条的定位不符。
+ 
+     所以这里**刻意不给 [aria-pressed="true"] 任何视觉** ——
+     上面那条把它一并压成透明，是为了防止将来有人"顺手"补上
+     `:active`/`:hover` 之类导致按下时闪一下底底。
+ 
+     ⚠️ 那怎么知道现在在哪个视图？看**图标本身**：
+        visibility_off（眼睛加斜杠）= 正在看 PDF（"看不见网页了"）
+        visibility（正常眼睛）    = 正在看阅读视图
+     这与前面"直接切换图标就行"的要求一致。
+ 
+     ⚠️ 别无脑删掉 aria-pressed —— 它对读屏器仍然有用，
+        只是我们不给它画任何样式。
 */
-.icon-button.reader-view-toggle[aria-pressed="true"] {
-    background: var(--surface-raised);
-    color: var(--on-surface);
-}
 
 /*
   ⚠️ 详情按钮**不要**再写 margin-left:auto。
