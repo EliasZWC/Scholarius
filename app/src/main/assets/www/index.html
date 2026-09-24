@@ -348,7 +348,7 @@
 
                     <span class="selection-count" id="selection-count"></span>
 
-                    <button class="icon-button" type="button" id="selection-delete"
+                    <button class="icon-button icon-danger" type="button" id="selection-delete"
                         aria-label="Delete selected" data-i18n-aria-label="selection.delete">
                         <!-- Google Material Icons: delete -->
                         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -695,8 +695,14 @@
             这样菜单出现时不会显得比整体框架厚。
          ================================================================== -->
     <section class="reader" id="reader" role="dialog" aria-modal="true"
-        aria-labelledby="reader-title" hidden>
-        <!-- 顶部栏：左返回，其它先不放 -->
+        aria-label="Reader" hidden>
+        <!--
+          顶部栏只有返回按钮。
+          ⚠️ 不要居中标题，也不要那条用于“抵消标题宽度”的占位块 ——
+             用户明确要求只保留返回按钮。
+          aria-label 移到 section 上：里面已无可见标题可引用，
+             而 role=dialog + aria-modal 仍然需要可访问名称。
+        -->
         <header class="reader-top" id="reader-top">
             <button class="icon-button" type="button" id="reader-back"
                 aria-label="Back" data-i18n-aria-label="action.back">
@@ -705,10 +711,6 @@
                     <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
                 </svg>
             </button>
-            <!-- 标题：菜单隐藏时也留着（空），供无障碍朗读当前文献 -->
-            <h1 class="reader-title" id="reader-title"></h1>
-            <!-- 右侧占位：与返回键等宽，标题才能居中（同标题栏的做法） -->
-            <span class="reader-top-spacer" aria-hidden="true"></span>
         </header>
 
         <!-- 正文区：点它中间的 1/3 区域切换菜单 -->

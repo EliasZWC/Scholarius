@@ -8,14 +8,23 @@
  * · 菜单分上下两条：顶部栏（左返回）、底部选项栏（先留空）
  * · 菜单显隐用 transform 滑动，**正文位置不动** —— 否则阅读进度会跳
  *
- * ## 为什么正文用 LaTeX 源码而不是排版后的公式
+ * ## 正文是什么形态（v0.1.2 已修正）
  *
- * 用户明确要求「保存形式是 latex 形式」。这带来两个后果，都要记住：
+ * ⚠️ 这里是**普通文本**，不是 LaTeX 源码。
  *
- *   ① 正文里会**看到 `\alpha`、`$x^2$` 这样的原始标记**，不是渲染后的符号。
- *      这是**有意为之**（保存形式就是如此），不是渲染失败。
- *   ② 以后若要显示成排版效果，需要引入 KaTeX/MathJax 之类的渲染器；
- *      届时「LaTeX 源码」仍然是存储形态，渲染只在展示层。
+ * v0.1.1 曾按「保存 LaTeX 源码」设计，但实测后放弃：PDF 里存的是
+ * **排版结果**（带坐标的字形序列），不是 LaTeX 源码 ——
+ * 源码结构（`\section{}`、`\begin{equation}`）在 PDF 里已经不存在了。
+ * 想把公式从 PDF 反推成 LaTeX 语法需要数学 OCR，不是本项目范围。
+ *
+ * 所以现在由 pdfbox 提取出线性化的普通文本：
+ *   · 公式会变成近似线性的字符，如 `Fall = Concat(F1, F2, . . . , FM)`
+ *     —— 能读懂，但不是可编译的 LaTeX。
+ *   · 上标下标会退化成相邻字符，如 `Fat 2 RN£Din`。
+ *     这是 PDF 文本层的固有限制，不是我们的 bug。
+ *
+ * 展示上仍然只用 textContent + pre-wrap：
+ * 正文是任意文本，可能含 < > & 等字符，用 innerHTML 会破坏页面结构。
  *
  * ## 文本从哪来
  *
@@ -30,8 +39,6 @@
     var contentEl = null;
     var topEl = null;
     var backBtn = null;
-    var titleEl = null;
-
     /** 当前打开的文献 */
     var currentDoc = null;
     /** 菜单是否可见 */
@@ -47,7 +54,6 @@
         contentEl = document.getElementById('reader-content');
         topEl = document.getElementById('reader-top');
         backBtn = document.getElementById('reader-back');
-        titleEl = document.getElementById('reader-title');
 
         if (!root) {
             return;
@@ -130,10 +136,12 @@
 
         currentDoc = doc;
 
-        if (titleEl) {
-            // 菜单里显示标题。不放作者 —— 阅读时没人在意，位置也挤
-            titleEl.textContent = doc.title || doc.sourceName || '';
-        }
+        /*
+          顶部栏不放标题（用户明确要求只留返回按钮），
+          所以这里不再把标题写进 DOM。
+          但标题仍放在 <section> 的 aria-label 上，供无障碍朗读。
+        */
+        root.setAttribute('aria-label', doc.title || doc.sourceName || t('nav.vault'));
 
         showLoading();
 
@@ -235,7 +243,6 @@
           ⚠️ 用 textContent + CSS pre-wrap，不用 innerHTML。
              正文是从 PDF 提取的任意文本，里面可能有 < > & 之类字符；
              用 innerHTML 会破坏页面结构（甚至注入）。
-             LaTeX 源码里的 \ 与 $ 也要原样显示，不能被当作标记解析。
         */
         contentEl.textContent = text;
         // 回到顶部
@@ -252,9 +259,11 @@
     }
 
     function refreshChrome() {
-        if (isOpen() && titleEl && currentDoc) {
-            titleEl.textContent = currentDoc.title || currentDoc.sourceName || '';
-        }
+        /*
+          目前顶部栏没有任何随语言/主题变化的文本
+          （只有返回按钮，它靠 data-i18n-aria-label 自适应）。
+          保留这个函数作为将来加按钮时的挂点。
+        */
     }
 
     function trace(stage, detail) {

@@ -546,16 +546,37 @@ body {
 .reader-top {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 8px;
     padding: 0 8px;
-    /* 藏起来时整体上移出自己的高度 */
+    /*
+      顶部栏要连同状态栏区域一起收起。
+
+      ⚠️ 这里的关键：.reader 有 padding-top: var(--safe-top)，
+         所以顶部栏的静止位置本就低了 safe-top。
+         只写 translateY(-100%) 只能上移自己的高度（56px），
+         收起后仍停在 safe-top 处 —— 即“压在状态栏上”，看起来没收干净。
+
+         修法：用负 margin-top 把顶部栏向上拉出 safe-top，
+         再叠上自己的高度，这样 -100% 才能真的移出屏幕。
+    */
+    margin-top: calc(-1 * var(--safe-top));
+    padding-top: var(--safe-top);
+    box-sizing: content-box;
+    height: 56px;
     transform: translateY(-100%);
 }
 
 .reader-bottom {
     /* 底部选项栏现在没有内容，先只留高度与背景 */
     padding: 0 8px;
+    /*
+      同理：.reader 有 padding-bottom: var(--safe-bottom)，
+      底部栏要收进手势条之下。
+    */
+    margin-bottom: calc(-1 * var(--safe-bottom));
+    padding-bottom: var(--safe-bottom);
+    box-sizing: content-box;
     /* 藏起来时整体下移 */
     transform: translateY(100%);
 }
@@ -572,7 +593,14 @@ body {
     font-size: 15px;
     font-weight: 700;
     line-height: 22px;
-    text-align: center;
+    /*
+      ⚠️ 左对齐，不居中。
+         用户明确要求阅读页顶部栏只放返回按钮 —— 不要居中标题。
+         标题本来还占着中间位置，全部去掉后返回按钮独占左侧。
+         保留这条规则（而不是删掉 .reader-title），
+         是因为其它地方若复用该类（如将来的章节名），左对齐才是默认预期。
+    */
+    text-align: left;
     color: var(--on-surface);
     white-space: nowrap;
     overflow: hidden;
@@ -1110,6 +1138,23 @@ body {
     color: var(--on-surface);
 }
 
+/*
+  ⚠️ 禁用态。vault.js 用 el.disabled = true 设置（HTML 属性），
+     但之前**从来没有写过 :disabled 规则**，所以删除键在「一件未选」
+     时看起来仍是可点的红色 —— 用户会以为点了没反应。
+
+  ⚠️ 必须写在 .icon-danger 之前或保证同等优先级：
+     .icon-danger 与 .icon-button:disabled 都是 (0,2,0)，
+     后出现的赢。下面 .icon-danger:disabled 用更高优先级 (0,2,1) 兜底，
+     所以两个类同时存在时也能正确变灰。
+*/
+.icon-button:disabled {
+    color: var(--nav-inactive);
+    opacity: 0.45;
+    cursor: default;
+    pointer-events: none;
+}
+
 .icon-button svg {
     width: 22px;
     height: 22px;
@@ -1451,6 +1496,30 @@ body {
 
 .btn-danger {
     color: var(--danger);
+}
+
+/*
+  图标按钮的删除态。
+
+  ⚠️ 与 .btn-danger 分开写，因为 .icon-button 的 color 是给按钮的、
+     SVG 靠 fill="currentColor" 跟随；而 .btn 是文字按钮。
+     两者共用 --danger，保证与 Livolog 的删除红完全一致：
+         亮  #C0392B
+         暗  #E06C5E
+*/
+.icon-danger {
+    color: var(--danger);
+}
+
+/*
+  删除键禁用（没选任何项时）。
+  ⚠️ 选择器写成 .icon-button.icon-danger:disabled（三要素齐全），
+     优先级高于 .icon-danger 与 .icon-button:disabled，
+     保证「禁用时是灰的」这条不会被红色的类名压过去。
+*/
+.icon-button.icon-danger:disabled {
+    color: var(--nav-inactive);
+    opacity: 0.45;
 }
 
 /* --------------------------------------------------------------------------

@@ -1112,6 +1112,14 @@ class MainActivity : AppCompatActivity() {
         debugLog("[reader] extracting text for $id")
 
         thread {
+            /*
+              ⚠️ PDFBox 要求先用 assets 里的 cmap/glyphlist 初始化资源加载器，
+                 否则解析字体时抛异常。放在后台线程调用 ——
+                 它要读 assets，在主线程不做 IO 是原则，
+                 而且 PdfText.ensureInitialised 自带双检锁，重复调用无开销。
+            */
+            PdfText.ensureInitialised(this)
+
             val file = LibraryStore.pdfFile(this, id)
             val text = if (file.exists()) PdfText.extract(file) else null
 

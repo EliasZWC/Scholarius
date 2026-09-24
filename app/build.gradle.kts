@@ -7,8 +7,8 @@ plugins {
 // 版本号：唯一来源。只有明确要求发版时才修改这两个值。
 // versionCode 每次发版 +1；versionName 必须与 Git 标签 vX.Y.Z 中的 X.Y.Z 一致。
 // ---------------------------------------------------------------------------
-val appVersionCode = 101
-val appVersionName = "0.1.1"
+val appVersionCode = 102
+val appVersionName = "0.1.2"
 
 // 可选：从环境变量读取发布签名（由 GitHub Actions 注入）。
 // 未配置时回退到 debug 签名，保证工作流始终能产出可安装的 APK。
@@ -130,6 +130,29 @@ dependencies {
        正式稳定版 1.1.0 已发布，改用稳定版。
      */
     implementation("androidx.security:security-crypto:1.1.0")
+
+    /*
+       PDF 文本提取（阅读页正文）。
+
+       ⚠️ 这是 v0.1.2 换上的依赖。v0.1.1 用手写解析器，方向是错的：
+          正规出版流程（LaTeX / Word / 几乎所有期刊模板）都会把字体**子集化**，
+          字节到字形的映射按子集顺序重排，且通常没有 ToUnicode CMap。
+          任何「把字节当 ASCII 解」的实现都必然输出乱码 ——
+          实测一篇 LaTeX 论文，标题
+              "VISTA: VALUING INHERENT SUSCEPTIBILITY AND ..."
+          被解成 "VGITSDTLARTGFEMLERAG"，且完全没有空格
+          （PDF 靠 Td 坐标定位，字间空格不写成字符）。
+
+      pdfbox-android 能正确处理：
+          ① ToUnicode CMap    ② 字体 /Differences
+          ③ TJ 字距→空格推断   ④ 按坐标排序并重排行
+
+      代价：APK 体积约 +2.5MB。之前为省这 2.5MB 手写，换来一个坏功能，
+      这笔账算错了 —— 记录下来，别再重犯。
+
+      Apache 2.0 许可。JDK 17 下无兼容问题。
+    */
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 }
 
 // 发布包必须用固定密钥签名，否则直接失败。
