@@ -139,10 +139,12 @@
     var tocOpen = false;
     /** 当前视图：'reading' | 'raw' */
     var view = 'reading';
-    /** 原始视图当前显示的页码（**从 1 开始**） */
-    var rawPage = 1;
-    /** 文献总页数。0 表示还没问到 / 问不到 —— 此时翻页条只显示当前页码 */
+    /** 原始视图的文献总页数。0 表示还没问到 / 问不到 */
     var rawPageCount = 0;
+    /** 原始视图里所有页的占位元素（按页码顺序），懒加载与清理都要用 */
+    var pdfPageEls = [];
+    /** 页图懒加载的观察器。切换视图/关闭阅读页时必须断开，否则会泄漏 */
+    var pdfSpy = null;
     /**
      * 阅读视图的正文缓存。
      *
@@ -421,7 +423,7 @@
         syncViewToggle();
 
         if (want === 'raw') {
-            showPdfPage(1);
+            showPdfScroll();
             return;
         }
 
@@ -433,26 +435,41 @@
              用缓存的 blocks/text 重放一次最省事，
              不必再向原生要一遍文本（那要重新解析整个 PDF）。
         */
+        teardownPdfScroll();
         restoreReadingContent();
     }
 
     /**
-     * 显示某一页 PDF。
+     * 原始视图：**连续滚动**显示全部页。
      *
-     * ══ 为什么要自己控制翻页 ══
+     * ══ 为什么不做分页（用户 2026-09-24）══
      *
-     * 内置查看器那条路已经证明走不通（见 setView 的长注释），
-     * 所以翻页现在是我们自己的事：一次只显示一页，
-     * 上下页由底部的翻页条控制。
+     * 用户原话：「直接滚动不就好了吗？为什么还要分页？
+     *           pdf 阅读器不都是滚动的吗？」
      *
-     * ⚠️ 一次只渲染一页，**不是偷懒**：
-     *    一页 1600px 宽的位图 base64 后约 400KB 字符串。
-     *    一篇 12 页的论文若一次全取，就是 5MB 字符串跨桥传递 ——
-     *    必然卡顿甚至 OOM。按需取当前页是唯一可行的做法。
+     * 完全正确。分页是我自己加的复杂度，而且代价不小：
+     *   · 底部多一整行「上一页 / 页码 / 下一页」，手机上很占地方；
+     *   · 每次翻页都要等原生渲染（100-300ms），翻快了会看到空白；
+     *   · 想连续看两页之间的内容要来回按，而滚动是自然的。
      *
-     * @param {number} page 页码，**从 1 开始**
+     * 主流阅读器（Chrome 内置、Adobe、各家 App）默认都是连续滚动，
+     * 分页只在横屏/双栏这类特定场景才用。我们没有那个需求。
+     *
+     * ══ ⚠️ 但仍然不能「一次把所有页都取过来」══
+     *
+     * 一页 JPEG 的 base64 约 400KB。12 页就是 5MB 字符串跨桥传递 ——
+     * 必然卡顿甚至 OOM（这正是我当初改成分页的原因，那个判断没错，
+     * 错的是「所以只能分页」这个推论）。
+     *
+     * **正解：滚动容器铺好全部页的占位，按需加载。**
+     *   · 先问总页数，为每页建一个占位框（用页图宽高比撑开正确高度，
+     *     这样滚动条长度一开始就是对的，不会边滚边变长）；
+     *   · 用 IntersectionObserver 观察每个占位框，
+     *     进入视野（含前后各一页的余量）时才向原生要图。
+     *
+     * 这样既有连续滚动的体验，又永远只有几页图在内存里。
      */
-    function showPdfPage(page) {
+    function showPdfScroll() {
         if (!contentEl || !currentDoc) {
             return;
         }
@@ -461,7 +478,7 @@
         if (!bridge || typeof bridge.getPdfPage !== 'function') {
             /*
               ⚠️ 桥不可用（浏览器预览）→ 回退到阅读视图并提示。
-                 不能停在一个永远不出现的原始视图上 ——
+                 不能停在一条永远不出现的原始视图上 ——
                  实测：预览里点这个按钮却什么都不发生最让人迷惑。
             */
             view = 'reading';
@@ -472,117 +489,194 @@
 
         var id = String(currentDoc.id);
 
-        // 首次进入时问一次总页数（之后有缓存）
-        if (!rawPageCount) {
-            try {
-                rawPageCount = bridge.getPdfPageCount(id) | 0;
-            } catch (e) {
-                rawPageCount = 0;
-            }
+        try {
+            rawPageCount = bridge.getPdfPageCount(id) | 0;
+        } catch (e) {
+            rawPageCount = 0;
         }
-        if (rawPageCount > 0 && page > rawPageCount) page = rawPageCount;
-        if (page < 1) page = 1;
-        rawPage = page;
+
+        if (rawPageCount <= 0) {
+            /*
+              ⚠️ 问不到页数（加密 PDF / 文件损坏）要给**明确提示**，
+                 不能留一片空白 —— 用户会以为界面坏了。
+            */
+            contentEl.textContent = '';
+            var hint = document.createElement('div');
+            hint.className = 'reader-hint';
+            hint.textContent = t('reader.pageUnavailable');
+            contentEl.appendChild(hint);
+            trace('reader:raw', 'no pages');
+            return;
+        }
 
         contentEl.textContent = '';
 
         /*
-          ⚠️ 页图用 <img>，并且**给出正确的宽高比**（width:100% + height:auto）。
-             若不给，图片解码前高度是 0，内容区会先"塌一下"再撑开 ——
-             翻页时观感是抖动的。
+          ⚠️ 先断开上一次的观察器再重建。
+             直接 `pdfPageEls = []` 是不够的 —— 旧的 observer 仍然
+             观察着那批旧元素，它们不会被回收。
         */
-        var wrap = document.createElement('div');
-        wrap.className = 'pdf-page';
+        teardownPdfScroll();
 
-        var img = document.createElement('img');
-        img.className = 'pdf-page-img';
-        img.alt = t('reader.rawView') + ' ' + page;
-        img.decoding = 'async';
+        var list = document.createElement('div');
+        list.className = 'pdf-scroll';
 
-        var dataUrl = '';
+        /*
+          ⚠️ 先取**第 1 页**的宽高比，用同一比例给所有页占位。
+             绝大多数 PDF 每页尺寸一致（少数混排的也能接受，
+             真遇到时该页加载完会自己纠正高度）。
+
+             ⚠️ 这一步要问原生要一次图才知道比例 —— 但**不能因此
+                白白下载第 1 页两次**。所以第 1 页的图顺手留下，
+                占位框建好后直接填进去（见下面的 seedData）。
+        */
+        var seed = '';
+        var ratio = 1.414; // A4 默认（高 / 宽），拿不到比例时用
         try {
-            dataUrl = bridge.getPdfPage(id, page) || '';
+            seed = bridge.getPdfPage(id, 1) || '';
         } catch (e) {
-            dataUrl = '';
+            seed = '';
+        }
+        if (seed) {
+            // 用第 1 页真实比例；万一取不到就退回 A4
+            var probe = new Image();
+            probe.src = seed;
+            if (probe.naturalWidth > 0 && probe.naturalHeight > 0) {
+                ratio = probe.naturalHeight / probe.naturalWidth;
+            }
         }
 
-        if (dataUrl) {
-            img.src = dataUrl;
-        } else {
+        for (var p = 1; p <= rawPageCount; p++) {
+            var slot = document.createElement('div');
+            slot.className = 'pdf-slot';
+            slot.setAttribute('data-page', String(p));
             /*
-              ⚠️ 取不到图（加密 PDF / 文件损坏 / 页码越界）要给**明确提示**，
-                 不能留一块空白 —— 用户会以为界面坏了。
+              ⚠️ 用 padding-top 百分比撑高度 ——
+                 百分比 padding 是相对**宽度**算的，
+                 所以容器宽度一变（转屏/分屏）高度自动跟着变，
+                 不需要监听 resize 重算。这是纯 CSS 的等比占位技巧。
+                 `--pdf-ratio` 由这里传入，真正的高度计算在 CSS 里。
             */
-            var hint = document.createElement('div');
-            hint.className = 'reader-hint';
-            hint.textContent = t('reader.pageUnavailable');
-            wrap.appendChild(hint);
-        }
-        wrap.appendChild(img);
-        contentEl.appendChild(wrap);
+            slot.style.setProperty('--pdf-ratio', String(ratio));
 
+            if (p === 1 && seed) {
+                slot.appendChild(makePageImg(seed, p, id));
+                slot.classList.add('is-loaded');
+            }
+            list.appendChild(slot);
+            pdfPageEls.push(slot);
+        }
+
+        contentEl.appendChild(list);
         if (bodyEl) {
             bodyEl.scrollTop = 0;
         }
 
-        renderPdfPager();
-        trace('reader:raw', 'page ' + page + (rawPageCount ? '/' + rawPageCount : ''));
+        startPdfLazyLoad(id);
+        trace('reader:raw', rawPageCount + ' pages (scroll)');
+    }
+
+    /** 造一个页图 <img>。抽出来是因为占位与懒加载两处都要用。 */
+    function makePageImg(dataUrl, page, id) {
+        var img = document.createElement('img');
+        img.className = 'pdf-page-img';
+        img.alt = t('reader.rawView') + ' ' + page;
+        img.decoding = 'async';
+        img.src = dataUrl;
+        return img;
     }
 
     /**
-     * 底部的翻页条（上一页 / 页码 / 下一页）。
+     * 用 IntersectionObserver 按需装载页图。
      *
-     * ⚠️ 只在原始视图里出现，阅读视图要把它清掉 ——
-     *    否则切回去之后还挂着一条翻页条，很怪。
+     * ⚠️ root 必须是 [bodyEl]（真正滚动的那一层），不是视口 ——
+     *    阅读页整体是一个 fixed 覆盖层，滚动发生在 .reader-body 内部，
+     *    用默认视口做 root 的话判定会全错（所有页都被认为"在视野里"）。
      *
-     * ⚠️ 用**真实按钮**而不是手势滑动：
-     *    滑动翻页在 WebView 里容易和"点中间唤起菜单"打架
-     *    （同一次触摸既要判翻页又要判点按），当前不值得引入这个复杂度。
+     * ⚠️ rootMargin 给**上下各一页**的余量：
+     *    用户滚到某页才开始加载的话，会看到明显的"白块慢慢变图"。
+     *    提前一页加载，滚过去时通常已经就绪。
+     *
+     * ⚠️ 加载过的页要 `unobserve`（图已经在 DOM 里了，再观察没意义），
+     *    否则每次滚动都会重复回调，白白比较。
+     *
+     * ⚠️ 没有 IntersectionObserver 时（很老的 WebView）**回退成全量加载**：
+     *    宁可卡一点也不能整页空白。minSdk 26 起它都有，
+     *    但这是十行代码的保险，值得留。
      */
-    function renderPdfPager() {
-        if (!contentEl) return;
+    function startPdfLazyLoad(id) {
+        if (!bodyEl || !pdfPageEls.length) return;
 
-        var prev = contentEl.querySelector('.pdf-pager');
-        if (prev) prev.remove();
+        var loadOne = function (el) {
+            if (!el || el.classList.contains('is-loaded')) return;
+            var page = parseInt(el.getAttribute('data-page'), 10) || 0;
+            if (page < 1) return;
 
-        if (view !== 'raw') return;
+            el.classList.add('is-loaded'); // 先打标记，防并发重复请求
 
-        var bar = document.createElement('div');
-        bar.className = 'pdf-pager';
-
-        var mkBtn = function (label, delta, disabled) {
-            var b = document.createElement('button');
-            b.type = 'button';
-            b.className = 'pdf-pager-btn';
-            b.textContent = label;
-            b.disabled = !!disabled;
-            if (!disabled) {
-                b.addEventListener('click', function (ev) {
-                    /*
-                      ⚠️ 阻止冒泡 —— 否则这次点击会冒到 bodyEl，
-                         被"点中间唤起菜单"的监听器接住，
-                         于是翻页的同时菜单也跳出来了。
-                    */
-                    ev.stopPropagation();
-                    showPdfPage(rawPage + delta);
-                });
+            var dataUrl = '';
+            try {
+                dataUrl = global.ScholariusNative.getPdfPage(id, page) || '';
+            } catch (e) {
+                dataUrl = '';
             }
-            return b;
+
+            if (dataUrl) {
+                el.appendChild(makePageImg(dataUrl, page, id));
+            } else {
+                var hint = document.createElement('div');
+                hint.className = 'reader-hint pdf-slot-hint';
+                hint.textContent = t('reader.pageUnavailable');
+                el.appendChild(hint);
+            }
         };
 
-        var hasCount = rawPageCount > 0;
-        bar.appendChild(mkBtn(t('reader.prevPage'), -1, rawPage <= 1));
+        if (!global.IntersectionObserver) {
+            for (var i = 0; i < pdfPageEls.length; i++) loadOne(pdfPageEls[i]);
+            return;
+        }
 
-        var label = document.createElement('span');
-        label.className = 'pdf-pager-label';
-        label.textContent = hasCount
-            ? (rawPage + ' / ' + rawPageCount)
-            : String(rawPage);
-        bar.appendChild(label);
+        var margin = Math.round((bodyEl.clientHeight || 600) * 0.9);
+        pdfSpy = new global.IntersectionObserver(function (entries) {
+            for (var j = 0; j < entries.length; j++) {
+                if (entries[j].isIntersecting) {
+                    var el = entries[j].target;
+                    loadOne(el);
+                    pdfSpy.unobserve(el);
+                }
+            }
+        }, {
+            root: bodyEl,
+            rootMargin: margin + 'px 0px ' + margin + 'px 0px',
+        });
 
-        bar.appendChild(mkBtn(t('reader.nextPage'), 1, hasCount && rawPage >= rawPageCount));
+        for (var k = 0; k < pdfPageEls.length; k++) {
+            pdfSpy.observe(pdfPageEls[k]);
+        }
+    }
 
-        contentEl.appendChild(bar);
+    /**
+     * 断开页图懒加载观察器、清掉引用。
+     *
+     * ⚠️ **必须显式断开**，不能只把它置 null：
+     *    观察器持有所有占位元素的强引用，而占位元素又被它观察着 ——
+     *    不断开就是一个自留的环，页图与 observer 都不会被回收。
+     *    连开十几篇文献，内存会明显上涨。
+     *
+     * ⚠️ 在三个地方都要调：
+     *    切回阅读视图 / 打开新文献 / 关闭阅读页。
+     *    漏掉任何一处都会留住上一篇的那批页图。
+     */
+    function teardownPdfScroll() {
+        if (pdfSpy) {
+            try {
+                pdfSpy.disconnect();
+            } catch (e) {
+                /* 忽略：disconnect 失败不该影响界面切换 */
+            }
+        }
+        pdfSpy = null;
+        pdfPageEls = [];
     }
 
     /**
@@ -729,10 +823,10 @@
              但上一位用户可能停在原始视图上，打开新文献时必须重置到阅读视图。
         */
         view = 'reading';
-        rawPage = 1;
         rawPageCount = 0;
         lastBlocks = null;
         lastText = '';
+        teardownPdfScroll();
         syncViewToggle();
 
         /*
@@ -768,10 +862,10 @@
                     contentEl.textContent = '';
                 }
                 view = 'reading';
-                rawPage = 1;
                 rawPageCount = 0;
                 lastBlocks = null;
                 lastText = '';
+                teardownPdfScroll();
             }
         }, 280);
     }

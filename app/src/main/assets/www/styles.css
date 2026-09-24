@@ -1571,25 +1571,66 @@ body {
 */
 
 /*
-  ⚠️ 原始视图要**撑满 .reader-body 并去掉正文的内边距**。
+  ⚠️ 原始视图是**连续滚动的**，不分页。
+     用户 2026-09-24：「直接滚动不就好了吗？为什么还要分页？
+                      pdf 阅读器不都是滚动的吗？」
+     对。分页是我自己加的复杂度（见 reader.js showPdfScroll 的长注释）。
+
+  ⚠️ 这里要**撑满 .reader-body 并去掉正文的内边距**。
 
      正文有 24px 左右留白 + 状态栏让位，对文字是必要的；
      但 PDF 页图贴边显示更好看（纸就是纸，不需要再套一层内边距），
      而且能多出几十像素的宽度给内容。
 
      所以这里负外边距"吃掉" .reader-content 的 padding ——
-     因为 .pdf-page 是 .reader-content 的子元素，不这样做就只能在
+     因为 .pdf-scroll 是 .reader-content 的子元素，不这样做就只能在
      JS 里给 .reader-content 加/去一个类，切换时会有一次重排闪烁。
      负 margin 是纯样式的手段，切换是瞬时的。
 */
-.pdf-page {
+.pdf-scroll {
     margin: calc(-1 * (var(--safe-top) + 12px)) calc(-1 * (24px + var(--safe-right)))
         calc(-1 * (var(--safe-bottom) + 16px)) calc(-1 * (24px + var(--safe-left)));
     display: flex;
     flex-direction: column;
-    /* PDF 页与页之间、以及页与翻页条之间的底色 */
+    align-items: center;
+    /*
+      ⚠️ 页与页之间留缝，让用户看得出「一页到这儿结束」。
+         不能给 .pdf-slot 加 margin —— 占位高度靠 padding-top 百分比算，
+         而百分比是相对**内容宽度**的，加 margin 会让宽度变化、
+         从而比例算错。用 gap 加在父级上就没有这个问题。
+    */
+    gap: 8px;
+    /* 页与页之间的底色（纸张之间的桌面） */
     background: var(--bg);
     min-height: 100%;
+}
+
+/*
+  单页占位框。
+
+  ⚠️ 用 `padding-top: calc(100% * var(--pdf-ratio))` 撑高度 ——
+     百分比 padding 是相对**容器宽度**算的，所以屏宽一变
+     （转屏、分屏、字号缩放）高度自动跟着变，不需要监听 resize 重算。
+     这是纯 CSS 的等比占位技巧。
+
+  ⚠️ 这个占位高度**必须**先给对，因为页图是懒加载的：
+     若占位高度是 0，所有页一开始都叠在一起，
+     IntersectionObserver 会一口氣判定"全部都在视野里"→ 全部同时加载，
+     懒加载就完全失效了（而且滚动条长度也会边滚边变长）。
+
+  ⚠️ 页与页之间的缝隙由父级 .pdf-scroll 的 `gap` 给，
+     **不要**在这里加 margin —— 百分比 padding 是相对内容宽度算的，
+     加了 margin 会改变宽度，比例就跟着错了。
+*/
+.pdf-slot {
+    position: relative;
+    width: 100%;
+    /*
+      ⚠️ 兜底比例用 A4（1.414 = 高/宽）。
+         正常情况下 JS 会按第 1 页的真实比例写进 --pdf-ratio。
+    */
+    padding-top: calc(100% * var(--pdf-ratio, 1.414));
+    background: var(--bg);
 }
 
 /*
@@ -1600,64 +1641,35 @@ body {
   ⚠️ `display: block` 去掉 <img> 的基线空隙 ——
      行内元素下方会有几像素的"descender 空隙"，
      深色底上表现为页图下缘露出一条背景色，很明显。
+
+  ⚠️ 绝对定位铺满占位框：占位框的高度是靠 padding-top 撑出来的，
+     里面没有"内容高度"，所以子元素必须脱离文档流才不会
+     在 padding 之上再把自己撑一遍（那会让总高翻倍）。
 */
 .pdf-page-img {
+    position: absolute;
+    inset: 0;
     display: block;
     width: 100%;
-    height: auto;
+    height: 100%;
+    /*
+      ⚠️ `object-fit: contain` 而不是默认的 `fill`：
+         占位比例是按第 1 页算的，若某页尺寸不同，
+         fill 会把它**拉伸变形**，contain 则是等比缩放到框内
+         （可能留一点边，但图不变形 —— 这是可接受的）。
+    */
+    object-fit: contain;
     /* 页图本身已经是白底，这里给个白底兜住解码前的空档 */
     background: #FFFFFF;
 }
 
-/*
-  翻页条。
-
-  ⚠️ 只出现在原始视图里，且**贴在内容末尾**而不是固定在屏幕上。
-     固定在屏幕底部会和阅读页自己的底部选项栏（目录/设置）叠在一起，
-     两条栏挤在同一条边上非常难看。
-     跟着内容走就没这个冲突：翻到页尾自然看到它。
-*/
-.pdf-pager {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 14px;
-    padding: 14px 16px calc(14px + var(--safe-bottom));
-    background: var(--bg);
+/* 某一页取不到图时的提示，铺在占位框中间 */
+.pdf-slot-hint {
+    position: absolute;
+    inset: 0;
+    min-height: 0;
 }
 
-.pdf-pager-btn {
-    flex: 0 0 auto;
-    min-width: 72px;
-    padding: 9px 14px;
-    border: 0;
-    border-radius: 999px;
-    background: var(--surface-raised);
-    color: var(--on-surface);
-    font: inherit;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-}
-
-/*
-  ⚠️ 禁用态必须**明显**。翻到第一页时"上一页"若还能按，
-     用户会以为翻页坏了（点了没反应）。
-     这里降到 38% 不透明度 + 去掉指针，一眼看出不可用。
-*/
-.pdf-pager-btn:disabled {
-    opacity: 0.38;
-    cursor: default;
-}
-
-.pdf-pager-label {
-    min-width: 64px;
-    text-align: center;
-    color: var(--on-surface-variant);
-    font-size: 13px;
-    /* 等宽数字：翻页时"1 / 12"→"2 / 12"宽度不变，标签不会左右抖 */
-    font-variant-numeric: tabular-nums;
-}
 
 /* --------------------------------------------------------------------------
    阅读页 · 底部选项栏按钮

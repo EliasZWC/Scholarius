@@ -199,8 +199,6 @@
             */
             'reader.rawView': 'Raw View',
             'reader.readingView': 'Reading View',
-            'reader.prevPage': 'Previous',
-            'reader.nextPage': 'Next',
             'reader.pageUnavailable': 'Page Unavailable.',
 
             // 阅读设置：字体
@@ -475,8 +473,6 @@
             // 视图切换（无参标签，写「点了会切到哪个视图」）
             'reader.rawView': '原始视图',
             'reader.readingView': '阅读视图',
-            'reader.prevPage': '上一页',
-            'reader.nextPage': '下一页',
             'reader.pageUnavailable': '无法显示该页。',
 
 
