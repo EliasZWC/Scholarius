@@ -21,6 +21,20 @@
     var longPressed = false;
     /** 上面那个标记的过期定时器（见 attachLongPress） */
     var longPressExpiry = null;
+    /**
+     * 刚刚完成一次拖拽（画框）。
+     *
+     * ⚠️ 为什么需要它：
+     *    pointerup 之后浏览器会**补发一个 click**。
+     *    而我们的画框手势和"点屏幕切菜单"都在 bodyEl 上，
+     *    所以画完框的那一次 click 会顺带把菜单切了 ——
+     *    用户看到的是"画完框菜单莫名跳一下"。
+     *
+     *    reader.js 的 mountTapToToggle 靠 justDragged() 吃掉它。
+     */
+    var dragged = false;
+    /** 上面那个标记的过期定时器（与 longPress 同一个道理） */
+    var draggedExpiry = null;
 
     function t(key) {
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
@@ -807,6 +821,40 @@
         return value;
     }
 
+    /**
+     * 标记"刚刚拖拽过"—— 由 reader.js 在认定拖拽已经开始时调用。
+     *
+     * ⚠️ 同样带**自动过期**：若浏览器没有补发 click
+     *    （手指移出元素、或某些 WebView 不补），
+     *    标记不能一直挂着吞掉用户的下一次真实点击。
+     */
+    function markDragged() {
+        dragged = true;
+        if (draggedExpiry) {
+            global.clearTimeout(draggedExpiry);
+        }
+        draggedExpiry = global.setTimeout(function () {
+            draggedExpiry = null;
+            dragged = false;
+        }, 700);
+    }
+
+    /**
+     * 读一次就清零：只在拖拽后的那一次 click 里返回 true。
+     *
+     * ⚠️ 与 justLongPressed 同一个坑：必须自己清定时器，
+     *    否则过期的定时器会把下一次 markDragged 置的 true 提前抹掉。
+     */
+    function justDragged() {
+        var value = dragged;
+        dragged = false;
+        if (draggedExpiry) {
+            global.clearTimeout(draggedExpiry);
+            draggedExpiry = null;
+        }
+        return value;
+    }
+
     /* ----------------------------------------------------------------------
        Google Material Icons
        ---------------------------------------------------------------------- */
@@ -1062,6 +1110,36 @@
         */
         annoClear: 'M600-240v-80h160v80H600Zm0-320v-80h280v80H600Zm0 160v-80h240v80H600ZM120-640H80v-80h160v-60h160v60h160v80h-40v360q0 33-23.5 56.5T440-200H200q-33 0-56.5-23.5T120-280v-360Zm80 0v360h240v-360H200Zm0 0v360-360Z',
 
+        /*
+          trash：`delete`（一个普通的废纸篓）
+
+          ⚠️ 用于发表物简称**编辑表单**右上角的「删除」按钮
+             （用户 2026-09-25：「无法删除和修改」）。
+
+          ⚠️ 与 annoClear 的 delete_sweep 区分开：
+             · annoClear（delete_sweep）= 整批清空 → 阅读页编辑栏
+             · trash（delete）          = 删掉这一个 → 简称编辑表单
+             语义不同，图标也该不同 —— 混用会让用户以为点下去会清一片。
+
+          ⚠️ 逐字取自官方：tools/fetch_icon.py delete
+        */
+        trash: 'M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z',
+
+        /*
+          add：一个加号（`add`）
+
+          ⚠️ 用于发表物简称页的「添加」按钮
+             （用户 2026-09-25：「添加按钮用个加号图标就行了，不需要用文字」）。
+
+             "添加一条"旁边的"Add"两个字是多余的 ——
+             加号在全世界都是"新增"，而且省下的横向空间留给简称输入框，
+             输入长一点的简称不会被挤。
+
+          ⚠️ 逐字取自官方：tools/fetch_icon.py add
+             （该图标没有独立填充变体，outline 与 fill 逐字相同）
+        */
+        add: 'M440-440H200v-80h240v-240h80v240h240v80H520v240h-80v-240Z',
+
     };
 
     /*
@@ -1166,7 +1244,27 @@
         annoReference: SYMBOLS_VIEWBOX,
         annoKeyword: SYMBOLS_VIEWBOX,
         // 「清空某一类」——见 ICON_PATHS 里的说明
-        annoClear: SYMBOLS_VIEWBOX
+        annoClear: SYMBOLS_VIEWBOX,
+
+        /*
+          ⚠️⚠️ 下面两个都**必须**登记，否则图标一个像素都不渲染。
+
+             2026-09-25 实测事故：`add`（发表物简称页的加号）和
+             `trash`（编辑表单的删除键）加进 ICON_PATHS 时
+             **漏了这张表**，于是 viewBox 落到默认的 `0 0 24 24`，
+             而路径坐标是 960 体系的（y ∈ [-960, 0]）——
+             图形整体在视口外。
+
+             症状极具欺骗性：元素尺寸正常（39×39）、
+             `getComputedStyle` 的 display/fill 全对、也没有报错，
+             但 canvas 数非透明像素得到 **inkPixels = 0**。
+             靠肉眼截图很容易漏，必须用像素计数判。
+
+          ⚠️ 教训：往 ICON_PATHS 加 960 体系图标时，
+             这是一步不能少的配套动作 —— 两张表要成对改。
+        */
+        add: SYMBOLS_VIEWBOX,
+        trash: SYMBOLS_VIEWBOX
     };
 
     /** 返回一段 svg 标记，图标全部来自 Google Material 体系 */
@@ -1220,6 +1318,8 @@
         closeSheetPicker: closeSheetPicker,
         attachLongPress: attachLongPress,
         justLongPressed: justLongPressed,
+        markDragged: markDragged,
+        justDragged: justDragged,
         icon: icon,
         iconFilled: iconFilled,
         githubMark: githubMark,

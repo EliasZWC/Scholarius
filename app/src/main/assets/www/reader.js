@@ -354,37 +354,57 @@
     }
 
     /**
-     * 点中间区域切换菜单（**仅阅读视图**）。
+     * 点正文区切换菜单显隐。
      *
      * ⚠️ 用**点击时的坐标**判断点在不在中间 1/3，而不是给某个元素绑事件：
      *    正文是一个可滚动的大块，若把它整块当"中间"，那点任何地方都会切换，
      *    以后加上翻页就冲突了。按坐标分区从一开始就是对的。
      *
-     * ══ ⚠️⚠️ 原始视图（含编辑模式）**整段不接这个手势** ══
+     * ══ ⚠️⚠️ 为什么原始视图也能切菜单（推翻上一版） ══
      *
-     * 用户 2026-09-25 第三次指出，这次把**根因**说清了：
+     * 用户 2026-09-25 第三次指出，第四次又指出"依旧无法隐藏菜单"：
      *
      *   「顶部标题依然没法选 —— 你记住，单击屏幕是隐藏菜单，
      *     画框从屏幕一个地方到另一个地方——不隐藏菜单，
      *     顶部底部都没法选中」
      *
-     * 也就是说这里有一个**设计冲突**：
+     * 冲突是真实存在的：
      *   · 单击屏幕 = 隐藏/显示菜单
      *   · 拖拽画框 = 从一处到另一处，**拖拽过程不该隐藏菜单**
      *
-     * 我前两次的修法（编辑模式跳过 / 限定中间 1/3×1/3）
-     * 都只是在**缩小冲突范围**，没有消除冲突 —— 因为只要
-     * `bodyEl` 还监听 click，画框结束时产生的 click 就会命中它。
+     * ⚠️ 我前三次的修法（编辑模式跳过 / 限定中间 1/3×1/3 /
+     *    原始视图整段跳过）全都是错的，因为**维度选错了**。
      *
-     * ⚠️ 正确做法：**用手势语义区分场景，不要用坐标**。
-     *    原始视图是"操作版面"的场景（画框、点框），
-     *    在那里一次点击**永远不该**被解释成"藏菜单"。
-     *    所以整个视图直接不接这个手势，顶部/底部自然可选。
+     *    前两次是"用坐标缩小冲突范围"；
+     *    第三次更糟 —— 整段跳过之后菜单**永远唤不出来**（本来它就是收起的），
+     *    用户反馈"依旧无法隐藏菜单"。
      *
-     * ⚠️ 那原始视图怎么收菜单？
-     *    用户已经说了「不隐藏菜单」——他不需要这个手势。
-     *    要收菜单用系统返回键（已有）或点顶栏的按钮。
-     *    宁可少一个手势，也不能让版面操作被莫名打断。
+     * ✅ 正解：**用位移区分点击与拖拽**。
+     *    这本来就是两种手势，浏览器给的 pointer 事件里天然带着这个信息：
+     *      · 按下后没怎么动 → 点击 → 切菜单
+     *      · 按下后拖了一段  → 画框（见 bindLayerDrawing 的 DRAG_SLOP）
+     *    两者互斥，不可能同时成立。这样顶部/底栏附近的文字也能选中了，
+     *    因为一次轻点不再被"是否在画框"这件事影响。
+     */
+    /**
+     * 点正文中间 1/3 区域切换菜单显隐。
+     *
+     * ══ 为什么原始视图也能切菜单（推翻上一版） ══
+     *
+     * 上一版我把原始视图**整段跳过**，以为能"消除冲突"。错了：
+     * 菜单本来就是收起的，而点击被完全忽略 → **永远唤不出来**
+     * → 用户说"依旧无法隐藏菜单""依旧无法选中顶部底部文字"。
+     *
+     * 真因是：**冲突不在视图上，在"一次手势到底是点击还是拖拽"上。**
+     * 拿视图去区分是拿错了维度。
+     *
+     * 现在改成**用位移区分**（手势的天然语义）：
+     *   · 按下后没怎么动  → 点击 → 切菜单
+     *   · 按下后拖了一段  → 画框 → 见 bindLayerDrawing 的 DRAG_SLOP
+     * 两者互斥，不可能同时成立，所以顶栏/底栏与画框再也不会互斥。
+     *
+     * ⚠️ 拖拽结束后浏览器还会补发一个 click。那个 click 必须被吃掉，
+     *    否则画完框菜单会跟着跳。靠 `global.ScholariusUI.justDragged()`。
      */
     function mountTapToToggle() {
         if (!bodyEl) {
@@ -392,20 +412,31 @@
         }
 
         bodyEl.addEventListener('click', function (event) {
+            var ui = global.ScholariusUI;
+
             /*
-              ⚠️ 原始视图整段跳过（含编辑模式）。
-                 见函数头「设计冲突」的说明 —— 这是消除冲突，
-                 不是缩小冲突范围。
+              ⚠️ 刚拖拽完的那个 click 是浏览器补发的，不是用户想切菜单。
+                 必须吃掉 —— 否则每次画完框菜单都会跳一下。
+
+              ⚠️ 与 justLongPressed 一样，这个标志会**自动过期**，
+                 不会残留下来吞掉用户的下一次真实点击。
             */
-            if (view === 'raw') {
+            if (ui && typeof ui.justDragged === 'function' && ui.justDragged()) {
                 return;
             }
 
             /*
               排除点在链接/按钮上的情况 —— 那些应该走自己的行为。
-              （现在正文里还没有交互元素，但以后可能有引用跳转。）
             */
             if (event.target.closest && event.target.closest('a, button')) {
+                return;
+            }
+
+            /*
+              ⚠️ 点在已有的框上 → 交给框自己处理（那是删除/编辑）。
+                 不把这次点击当成切菜单，否则想改一个框却把菜单弹出来。
+            */
+            if (event.target.closest && event.target.closest('.anno-box')) {
                 return;
             }
 
@@ -423,20 +454,32 @@
             if (!rect.width || !rect.height) {
                 return;
             }
+
+            /*
+              ⚠️ 原始视图**也**响应，但判定区放宽到整个正文区。
+
+                 为什么放宽：原始视图里用户要选顶栏/底栏附近的文字，
+                 而那里正好在"中间 1/3"之外；若还卡着 1/3，
+                 顶部底部依旧唤不出菜单。
+                 而"拖拽画框"已经被位移判据分流走了，不会误触。
+            */
+            if (view === 'raw') {
+                toggleMenu();
+                return;
+            }
+
+            /*
+              ⚠️ 阅读视图里**同时**判横向与纵向都在中间 1/3。
+
+                 阅读视图不需要画框，所以这里保留 1/3 ——
+                 靠近顶部/底部的区域是正文（要能选中文字、要能滚动），
+                 一点就冒菜单会挡住内容。四边都留出安全区。
+            */
             var x = event.clientX - rect.left;
             var y = event.clientY - rect.top;
             var thirdX = rect.width / 3;
             var thirdY = rect.height / 3;
 
-            /*
-              ⚠️ 阅读视图里**同时**判横向与纵向都在中间 1/3。
-
-                 只判横向的话，靠近顶部/底部的区域也会切换菜单 ——
-                 而那些位置在阅读视图里是正文（要能选中文字、要能滚动），
-                 一点就冒菜单会挡住内容。
-
-                 限定在中间 1/3 × 1/3，四边都留出安全区。
-            */
             if (x >= thirdX && x < thirdX * 2 &&
                 y >= thirdY && y < thirdY * 2) {
                 toggleMenu();
@@ -2727,6 +2770,31 @@
         var start = null;
         /** 拖拽中的虚线框 */
         var ghost = null;
+        /**
+         * 本次手势的起始屏幕坐标 + 是否已经确认是拖拽。
+         *
+         * ⚠️⚠️ 这是"点击 vs 拖拽"分流的关键。
+         *
+         *    之前的问题是：pointerdown 就立刻开始画框，
+         *    于是**每一次轻点都会先画一个 0×0 的鬼框**，
+         *    pointerup 再把它丢掉 —— 看起来是"点了没反应"，
+         *    而且那一次点击还顺带把菜单切了，顶部/底部永远选不中。
+         *
+         *    现在改成**逆来顺受地看着**：按下时先不画，
+         *    等位移超过 DRAG_SLOP 才认定为拖拽、才开始画。
+         *    没超过就当作一次普通点击 —— 不画框，让 click 正常冒泡去切菜单。
+         */
+        var pending = null;
+        var dragging = false;
+
+        /*
+          位移阈值（屏幕像素）。
+
+          ⚠️ 太大学生想画小框时会先被当成点击；太小则手指的天然抖动
+             会被当成拖拽。8px 是触摸屏的常用值（与 Android 的
+             ViewConfiguration.getScaledTouchSlop 同一量级）。
+        */
+        var DRAG_SLOP = 8;
 
         function normalised(ev, rect) {
             var x = (ev.clientX - rect.left) / rect.width;
@@ -2757,19 +2825,54 @@
             var rect = layer.getBoundingClientRect();
             if (!rect.width || !rect.height) return;
 
-            ev.preventDefault();
-            start = normalised(ev, rect);
-            try {
-                layer.setPointerCapture(ev.pointerId);
-            } catch (e) { /* 个别 WebView 不支持 Pointer Capture，忽略 */ }
-
-            ghost = document.createElement('div');
-            ghost.className = 'anno-box anno-box-' + annotateMode + ' is-ghost';
-            place(ghost, start, start);
-            layer.appendChild(ghost);
+            /*
+              ⚠️ 这里**不** preventDefault()，也**不**建鬼框。
+                 只记下起点，等 pointermove 超了阈值再真正开始。
+            */
+            pending = {
+                pointerId: ev.pointerId,
+                clientX: ev.clientX,
+                clientY: ev.clientY,
+                startNorm: normalised(ev, rect)
+            };
+            dragging = false;
         });
 
         layer.addEventListener('pointermove', function (ev) {
+            if (!pending) return;
+
+            /*
+              还没确认成拖拽 —— 看位移够不够。
+              不够就什么都不做，手指可能只是在按着没动。
+            */
+            if (!dragging) {
+                var dx = Math.abs(ev.clientX - pending.clientX);
+                var dy = Math.abs(ev.clientY - pending.clientY);
+                if (Math.max(dx, dy) < DRAG_SLOP) return;
+
+                /*
+                  确认是拖拽了 —— 现在才真正开始：
+                    · 鬼框建起来
+                    · 吃掉后续的 click（画完框不该顺带切菜单）
+                */
+                dragging = true;
+                var ui0 = global.ScholariusUI;
+                if (ui0 && typeof ui0.markDragged === 'function') ui0.markDragged();
+
+                var rect0 = layer.getBoundingClientRect();
+                if (!rect0.width || !rect0.height) return;
+
+                start = pending.startNorm;
+                ghost = document.createElement('div');
+                ghost.className = 'anno-box anno-box-' + annotateMode + ' is-ghost';
+                place(ghost, start, start);
+                layer.appendChild(ghost);
+
+                try {
+                    layer.setPointerCapture(pending.pointerId);
+                } catch (e) { /* 个别 WebView 不支持 Pointer Capture，忽略 */ }
+            }
+
             if (!start || !ghost) return;
             var rect = layer.getBoundingClientRect();
             if (!rect.width || !rect.height) return;
@@ -2777,6 +2880,19 @@
         });
 
         layer.addEventListener('pointerup', function (ev) {
+            /*
+              ⚠️ 没超过阈值 = 一次普通点击。
+                 不画框、不消费 click，让它正常冒泡去切菜单。
+                 （这样顶部/底部的文字终于能选中了。）
+            */
+            if (!dragging) {
+                pending = null;
+                return;
+            }
+
+            pending = null;
+            dragging = false;
+
             if (!start) return;
 
             var rect = layer.getBoundingClientRect();
@@ -2809,6 +2925,9 @@
                    误触 = 手指点一下没移动 → w、h **都**小
                    竖直框 = w≈0 但 h 很大 → 保留 ✓
                    水平框 = h≈0 但 w 很大 → 保留 ✓
+
+              ⚠️ 现在又加了一层保险：到了这里的手势已经过 DRAG_SLOP 筛选，
+                 所以这个 MIN 主要是防"手拖了一点点又放下"。
 
               ⚠️ 后果：真正的一维细框（w=0）会被存下来，
                  而 `AnnotationStore.load()` 会把 `x1 <= x0` 当退化数据丢掉

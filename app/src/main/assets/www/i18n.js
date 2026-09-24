@@ -171,6 +171,11 @@
             'shortcut.count': '{n} Saved',
             'shortcut.needBoth': 'Both fields are required.',
             'shortcut.duplicate': 'That Full Name Already Exists.',
+            'shortcut.edit': 'Edit',
+            'shortcut.editHint': 'Tap an entry to edit it.',
+            'shortcut.deleteConfirmTitle': 'Delete?',
+            'shortcut.deleteConfirmBody': 'Cards will show the full venue name again.',
+            'shortcut.deleted': 'Deleted.',
 
             // --- 阅读页 ---
             'reader.loading': 'Extracting Text...',
@@ -288,6 +293,7 @@
             'action.delete': 'Delete',
             'action.clear': 'Clear',
             'action.close': 'Close',
+            'action.save': 'Save',
 
             // --- 登录页 ---
             'login.intro': 'Sign in with GitHub to Continue',
@@ -518,6 +524,11 @@
             'shortcut.count': '已保存 {n} 条',
             'shortcut.needBoth': '两项都要填写。',
             'shortcut.duplicate': '这个全名已经存在。',
+            'shortcut.edit': '编辑',
+            'shortcut.editHint': '点任意一条可以修改。',
+            'shortcut.deleteConfirmTitle': '删除？',
+            'shortcut.deleteConfirmBody': '卡片上会重新显示载体的全名。',
+            'shortcut.deleted': '已删除。',
 
             // --- 阅读页 ---
             'reader.loading': '正在提取文本…',
@@ -610,6 +621,7 @@
             'action.delete': '删除',
             'action.clear': '清空',
             'action.close': '关闭',
+            'action.save': '保存',
 
             'login.intro': '用 GitHub 登录以继续',
             'login.action': '用 GitHub 登录',

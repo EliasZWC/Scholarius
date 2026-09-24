@@ -2589,9 +2589,13 @@ body {
          而他往往正是在翻看内容时发现"一团乱麻"；
        · FAB 与菜单同生共死，既不抢模式的位置，又随时够得着。
 
-     ⚠️ 位置贴**左下**，不是右下 ——
-        右下角已被"详情"之类的高频操作占着，
-        且清空是破坏性操作，放在不易误触的位置更合适。
+     ⚠️ 位置贴**右下**（用户 2026-09-25：「删除按钮布局向上一些，向右一点」）。
+        初版贴左下，用户指出没变 —— 因为「向右」针对的就是这个按钮的横向位置。
+        右下是拇指自然够得到的区域，与底栏右侧的操作同侧，不会横跨半个屏幕去点。
+
+     ⚠️ 纵向抬离底栏 24px（原来 12px）——
+        抬得太低会和底栏按钮群贴上，看着像底栏的第五项，
+        而那正是这次改造要摆脱的语义。
 
      ⚠️ 它跟着菜单出现/隐藏，所以位移与 .reader-bottom 的
         transition 用**同一条曲线**，否则一个先到一个后到，看着别扭。
@@ -2601,9 +2605,9 @@ body {
 */
 .anno-fab {
     position: absolute;
-    left: calc(16px + var(--safe-left));
-    /* 底栏高 64 + 安全区，再上移 12px 留出呼吸空间 */
-    bottom: calc(64px + var(--safe-bottom) + 12px);
+    right: calc(16px + var(--safe-right));
+    /* 底栏高 64 + 安全区，再上移 24px 留出呼吸空间 */
+    bottom: calc(64px + var(--safe-bottom) + 24px);
     z-index: 3;
     width: 48px;
     height: 48px;
@@ -2845,24 +2849,34 @@ body {
     transform: translateX(0);
 }
 
-/* 头部：标题居中 + 右侧关闭按钮，与 .toc-head 同一套做法 */
+/*
+  ⚠️⚠️ 头部：**左返回 + 居中标题 + 右占位**，
+     不是「居中标题 + 右上叉号」。
+
+     用户 2026-09-25：「不要用叉号图标按钮退出，而是左上角用返回图标，
+     因为整个页不是一个独立的弹窗，而是一个设置项的子页」。
+
+     这是语义问题：
+       · 叉号 = 关掉一个浮层       → 目录弹窗（.toc-sheet）该用
+       · 返回 = 回到上一级          → 设置页的子页该用
+
+     形态与 #account-detail 的头部一致（同一套 flex 配平），
+     标题因此复用 .page-title 而不是 .title-text ——
+     字号与账户详情页统一，不新造字体样式。
+*/
 .shortcut-head {
-    position: relative;
     flex: 0 0 auto;
-    padding: 12px 12px 8px;
-    padding-top: calc(12px + var(--safe-top));
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 8px;
+    padding-top: calc(8px + var(--safe-top));
 }
 
-/* ⚠️ 字体由 .title-text 提供，这里只剩布局 */
-.shortcut-title {
-}
-
-.shortcut-head #shortcut-close {
-    position: absolute;
-    /* ⚠️ 要跟着 head 的 padding-top 一起下移，否则会压到状态栏 */
-    top: calc(50% + var(--safe-top) / 2);
-    right: 8px;
-    transform: translateY(-50%);
+/* 标题吃掉中间所有空间并居中 —— 左右两个等宽元素把它压到正中 */
+.shortcut-head .page-title {
+    flex: 1 1 auto;
+    text-align: center;
 }
 
 /* 新增区 */
@@ -2903,11 +2917,28 @@ body {
     min-width: 0;
 }
 
-.shortcut-add-btn {
+/*
+  ⚠️ 「添加」现在是**图标按钮**（加号），不是文字按钮
+     （用户 2026-09-25：「添加按钮用个加号图标就行了，不需要用文字」）。
+
+     ⚠️⚠️ 选择器必须写成 `.icon-button.shortcut-add-btn`（两个类），
+        不能只写 `.shortcut-add-btn` —— 因为 `.icon-button` 定义在
+        文件更靠后的位置（5411 > 2919），同为单类选择器时后者赢，
+        只写一个类的话这些规则会被 `.icon-button` 的
+        40×40 固定尺寸整体覆盖掉。
+
+     ⚠️ 用 aspect-ratio 保持正圆，并让它在 flex 里随输入框拉伸：
+        输入框是 padding 10px + 一行文字 ≈ 41px，
+        写死 40px 会看出"两个控件不一样高"。
+*/
+.icon-button.shortcut-add-btn {
     flex: 0 0 auto;
-    /* 与输入框等高，视觉上成一组 */
-    padding-left: 20px;
-    padding-right: 20px;
+    align-self: stretch;
+    width: auto;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    /* 与输入框同一套描边，视觉上成一组 */
+    color: var(--on-surface-variant);
 }
 
 /* 已保存列表 */
@@ -2926,10 +2957,117 @@ body {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 12px 14px;
+    padding: 0;
     margin-bottom: 8px;
     background: var(--surface);
     border-radius: 10px;
+}
+
+/*
+  ⚠️ 整行是一个按钮（用户 2026-09-25：「无法删除和修改」）。
+     之前删除只能点右下角一个 40×40 的图标 —— 手机上手指稍一移动
+     就被判定成滚动，click 不触发，等于点不到。
+     改成整行可点 → 弹编辑表单（改 / 删都在里面）。
+*/
+.shortcut-item-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    /* 内边距从 <li> 搬到按钮上，保证整块区域都能点 */
+    padding: 12px 14px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 160ms ease;
+}
+
+/* 与 .nav-item:active 一致：只降透明度/加底，不做缩放 */
+.shortcut-item-btn:active {
+    background: var(--surface-raised);
+}
+
+/* 右侧 ›，暗示"点进去能改" */
+.shortcut-item-chev {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    color: var(--on-surface-variant);
+    opacity: 0.7;
+}
+
+.shortcut-item-chev svg {
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+    display: block;
+}
+
+/* 编辑表单里的简称框（全名字段复用 .shortcut-input） */
+.shortcut-edit-short {
+    margin-top: 8px;
+}
+
+/* 全名字段与标题行之间留一点距离 */
+.shortcut-page > .sheet > [data-edit-full] {
+    margin-top: 4px;
+}
+
+/*
+  编辑表单的标题行：**居中标题** + 右侧删除。
+
+  ⚠️⚠️ 不能让标题靠左 —— 用户 2026-09-25 指出「编辑表单的标题不居中」。
+
+     原来的写法是 `justify-content: space-between`，
+     只有"标题"和"删除"两个孩子，于是标题被顶到最左边。
+     而标题在弹层里应该是**居中**的（与 .sheet-title 的既有观感一致）。
+
+  ⚠️ 做法：左边补一个**与删除等宽的占位**，
+     标题用 flex:1 + text-align:center 吃中间，
+     这样标题的中心才落在弹层中轴上，而不是"左边距 = 右边距"的假居中
+     （删除键 40px、占位若为 0，标题会偏左 20px）。
+
+  ⚠️ 删除放这里而不是底部按钮区 —— 理由见 shortcut.js 的长注释：
+     底部只有左/右两个位置，右边必须留给「保存」（主操作），
+     破坏性操作不能紧挨着主操作。
+*/
+.shortcut-edit-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 12px 0 8px;
+}
+
+/* 左侧占位：宽度与 .shortcut-edit-del 的 40px 一致，把标题压到正中 */
+.shortcut-edit-head::before {
+    content: '';
+    flex: 0 0 auto;
+    width: 40px;
+    height: 40px;
+}
+
+/* 标题行里的标题居中，且不再需要上下外边距（由 .shortcut-edit-head 统一管） */
+.shortcut-edit-head .sheet-title {
+    margin: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: center;
+}
+
+/* 删除：红色，与 .btn-danger 同一语义 */
+.shortcut-edit-del {
+    flex: 0 0 auto;
+    color: var(--danger);
+}
+
+.shortcut-edit-del:active {
+    background: var(--surface-raised);
+    color: var(--danger);
 }
 
 /* 键值对：上全名、下简称 */
@@ -2966,10 +3104,16 @@ body {
     overflow: hidden;
 }
 
-.shortcut-item-del {
-    flex: 0 0 auto;
-    color: var(--danger);
-}
+/*
+  ⚠️ `.shortcut-item-del` **已删除**（用户 2026-09-25）。
+
+     那个 40×40 的图标删除按钮被 `.shortcut-item-btn`（整行可点）
+     + 编辑表单里的「删除」取代。留着死样式会让后来的人以为
+     还有这个控件。
+
+     背景：用户反馈「无法删除和修改」—— 删除点在手机上几乎点不中
+     （手指移动 >8px 就被 WebView 当成滚动），而"修改"根本不存在。
+*/
 
 /* 空状态 */
 .shortcut-empty {

@@ -999,18 +999,43 @@
         aria-labelledby="shortcut-title" hidden>
         <div class="shortcut-backdrop" id="shortcut-backdrop"></div>
         <div class="shortcut-body">
-            <div class="shortcut-head">
-                <h2 class="shortcut-title title-text" id="shortcut-title" data-i18n="shortcut.title">
-                    Venue Abbreviations
-                </h2>
-                <button class="icon-button" type="button" id="shortcut-close"
-                    aria-label="Close" data-i18n-aria-label="action.close">
-                    <!-- Google Material Icons: close -->
+            <!--
+              ⚠️⚠️ 头部用**返回箭头（左上）+ 左对齐标题**，
+                 不是叉号（右上）+ 居中标题。
+
+                 用户 2026-09-25 指出：
+                   「不要用叉号图标按钮退出，而是左上角用返回图标，
+                     因为整个页不是一个独立的弹窗，而是一个设置项的子页」
+
+                 这是**语义**问题：叉号表示"关掉一个浮层"，
+                 返回箭头表示"回到上一级"。而简称页是从设置页
+                 「发表物简称」那一行点进来的，是设置页的子页 ——
+                 用户在那里改完想的是"返回设置"，不是"关掉弹窗"。
+
+              ⚠️ 形态与 #account-detail 的头部一致：
+                 左返回 + 居中标题 + 右侧等宽占位（保证标题真居中，
+                 不被左侧按钮挤偏）。所以这里的 h2 复用 .page-title，
+                 标题字号与账户详情页统一。
+
+              ⚠️ 与 .toc-sheet 的区别：目录弹窗确实是个"浮层"，
+                 所以它那里保留了叉号。两者不要互相照抄。
+            -->
+            <header class="shortcut-head">
+                <button class="icon-button" type="button" id="shortcut-back"
+                    aria-label="Back" data-i18n-aria-label="action.back">
+                    <!-- Google Material Icons: arrow_back -->
                     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                        <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                        <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
                     </svg>
                 </button>
-            </div>
+
+                <h2 class="page-title" id="shortcut-title" data-i18n="shortcut.title">
+                    Venue Abbreviations
+                </h2>
+
+                <!-- 右侧占位：与左侧返回按钮等宽，只为把标题压到正中间 -->
+                <span class="detail-header-spacer" aria-hidden="true"></span>
+            </header>
 
             <!--
               新增区：两个输入框 + 一个添加按钮。
@@ -1034,8 +1059,20 @@
                         placeholder="e.g. NIPS"
                         aria-label="Abbreviation" data-i18n-aria-label="shortcut.shortLabel"
                         autocomplete="off" autocapitalize="off" spellcheck="false" />
-                    <button class="btn btn-action shortcut-add-btn" type="button" id="shortcut-add"
-                        data-i18n="shortcut.add">Add</button>
+                    <!--
+                      ⚠️ 只有图标，没有文字（用户 2026-09-25：
+                         「添加按钮用个加号图标就行了，不需要用文字」）。
+
+                         加号在全世界都表示"新增"，而"Add"两个字占的横向空间
+                         是从简称输入框那里抢来的 —— 去掉文字后输入框更长，
+                         长一点的简称不会被挤。
+
+                      ⚠️ 内容由 shortcut.js 用 ScholariusUI.icon('add') 注入
+                         （不在 HTML 里手写 SVG —— 图标路径只在 components.js 一处定义）。
+                         所以**没有** data-i18n 文字，无障碍名走 aria-label。
+                    -->
+                    <button class="icon-button shortcut-add-btn" type="button" id="shortcut-add"
+                        aria-label="Add" data-i18n-aria-label="shortcut.add"></button>
                 </div>
             </div>
 
