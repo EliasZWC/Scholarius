@@ -936,13 +936,23 @@ body {
     transform: translateY(0);
 }
 
+/*
+  目录头部：标题居中，关闭按钮浮在右侧。
+
+  ⚠️ 标题必须**真正居中**，不能靠 flex space-between 摆。
+     用 space-between 时标题是「剩余空间的中心」——
+     右侧有关闭按钮（40px）而左侧没有，标题会偏左约 20px。
+     实测：改成居中后标题中心与弹层中心重合。
+
+     做法：标题独立占满整行（text-align: center），
+     关闭按钮 position: absolute 浮到右边 —— 它不参与布局，
+     所以不会把标题推偏。旋转 0 度只为了给它建立一个定位上下文。
+*/
 .toc-head {
+    position: relative;
     flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 12px 12px 8px 20px;
+    display: block;
+    padding: 12px 12px 8px;
 }
 
 .toc-title {
@@ -950,8 +960,18 @@ body {
     font-size: 16px;
     font-weight: 700;
     letter-spacing: 0.5px;
-    text-transform: uppercase;
     color: var(--on-surface);
+    text-align: center;
+    text-transform: uppercase;
+    /* 与 .sheet-title 同一套：全大写 + 居中 */
+}
+
+/* 关闭按钮：绝对定位在右侧，不参与布局，因此不会让标题偏移 */
+.toc-head #toc-close {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%);
 }
 
 .toc-list {
