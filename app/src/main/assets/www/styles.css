@@ -3909,7 +3909,13 @@ body {
     margin: 4px 16px 12px;
     padding: 16px 20px;
     background: var(--surface);
-    border-top: 1px solid var(--outline);
+    /*
+      ⚠️ 同样**不要外框线** —— 与 .setting-list 是同一个问题
+         （用户 2026-09-24：「设置项上面有线下面没有」）。
+         原本只有 border-top，卡片底部没有，看起来像被切了一截。
+         卡片的边界靠 --surface 与页面背景的**色差**表达，
+         不靠描边（16px 圆角本身也把"这是一个卡片"说清楚了）。
+    */
     border-radius: 16px;
 }
 
@@ -4202,7 +4208,29 @@ body {
     margin: 0 16px;
     padding: 0;
     background: var(--surface);
-    border-top: 1px solid var(--outline);
+    /*
+      ⚠️ **不要给列表加外框线**（上/下都不要）。
+
+         踩过的坑（用户 2026-09-24 反馈）：
+         「设置项上面有线下面没有，要么都有，要么都没有」。
+
+         原来只有 `border-top`，而项目间的分隔线是每个
+         .setting-item 的 `border-bottom`（最后一条由 :last-child 去掉）。
+         于是视觉上是：
+             列表顶部   ← border-top（有）
+             项与项之间 ← item 的 border-bottom（有）
+             列表底部   ← 谁都没有（空）★
+         顶部有线、底部没线，看着像被切掉一截。
+
+         ⚠️ 为什么选「都不要」而不是「都加上」：
+            加上 border-bottom 会让最后一行内容多出一条贴着圆角的下边线，
+            与「卡片式分组」（--surface 底 + 16px 圆角）的语言冲突 ——
+            卡片的边界靠**底色差**表达，不靠描边。
+            详情页的 .detail-date 等处也是同一取舍。
+
+         ⚠️ 项间分隔靠 .setting-item 的 border-bottom，
+            与本行无关；别把它一起删掉（那就一条线都没有了）。
+    */
     border-radius: 16px;
     overflow: hidden;
 }
