@@ -745,21 +745,65 @@
                          ⚠️ 这里不再用 <p class="reader-setting-label"> 那种分组标题 ——
                             行式本身就是标签，加分组标题会重复。
                     -->
-                    <button class="setting-action reader-setting-row" type="button"
-                        id="reader-font-size-row" aria-haspopup="dialog" aria-expanded="false">
-                        <span class="setting-label" data-i18n="reader.fontSize">Font size</span>
-                        <span class="setting-value" id="reader-font-size-value">&mdash;</span>
-                    </button>
+<!--
+                  ⚠️ 字号行**不是** row picker：用户要求「不做具体选项，
+                     而是给一个值，左边减小图标、右边增加图标，
+                     同时这个值还可以手动输入」。
+                     所以它由三个控件组成（减 / input / 加），
+                     各自绑事件（见 reader.js mountSize）。
+                -->
+                <div class="setting-action reader-setting-row">
+                    <span class="setting-label" data-i18n="reader.fontSize">Font Size</span>
+                    <span class="reader-size-controls">
+                        <button class="icon-button reader-size-btn" type="button"
+                            id="reader-font-size-down"
+                            aria-label="Decrease font size"
+                            data-i18n-aria-label="reader.fontSmaller">
+                            <!-- Google Material Icons: remove -->
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M19 13H5v-2h14v2z" />
+                            </svg>
+                        </button>
+                        <!--
+                          ⚠️ 用 input[type=number] 而不是 text：
+                             移动端会弹数字键盘，且自动过滤非数字。
+                             inputmode=numeric 让部分机型直接出数字盘。
+                        -->
+                        <input class="reader-setting-value-input" type="number"
+                            id="reader-font-size-input" inputmode="numeric"
+                            min="12" max="40" step="1"
+                            aria-label="Font size in pixels"
+                            data-i18n-aria-label="reader.fontSize" />
+                        <button class="icon-button reader-size-btn" type="button"
+                            id="reader-font-size-up"
+                            aria-label="Increase font size"
+                            data-i18n-aria-label="reader.fontLarger">
+                            <!-- Google Material Icons: add -->
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+                            </svg>
+                        </button>
+                    </span>
+                </div>
 
-                    <button class="setting-action reader-setting-row" type="button"
-                        id="reader-font-color-row" aria-haspopup="dialog" aria-expanded="false">
-                        <span class="setting-label" data-i18n="reader.fontColor">Text colour</span>
-                        <span class="setting-value" id="reader-font-color-value">&mdash;</span>
-                    </button>
+                <!--
+                  字体颜色。右侧除文字外还有一个色块 —— 用户要求
+                  「给出提示颜色让用户能看到这是什么颜色」。
+                  色块用 currentColor，由 JS 设 inline color。
+                -->
+                <button class="setting-action reader-setting-row" type="button"
+                    id="reader-font-color-row" aria-haspopup="dialog" aria-expanded="false">
+                    <span class="setting-label" data-i18n="reader.fontColor">Font Colour</span>
+                    <span class="reader-setting-value-group">
+                        <span class="setting-value" id="reader-font-color-text">&mdash;</span>
+                        <span class="reader-setting-swatch" id="reader-font-color-swatch"
+                            aria-hidden="true"></span>
+                    </span>
+                </button>
 
-                    <button class="setting-action reader-setting-row" type="button"
-                        id="reader-font-style-row" aria-haspopup="dialog" aria-expanded="false">
-                        <span class="setting-label" data-i18n="reader.fontStyle">Typeface</span>
+                <button class="setting-action reader-setting-row" type="button"
+                    id="reader-font-style-row" aria-haspopup="dialog" aria-expanded="false">
+                    <span class="setting-label" data-i18n="reader.fontStyle">Font Family</span>
                         <span class="setting-value" id="reader-font-style-value">&mdash;</span>
                     </button>
 

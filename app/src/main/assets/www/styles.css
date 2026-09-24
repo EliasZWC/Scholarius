@@ -379,12 +379,13 @@ body {
 
 /*
   多选模式下被选中的卡片。
-  ⚠️ 没有边框可以变色了，改用**底色高亮** + 左侧色条。
-     色条用 inset 阴影画，不额外建元素。
+  ⚠️ 没有边框可以变色了，改用**底色高亮** + 右侧色条。
+     色条用 inset 阴影画（不额外建元素），偏移量取负值即贴右边。
+     用户要求放在**右侧** —— 左侧贴着手势返回区，容易与滑动返回冲突。
 */
 .doc-card.is-selected {
     background: var(--surface-raised);
-    box-shadow: inset 3px 0 0 var(--nav-active);
+    box-shadow: inset -3px 0 0 var(--nav-active);
 }
 
 /*
@@ -1041,9 +1042,17 @@ body {
 
      设置页那边靠外层 <li class="setting-item"> 提供间距，
      阅读面板里没有 li，padding 必须由这一行自己出。
+
+  ⚠️ 四行高度必须**完全一致**。
+     字号行里有 30px 的按钮和输入框，会把自己撑到 64px，
+     而其余三行只有文字（44px）—— 实测就是这个差异。
+     所以用 min-height 把四行锁在同一个值上，内容垂直居中。
 */
 .setting-action.reader-setting-row {
-    padding: 12px 12px;
+    display: flex;
+    align-items: center;
+    min-height: 48px;
+    padding: 0 12px;
     border-radius: 10px;
     /* 行与行之间拉开一点，否则四行挤在一起没有分组感 */
     margin-bottom: 2px;
@@ -1141,12 +1150,214 @@ body {
                菜单不属于阅读内容，所以依旧跟随应用整体的字体。」
 
      实现要点：
-       ① 字体样式由 `data-reader-font` 选择器**限定到 .reader-content**，
+       ① 字体族由 `data-reader-font` 选择器**限定到 .reader-content**，
           所以 .reader-top / .reader-bottom / .reader-panel / .toc-* 全不受影响；
        ② 字号用内联 style 也只写在 contentEl 上（见 reader.js applySettings），
           不要写到 .reader 或 <body>，否则菜单会跟着变大；
        ③ 颜色同理，只落在 .reader-content。
+
+  ══ ⚠️⚠️ 关于字体颜色的历史 bug（v0.1.4 修复）══
+
+     v0.1.3 用户反馈「换了几个颜色发现没有什么改变」—— 这是真的，
+     因为**这整段颜色规则当时根本不存在**。
+
+     根因：v0.1.3 重写阅读设置样式时，我用脚本替换了从
+     「阅读页 · 设置项」到「data-reader-font」之间的一整段，
+     而颜色规则恰好落在那个区间里，被连带删掉了。
+     结果 `data-reader-color` 换了值，但没有任何 CSS 响应它，
+     正文颜色始终是 .reader-content 的基础 color。
+
+     教训：用区间替换改 CSS 时，替换前必须把区间内的**所有**选择器
+     列出来核对，不能只看头尾两行。已改用逐段替换。
+
+  ══ 颜色值的选择（用户要求「给出提示颜色让用户能看到这是什么颜色」）══
+
+     上一版用语义名（default / soft / sepia），用户反馈看不到区别。
+     现在改为**四个具体色**，名字就是颜色本身，且每行右侧有色块预览
+     （见 .reader-setting-swatch）。
+
+     ⚠️ 每色都要给亮/暗两套值：同一个「深灰」在白底上清楚，
+        在黑底上就看不见了。这里按主题分别赋值。
 */
+.reader[data-reader-color="black"] .reader-content {
+    color: #1B1B1B;
+}
+
+.reader[data-reader-color="grey"] .reader-content {
+    color: #6E6E6E;
+}
+
+.reader[data-reader-color="sepia"] .reader-content {
+    color: #8A6A3B;
+}
+
+.reader[data-reader-color="white"] .reader-content {
+    color: #F2F2F0;
+}
+
+/* 暗色下把浅色调整亮，否则在黑底上读不出来 */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .reader[data-reader-color="black"] .reader-content {
+        color: #ECECEA;
+    }
+
+    :root:not([data-theme="light"]) .reader[data-reader-color="grey"] .reader-content {
+        color: #A8A8A6;
+    }
+
+    :root:not([data-theme="light"]) .reader[data-reader-color="sepia"] .reader-content {
+        color: #C9A870;
+    }
+}
+
+:root[data-theme="dark"] .reader[data-reader-color="black"] .reader-content {
+    color: #ECECEA;
+}
+
+:root[data-theme="dark"] .reader[data-reader-color="grey"] .reader-content {
+    color: #A8A8A6;
+}
+
+:root[data-theme="dark"] .reader[data-reader-color="sepia"] .reader-content {
+    color: #C9A870;
+}
+
+/*
+  字号行的三个控件：减 / 数值输入 / 加。
+
+  ⚠️ 这一行**不是可点的整行**（它是 div，不是 button）——
+     里面有两个按钮和一个输入框，点整行没有意义。
+     所以不能套用 .setting-action 的 :active 反馈。
+*/
+.reader-size-controls {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 8px;
+}
+
+/*
+  ⚠️ 缩小/放大按钮：选择器要带 .icon-button（两个类）。
+
+     原因同 .reader-setting-row：.icon-button 定义在后面且有 width/height: 40px，
+     与单个 .reader-size-btn 优先级相同，后出现的赢 ——
+     实测按钮仍是 40px（行高 48 里塞 40 的按钮，上下只剩 4px，
+     视觉上和输入框（28px）不齐）。
+
+     32px 按钮配 28px 输入框，在 48px 行里垂直居中，看着才整齐。
+*/
+.icon-button.reader-size-btn {
+    width: 32px;
+    height: 32px;
+}
+
+.icon-button.reader-size-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* 到边界时禁用，让「调不动」一眼可见 */
+.reader-size-btn:disabled {
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+/*
+  颜色行的右侧：文字 + 色块。
+  用 flex 让两者对齐，色块靠右紧贴。
+
+  ⚠️ setting-value 在别处有 max-width + ellipsis（设置页那行长值要截断），
+     在这里会把「Black」截成「Bl...」—— 实测就是这个问题。
+     颜色名很短，不需要截断，这里放开宽度限制。
+*/
+.reader-setting-value-group {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: 8px;
+}
+
+.reader-setting-value-group .setting-value {
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+}
+
+/*
+  颜色行右侧的色块预览。
+  ⚠️ 用户明确要求：必须让用户**看到**这是什么颜色，不能只给个名字。
+     色块用 background: currentColor，由 JS 设 inline color 驱动 ——
+     这样色块永远与它代表的值一致，不会两处写死不同步。
+*/
+.reader-setting-swatch {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    margin-left: 8px;
+    border: 1px solid var(--outline);
+    border-radius: 50%;
+    background: currentColor;
+}
+
+/* 表单里每个颜色选项左侧也放一个色块 */
+.sheet-picker-swatch {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    margin-right: 10px;
+    border: 1px solid var(--outline);
+    border-radius: 50%;
+    background: currentColor;
+}
+
+/*
+  ⚠️ 字号行右侧的「可直接输入」提示：把值做成看起来可点的样式。
+     纯文本别人不知道能输入 —— 用户要求支持手动输入。
+*/
+.reader-setting-value-input {
+    /*
+      ⚠️ 高度必须显式约束。input 的 UA 默认高度随字号变化，
+         不锁的话它会把整行撑高（实测字号行 64px vs 其它行 44px，
+         用户一眼就看出不齐）。
+    */
+    height: 28px;
+    width: 60px;
+    padding: 0 6px;
+    border: 1px solid var(--outline);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--on-surface);
+    font: inherit;
+    font-size: 14px;
+    line-height: 26px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    outline: none;
+    box-sizing: border-box;
+}
+
+/*
+  ⚠️ 隐藏 number 输入的上下小箭头（spinner）。
+     Android WebView 上它很小、点不准，而且我们已经有加减按钮了，
+     两者并存反而让人不知道该点哪个。
+*/
+.reader-setting-value-input::-webkit-outer-spin-button,
+.reader-setting-value-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.reader-setting-value-input {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+
+.reader-setting-value-input:focus {
+    border-color: var(--nav-active);
+}
+
 .reader[data-reader-font="serif"] .reader-content {
     font-family: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
 }

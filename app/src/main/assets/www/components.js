@@ -511,6 +511,21 @@
                 var label = document.createElement('span');
                 label.className = 'sheet-picker-label';
                 label.textContent = opt.label;
+
+                /*
+                  ⚠️ opt.swatch 是可选的颜色预览（如字体颜色那几个选项）。
+                     用户要求「给出提示颜色让用户能看到这是什么颜色」——
+                     光有文字（「灰色」「棕褐」）没法确定具体是什么色。
+                     色块用 background: currentColor，由 inline color 驱动。
+                */
+                if (opt.swatch) {
+                    var dot = document.createElement('span');
+                    dot.className = 'sheet-picker-swatch';
+                    dot.setAttribute('aria-hidden', 'true');
+                    dot.style.color = opt.swatch;
+                    btn.appendChild(dot);
+                }
+
                 btn.appendChild(label);
 
                 // 选中标记

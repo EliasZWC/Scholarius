@@ -63,24 +63,43 @@
     var SIZE_KEY = 'scholarius.reader.size';
     var COLOR_KEY = 'scholarius.reader.color';
 
-    /** 字号档位（px）。用有限档位而不是连续滑块 —— 手指点得准，也便于测试 */
-    var SIZES = [15, 17, 19, 21, 23, 26];
+    /**
+     * 字号范围与步长（px）。
+     *
+     * ⚠️ v0.1.4 改为「减 / 数值 / 加」+ 可直接输入，不再是固定档位列表。
+     *    原因：用户要求「不做具体选项，而是给一个值」——
+     *    档位列表限制了取值，也让「想精确到 18px」做不到。
+     */
+    var SIZE_MIN = 12;
+    var SIZE_MAX = 40;
+    var SIZE_STEP = 1;
     var DEFAULT_SIZE = 17;
 
     /**
-     * 字体颜色候选。
+     * 字体颜色候选（v0.1.4 重做）。
      *
-     * ⚠️ 每个取值都是**成对**的（亮色主题一个值、暗色主题一个值），
-     *    因为同一个「深灰」在白底上清楚、在黑底上就看不见了。
-     *    实现上用 CSS 变量 --reader-fg，由 data-reader-color 选择器赋值，
-     *    这里只存"用户选了哪种语义色"，不存具体色值 ——
-     *    这样切主题时颜色自动跟着变，不用重算。
+     * ⚠️ 用户反馈上一版「换了几个颜色发现没有什么改变」——
+     *    两个原因，都已修：
+     *    ① 那段 CSS **根本不存在**（被区间替换脚本连带删掉了），
+     *       所以 data-reader-color 换了值但没有任何样式响应它；
+     *    ② 上一版用语义名（default / soft / sepia），
+     *       用户看不出「默认」和「浅灰」的区别。
      *
-     *    色值定义见 styles.css 的 .reader[data-reader-color="..."] 段。
+     *    现在改为四个**具体色**，名字即颜色，且每行右侧有色块预览。
+     *    色块用 background: currentColor + JS 设 inline color 驱动，
+     *    保证预览永远与正文实际颜色一致（不两处写死）。
+     *
+     *    色值定义见 styles.css 的 .reader[data-reader-color="..."] 段，
+     *    每种色都有亮/暗两套 —— 同一个「深灰」在白底清楚、黑底看不见。
      */
-    var COLORS = ['default', 'soft', 'sepia'];
+    var COLORS = [
+        { value: 'black', preview: '#1B1B1B' },
+        { value: 'grey', preview: '#6E6E6E' },
+        { value: 'sepia', preview: '#8A6A3B' },
+        { value: 'white', preview: '#F2F2F0' }
+    ];
 
-    /** 字体样式 */
+    /** 字体族 */
     var FONTS = ['serif', 'sans', 'mono'];
     var DEFAULT_FONT = 'serif';
 
@@ -166,6 +185,7 @@
         mountSettings();
 
         applySettings();
+        mountSize();
         mountRows();
 
         if (global.ScholariusI18n && global.ScholariusI18n.onChange) {
@@ -790,14 +810,31 @@
 
     // --- 设置：应用与持久化 -------------------------------------------------
 
+    /**
+     * 字号：夹在 [SIZE_MIN, SIZE_MAX] 内。
+     * ⚠️ 必须夹，不能只把非法值换成默认 —— 用户手动输入 999 时
+     *    如果不管，正文会被放大到看不见。
+     */
     function getSize() {
         var v = parseInt(readStore(SIZE_KEY, ''), 10);
-        return SIZES.indexOf(v) >= 0 ? v : DEFAULT_SIZE;
+        if (!isFinite(v)) return DEFAULT_SIZE;
+        return Math.min(SIZE_MAX, Math.max(SIZE_MIN, v));
+    }
+
+    function colorValues() {
+        return COLORS.map(function (c) { return c.value; });
+    }
+
+    function colorPreview(name) {
+        for (var i = 0; i < COLORS.length; i++) {
+            if (COLORS[i].value === name) return COLORS[i].preview;
+        }
+        return COLORS[0].preview;
     }
 
     function getColor() {
-        var v = readStore(COLOR_KEY, 'default');
-        return COLORS.indexOf(v) >= 0 ? v : 'default';
+        var v = readStore(COLOR_KEY, 'black');
+        return colorValues().indexOf(v) >= 0 ? v : 'black';
     }
 
     function getFont() {
@@ -805,14 +842,31 @@
         return FONTS.indexOf(v) >= 0 ? v : DEFAULT_FONT;
     }
 
+    /**
+     * 字号：夹在 [SIZE_MIN, SIZE_MAX] 内。
+     * ⚠️ 必须夹，不能只把非法值换成默认 —— 用户手动输入 999 时
+     *    如果不管，正文会被放大到看不见。
+     */
     function getSize() {
         var v = parseInt(readStore(SIZE_KEY, ''), 10);
-        return SIZES.indexOf(v) >= 0 ? v : DEFAULT_SIZE;
+        if (!isFinite(v)) return DEFAULT_SIZE;
+        return Math.min(SIZE_MAX, Math.max(SIZE_MIN, v));
+    }
+
+    function colorValues() {
+        return COLORS.map(function (c) { return c.value; });
+    }
+
+    function colorPreview(name) {
+        for (var i = 0; i < COLORS.length; i++) {
+            if (COLORS[i].value === name) return COLORS[i].preview;
+        }
+        return COLORS[0].preview;
     }
 
     function getColor() {
-        var v = readStore(COLOR_KEY, 'default');
-        return COLORS.indexOf(v) >= 0 ? v : 'default';
+        var v = readStore(COLOR_KEY, 'black');
+        return colorValues().indexOf(v) >= 0 ? v : 'black';
     }
 
     function getFont() {
@@ -840,12 +894,55 @@
         syncRows();
     }
 
-    /** 刷新四行右侧的当前值文字 */
+    /**
+     * 刷新四行右侧的当前值。
+     *
+     * ⚠️ 字号那行不是纯文字 —— 它是一个可输入的 input（用户要求支持手动输入），
+     *    所以单独处理，不能走 setRowValue。
+     * ⚠️ 颜色那行右侧要带色块预览（用户要求「能看到这是什么颜色」），
+     *    色块颜色由 inline color 驱动，也单独处理。
+     */
     function syncRows() {
         syncThemeRow();
-        setRowValue('reader-font-size-value', getSize() + 'px');
-        setRowValue('reader-font-color-value', t('reader.color.' + getColor()));
+        syncSizeInput();
+        syncColorRow();
         setRowValue('reader-font-style-value', t('reader.font.' + getFont()));
+    }
+
+    function syncSizeInput() {
+        var input = document.getElementById('reader-font-size-input');
+        if (input && document.activeElement !== input) {
+            // 正在输入时不要覆写，否则每敲一个字符光标就跳
+            input.value = String(getSize());
+        }
+    }
+
+    function syncColorRow() {
+        var name = getColor();
+        setRowValue('reader-font-color-text', t('reader.color.' + name));
+        var dot = document.getElementById('reader-font-color-swatch');
+        if (dot) {
+            /*
+              ⚠️ 色块用 inline color 驱动 background: currentColor。
+                 这样预览色与正文实际用色同源，不会两处写死不同步。
+                 但要注意暗色主题下正文用的是**另一套**值（更亮），
+                 所以这里也按当前主题取对应预览。
+            */
+            dot.style.color = previewForTheme(name);
+        }
+    }
+
+    /** 取该颜色在**当前主题**下实际生效的值，用于色块预览 */
+    function previewForTheme(name) {
+        var isDark = global.ScholariusTheme
+            ? global.ScholariusTheme.resolve() === 'dark'
+            : false;
+        if (!isDark) return colorPreview(name);
+        // 暗色下的对应值，与 styles.css 里的规则保持一致
+        if (name === 'black') return '#ECECEA';
+        if (name === 'grey') return '#A8A8A6';
+        if (name === 'sepia') return '#C9A870';
+        return '#F2F2F0';
     }
 
     function setRowValue(id, text) {
@@ -876,25 +973,25 @@
         var ui = global.ScholariusUI;
         if (!ui || !ui.createRowSheetPicker) return;
 
-        // 字号
-        bindRow('reader-font-size-row', 'reader-font-size-value', {
-            getOptions: function () {
-                return SIZES.map(function (px) {
-                    return { value: px, label: px + 'px' };
-                });
-            },
-            getValue: getSize,
-            onChange: function (px) {
-                writeStore(SIZE_KEY, String(px));
-                applySettings();
-            }
-        });
+        /*
+          字号：不做选项列表，而是「减 / 可输入数值 / 加」。
+          ⚠️ 不作为 row picker 绑定 —— 它没有选项表单，
+             三个控件各自绑事件（见 mountSize()）。
+        */
 
-        // 字体颜色
-        bindRow('reader-font-color-row', 'reader-font-color-value', {
+        /*
+          字体颜色：仍是行式 + 底部表单，但每个选项带色块预览。
+          ⚠️ 用户要求「给出提示颜色让用户能看到这是什么颜色」，
+             所以 label 前面要插一个 currentColor 色块。
+        */
+        bindRow('reader-font-color-row', 'reader-font-color-text', {
             getOptions: function () {
-                return COLORS.map(function (name) {
-                    return { value: name, label: t('reader.color.' + name) };
+                return COLORS.map(function (c) {
+                    return {
+                        value: c.value,
+                        label: t('reader.color.' + c.value),
+                        swatch: c.preview
+                    };
                 });
             },
             getValue: getColor,
@@ -938,6 +1035,58 @@
                 syncThemeRow();
             }
         });
+    }
+
+    /**
+     * 字号：减 / 可输入 / 加。
+     *
+     * ⚠️ 手动输入必须做**校验与夹值**：
+     *    用户可能输入 0、999、空、甚至 1e9；
+     *    不夹的话正文会被放大到看不见或缩到不可读。
+     *    校验发生在 input 事件上（失焦或回车时提交）。
+     */
+    function mountSize() {
+        var down = document.getElementById('reader-font-size-down');
+        var up = document.getElementById('reader-font-size-up');
+        var input = document.getElementById('reader-font-size-input');
+
+        function setSize(px) {
+            var v = Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round(px)));
+            writeStore(SIZE_KEY, String(v));
+            applySettings();
+        }
+
+        if (down) {
+            down.addEventListener('click', function () {
+                setSize(getSize() - SIZE_STEP);
+            });
+        }
+        if (up) {
+            up.addEventListener('click', function () {
+                setSize(getSize() + SIZE_STEP);
+            });
+        }
+        if (input) {
+            /*
+              ⚠️ 只在 change（失焦 / 回车）时提交，不在每次 input 时提交。
+                 每次击键就改字号会让正文不断重排、输入框位置跳动。
+            */
+            input.addEventListener('change', function () {
+                var v = parseInt(input.value, 10);
+                if (isFinite(v)) {
+                    setSize(v);
+                } else {
+                    // 输入非法 → 恢复成当前值，不给用户留一个空框
+                    syncSizeInput();
+                }
+            });
+            // 回车立即提交（移动端数字键盘常有「完成」键）
+            input.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    input.blur();
+                }
+            });
+        }
     }
 
     function bindRow(rowId, valueId, config) {
@@ -997,9 +1146,19 @@
         getSettings: function () {
             return { size: getSize(), color: getColor(), font: getFont() };
         },
+        /**
+         * 设字号（供测试与外部调用）。
+         * ⚠️ 与 mountSize 里的 setSize 用同一套夹值逻辑 ——
+         *    这里若不夹，外部传入 999 会让正文大到看不见。
+         */
         setSize: function (px) {
-            if (SIZES.indexOf(px) >= 0) {
-                writeStore(SIZE_KEY, String(px));
+            var v = Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round(px)));
+            writeStore(SIZE_KEY, String(v));
+            applySettings();
+        },
+        setColor: function (name) {
+            if (colorValues().indexOf(name) >= 0) {
+                writeStore(COLOR_KEY, name);
                 applySettings();
             }
         },
