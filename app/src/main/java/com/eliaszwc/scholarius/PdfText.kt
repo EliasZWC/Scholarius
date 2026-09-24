@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionGoTo
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
 import com.tom_roush.pdfbox.text.PDFTextStripper
@@ -128,6 +129,270 @@ object PdfText {
 
     /** 从首页正文里猜出的标题与作者 */
     data class Head(val title: String, val author: String)
+
+    /**
+     * 收集文本的 [PDFTextStripper] 子类：**在提取文本的同时产出结构化行**。
+     *
+     * ══ 为什么必须自己写一个（不能直接用 PDFTextStripper）══
+     *
+     * PDFTextStripper 只吐纯文本，**字体/字号/页码全部丢掉**。
+     * 而 v0.1.5 的章节识别**依赖字体** —— 实测 Nature 那篇
+     * （LeCun et al. 2015）的章节标题不靠编号也不靠全大写，
+     * 只靠字体区分（正文 MinionPro-Regular 9.3pt，
+     * 标题 GlosaMath-Bold 10.0pt）。纯文本流里这些信息不存在，
+     * 前端再怎么启发式都认不出来（实测命中 0 条）。
+     *
+     * PDFBox 提供的钩子是 [writeString] —— 每**行**回调一次，
+     * 参数里带该行全部 [TextPosition]（含字体、字号、坐标）。
+     * 在这里顺手攒出 [Line] 即可，不用二次遍历。
+     *
+     * ⚠️ 之前这个类**被引用但没定义**，导致 v0.1.5 整个编译不过
+     *    （CI 报 `Unresolved reference 'LineCollector'`）。
+     *    本地没有 JDK/SDK，只能靠 CI 发现 —— 所以 push 后必须先等
+     *    CI 绿了再打标签，否则会发出一个根本编译不出来的版本。
+     *
+     * ══ 关于 raw 与 writeText 的关系 ══
+     *
+     * ⚠️ 两者是**同一次遍历的两种产出**，必须一致：
+     *    · [writeText] 写出纯文本（给阅读页）
+     *    · [raw] 是行列表（给章节识别与行号跳转）
+     *    前端靠行号定位，两者错位会导致跳转全偏。
+     *    所以绝不能让它们分别跑两次 —— PDFBox 的遍历顺序
+     *    （尤其 sortByPosition 生效时）不保证两次完全一致。
+     */
+    private class LineCollector : PDFTextStripper() {
+
+        /** 逐行累积的结构化数据。与 writeText 的输出行一一对应 */
+        val raw = ArrayList<Line>()
+
+        /** 当前页码（PDFBox 在换页时会改它） */
+        private var pageNo = 1
+
+        /** 上一行是否为空行（用来判断本行是否段落起始） */
+        private var prevBlank = true
+
+        /*
+          ⚠️ 签名必须与父类**逐字一致**，包括 `throws IOException`。
+
+             父类是：
+               protected void writeString(String text,
+                                          List<TextPosition> textPositions)
+                                          throws IOException
+
+             ⚠️ 在 Kotlin 里 `throws` 要靠 @Throws(IOException::class) 补上 ——
+                不写虽然也能编译（Kotlin 不强制 checked exception），
+                但为了与父类契约一致、且让后续重写不会踩坑，这里显式加上。
+         */
+        @Throws(java.io.IOException::class)
+        override fun writeString(
+            text: String?,
+            textPositions: List<TextPosition>?
+        ) {
+            super.writeString(text, textPositions)
+
+            val line = text ?: ""
+            val trimmed = line.trim()
+
+            /*
+              ⚠️ 空行**也**要收进 raw。
+
+                 因为 mergeParagraphs() 用空行当段落边界 ——
+                 如果这里把空行丢掉，段落就永远合并不了，
+                 整篇会连成一块（正是 v0.1.3 的"无法阅读"）。
+            */
+            if (trimmed.isEmpty()) {
+                raw.add(Line("", "", 0f, pageNo, false))
+                prevBlank = true
+                return
+            }
+
+            val positions = textPositions ?: emptyList()
+
+            /*
+              ⚠️ 主字体 = **字符数最多**的那个字体，不是第一个。
+
+                 一行里字体可能混杂（正文中插一个数学符号、
+                 上标引用编号），但标题行的主字体占绝对多数。
+                 取第一个会经常取到那个符号字体，判别就错了。
+
+                 ⚠️ 用 String.length 而非 TextPosition 个数加权：
+                    TextPosition 可能一个对象对应多个字符
+                    （PDFBox 会把连续同属性字符合并）。
+                    这里要的是"哪种字体覆盖的字符多"。
+            */
+            var fontName = ""
+            var fontSize = 0f
+            if (positions.isNotEmpty()) {
+                val weight = HashMap<String, Int>()
+                val sizeOf = HashMap<String, Float>()
+                for (p in positions) {
+                    val f = p.font?.name ?: ""
+                    weight[f] = (weight[f] ?: 0) + p.unicode.length
+                    if (!sizeOf.containsKey(f)) sizeOf[f] = p.fontSizeInPt
+                }
+                var best = ""
+                var bestN = -1
+                for ((f, n) in weight) {
+                    if (n > bestN) {
+                        bestN = n
+                        best = f
+                    }
+                }
+                fontName = best
+                fontSize = sizeOf[best] ?: 0f
+            }
+
+            /*
+              ⚠️ 页码取 PDFBox 的当前页，不用自己数。
+                 自己数在多页时容易差一（尤其有 pageStart 分隔时）。
+
+                 ⚠️ **必须写成 `getCurrentPageNo()`** —— 它在父类里是
+                    `protected int getCurrentPageNo()`，而 Kotlin 侧
+                    对 Java protected getter 的**属性语法访问不成立**
+                    （`currentPageNo` 解析不到，因为背后的字段
+                    `private int currentPageNo` 不可见）。
+                    写成 `currentPageNo` 会得到
+                    `Unresolved reference: currentPageNo`，
+                    而本地没 JDK 发现不了 —— 只能靠 CI。
+            */
+            pageNo = getCurrentPageNo()
+
+            raw.add(
+                Line(
+                    text = line,
+                    font = fontName,
+                    size = fontSize,
+                    page = pageNo,
+                    /*
+                      ⚠️ paragraphStart 这里恒为 false —— 真正的段落判定
+                         在 mergeParagraphs() 里做（它要看上下文：
+                         上一行是否句末、本行是否标题）。
+                         这里没有上下文，硬猜只会给出错的标记。
+                    */
+                    paragraphStart = false
+                )
+            )
+            prevBlank = false
+        }
+    }
+
+    /**
+     * 读 PDF 自带的书签大纲。
+     *
+     * ⚠️ 返回空列表是**正常情况**，不是错误：
+     *    很多 PDF（尤其 arXiv 的自动排版件、以及被工具重写过的）
+     *    根本没有书签。前端此时退回「按字体识别章节」。
+     *    实测那篇 Nature 就没有可靠书签，全靠字体识别。
+     *
+     * ⚠️ level 从 1 开始（1 = 顶层）。
+     *    PDFBox 的 `getNextSibling` / `getFirstChild` 构成树，
+     *    递归时 level 逐层 +1。
+     *
+     * ⚠️ 只收**能定位到页码**的条目。
+     *    拿不到页码的条目点不动（跳转需要页码），收进来只会
+     *    让用户在目录里点了没反应 —— 那比不显示更糟。
+     *    所以 resolvePage() 失败的直接跳过。
+     */
+    private fun readOutline(document: PDDocument): List<OutlineEntry> {
+        val out = ArrayList<OutlineEntry>()
+        val root = try {
+            document.documentCatalog?.documentOutline
+        } catch (t: Throwable) {
+            Log.w(TAG, "readOutline: catalog unavailable", t)
+            return out
+        } ?: return out
+
+        val first = try {
+            root.firstChild
+        } catch (t: Throwable) {
+            Log.w(TAG, "readOutline: no first child", t)
+            return out
+        }
+
+        /*
+          ⚠️ 整段包在 try/catch 里：书签树是外部数据，可能有环、
+             可能指向不存在的对象。一个坏书签不该让整次提取失败
+             （提取失败的代价是整篇打不开）。
+        */
+        try {
+            var item: PDOutlineItem? = first
+            while (item != null) {
+                addOutlineItem(item, 1, document, out)
+                item = item.nextSibling
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "readOutline failed, returning ${out.size} entries", t)
+        }
+        return out
+    }
+
+    /** 递归收一个书签及其子节点，[level] 从 1 开始 */
+    private fun addOutlineItem(
+        item: PDOutlineItem,
+        level: Int,
+        document: PDDocument,
+        out: MutableList<OutlineEntry>
+    ) {
+        val title = item.title?.trim().orEmpty()
+        val page = resolvePage(item, document)
+
+        /*
+          ⚠️ 标题空 或 页码未知 → **跳过这一条，但继续递归子节点**。
+             父节点没页码不代表子节点没有，直接 return 会丢掉
+             整棵子树。
+        */
+        if (title.isNotEmpty() && page > 0) {
+            out.add(OutlineEntry(level, title, page))
+        }
+
+        var child = try {
+            item.firstChild
+        } catch (t: Throwable) {
+            null
+        }
+        while (child != null) {
+            addOutlineItem(child, level + 1, document, out)
+            child = try {
+                child.nextSibling
+            } catch (t: Throwable) {
+                null
+            }
+        }
+    }
+
+    /**
+     * 把一个书签解析成页码（从 1 开始）；解析不出返回 0。
+     *
+     * ⚠️ 书签的 destination 有两种形态：
+     *      · 直接指向页面（PDPageDestination）
+     *      · 是「动作」而不是目的地（PDActionGoTo）—— 要取它的 destination
+     *    只处理前者会漏掉相当一部分 PDF（很多是用动作写的）。
+     */
+    private fun resolvePage(item: PDOutlineItem, document: PDDocument): Int {
+        return try {
+            val dest = try {
+                item.destination ?: (item.action as? PDActionGoTo)?.destination
+            } catch (t: Throwable) {
+                null
+            }
+
+            val pd = dest as? PDPageDestination ?: return 0
+
+            /*
+              ⚠️ 用 pageNumber 而不是自己 walk 页面树。
+                 PDFBox 的 PDPageDestination.pageNumber 已经处理好
+                 页面树索引到物理页码的映射（含继承的节点）。
+            */
+            val idx = try {
+                pd.pageNumber
+            } catch (t: Throwable) {
+                -1
+            }
+            if (idx >= 0) idx + 1 else 0
+        } catch (t: Throwable) {
+            0
+        }
+    }
 
     /**
      * 只读**第 1 页**，从正文里猜标题与作者。

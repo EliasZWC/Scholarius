@@ -275,10 +275,20 @@ object PdfMeta {
      * ⚠️ 三者拿到的都可能带时间，统一剥出 4 位年份。
      */
     private fun readXmpYear(xmp: String): String {
+        /*
+          ⚠️ firstOrNull 返回的是 `String?`（列表里可能一条都不匹配），
+             extractFourDigitYear 收非空 String —— 直接传会编译不过
+             （CI 实测：`actual type is 'kotlin.String?',
+              but 'kotlin.String' was expected`）。
+
+             所以这里补 `?: ""`，把 null 归一成空串。
+             "" 对 extractFourDigitYear 是合法的（它找不到年份就返回 ""），
+             语义也正是想要的「这一路没取到」。
+        */
         val raw = listOf(
             readXmpValue(xmp, "prism:publicationDate"),
             readXmpValue(xmp, "dc:date"),
-        ).firstOrNull { it.isNotBlank() }
+        ).firstOrNull { it.isNotBlank() } ?: ""
 
         val year = extractFourDigitYear(raw)
         if (year.isNotBlank()) return year
