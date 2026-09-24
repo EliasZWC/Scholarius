@@ -1159,7 +1159,7 @@ body {
 }
 
 /*
-  ⚠️ 视图切换按钮里的两只图标（raw_on / raw_off）。
+  ⚠️ 视图切换按钮里的两只图标（visibility / visibility_off）。
 
      按钮的 innerHTML 里预先塞了两只图标，靠 hidden 切显示 ——
      这样切换时不需要重建 innerHTML（重建会让图标闪一下）。
@@ -1190,64 +1190,58 @@ body {
 }
 
 /*
-  ⚠️ 视图切换按钮的**选中态**（当前正在看原始视图）。
-
-     .icon-button 是全站通用类，不该认识"阅读页视图"这个概念，
-     所以状态样式单独写在这里。
-
-  ⚠️ 用 `aria-pressed="true"` 作为选择器而不是自己加 class：
-     属性是**语义层**，class 是表现层。
-     同一个状态既驱动读屏也驱动样式，不会出现
-     「看起来是选中了但读屏说没有」这种不一致。
+  ⚠️ 视图切换按钮的**选中态**在这里**不写** ——
+     它和「不要点击特效」那条同优先级，必须紧挨着写在那条之后
+     （见下面 .icon-button.reader-view-toggle[aria-pressed="true"]）。
+     在这里再写一份会与那份冲突，两处都失效。
 */
-.reader-view-toggle[aria-pressed="true"] {
-    background: var(--surface-raised);
-    color: var(--on-surface);
-}
 
 /*
   PDF 视图。
 
-  ⚠️ 为什么不用 .reader-content 那套 padding：
-     内置 PDF 查看器自带页面留白与缩放，再套 24px 内边距
-     会让页面被挤得比屏幕窄，看起来像"没适配好"。
-     所以 PDF 视图**贴满**整个正文区。
-
-  ⚠️ 顶部要留出状态栏高度吗？**不留**。
-     查看器自己的工具栏会浮在内容上方，它内部已经处理了
-     inset（WebView 会把 window insets 传给内置查看器）。
-     我们再加一层 padding 反而会让它错位。
-
-  ⚠️ 尺寸 100% 而不是 absolute：
-     .reader-body 是 absolute 铺满的，iframe 作为它的普通子元素
-     用 height:100% 即可撑满；用 absolute 反而要重复写 inset:0。
+  ⚠️ 网页里**没有** PDF 容器了 —— 原始视图由原生把 PDF
+     装入 WebView 本身（顶层导航），因为 Android WebView 的
+     内置 PDF 查看器只为顶层文档工作，塞进 iframe 会是空白。
+     详见 reader.js setView 的长注释。
 */
-.reader-pdf {
-    display: block;
-    width: 100%;
-    height: 100%;
-    border: 0;
-    background: var(--surface);
+
+/*
+  ⚠️ 视图切换按钮**不要点击特效**。
+ 
+     用户 2026-09-24：「二者类似于一个状态，所以不要有按钮的点击特效，
+     直接切换图标就行」。
+ 
+     它的语义确实不是"执行一个动作"，而是"在两种显示之间切换" ——
+     和开关一样，按下去的底色变化/缩放反馈反而像"操作正在进行"。
+     图标自己变了，就是最好的反馈。
+ 
+     ⚠️⚠️ 选择器必须写成 `.icon-button.reader-view-toggle`（两个类）——
+         只写 `.reader-view-toggle` 会**被覆盖**：
+         `.icon-button:active` 是 (0,2,0)，与本规则同优先级，
+         而它定义在文件**后面** → 后出现的赢（实测：
+         transition 仍是 background-color/color，底色照旧变化）。
+         加上 `.icon-button` 前缀变成 (0,3,0)，才真正压住它。
+ 
+     ⚠️ 键盘可达性不能一起取消 —— :focus-visible 的描边要留着，
+        否则键盘用户不知道焦点在哪。
+*/
+.icon-button.reader-view-toggle,
+.icon-button.reader-view-toggle:active {
+    background: transparent;
+    color: var(--on-surface-variant);
+    transform: none;
+    opacity: 1;
+    transition: none;
 }
 
 /*
-  ⚠️ hidden 属性对 iframe 生效需要这条 ——
-     UA 默认样式里 `[hidden] { display: none }` 会被
-     上面的 `display: block` 覆盖掉（同优先级下后者在作者样式表里靠后）。
-     实测：不写这条，切回文本视图后 PDF 仍显示在正文下面。
-
-     用 `[hidden]` 而不是 `.reader-pdf[hidden]`：
-     保持与其他同类修正一致，也避免将来改类名时漏掉。
+  ⚠️ 选中态（当前正在看原始视图）必须写在上面那条**之后** ——
+     两者优先级相同 (0,3,0)，靠源序决定胜负。
+     放到前面会被 `background: transparent` 盖掉，按钮永远不高亮。
 */
-.reader-pdf[hidden] {
-    display: none;
-}
-
-/*
-  ⚠️ 文本视图隐藏时同理。
-*/
-.reader-content[hidden] {
-    display: none;
+.icon-button.reader-view-toggle[aria-pressed="true"] {
+    background: var(--surface-raised);
+    color: var(--on-surface);
 }
 
 /*

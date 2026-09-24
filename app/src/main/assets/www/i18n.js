@@ -473,6 +473,7 @@
             'reader.rawView': '原始视图',
             'reader.readingView': '阅读视图',
 
+
             // 阅读设置：字体
             'reader.font': '字体',
             'reader.fontSize': '字号',

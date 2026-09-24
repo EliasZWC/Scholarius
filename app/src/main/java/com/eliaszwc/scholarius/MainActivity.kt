@@ -157,7 +157,91 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 把某篇文献的 PDF 以**受控 URL** 交给 WebView 加载（PDF 视图用）。
+     * 把某篇文献的 PDF 装入 WebView（阅读页的「原始视图」）。
+     *
+     * ══ 为什么是「顶层导航」而不是网页里的 iframe ══
+     *
+     * 原始实现是网页里放 `<iframe src=".../pdf/<id>">`，
+     * 实测（用户反馈「看不见 pdf」）：iframe 尺寸正常、URL 也真的
+     * 发出去了，但**画面是空的**。
+     *
+     * 根因：Android WebView 的内置 PDF 查看器是为**顶层文档**设计的，
+     * 它在子框架里不渲染。这是查看器的行为，不是我们的代码错。
+     *
+     * 所以改成这里做一次 loadUrl —— 等同用户直接打开一个 PDF 链接。
+     *
+     * ⚠️ 代价：调用后网页**不在前台**了（WebView 只有一条主文档）。
+     *    所以返回键必须先 pop 回网页（见 [isShowingRawPdf]）。
+     *
+     * ⚠️ 必须在主线程调用 —— WebView 的所有方法都要求创建它的线程。
+     *    桥的回调跑在 JavaBridge 线程上，所以这里 runOnUiThread。
+     */
+    private fun openRawPdf(id: String) {
+        if (!DOC_ID_PATTERN.matches(id)) {
+            Log.w(TAG, "原始视图请求的 id 非法：$id")
+            return
+        }
+
+        runOnUiThread {
+            if (!::webView.isInitialized) return@runOnUiThread
+
+            val file = LibraryStore.pdfFile(this, id)
+            if (!file.isFile) {
+                Log.w(TAG, "原始视图：PDF 不存在 ${file.absolutePath}")
+                // 让网页把状态归位，否则它会停在「原始视图」的图标上
+                notifyRawClosed()
+                return@runOnUiThread
+            }
+
+            /*
+              ⚠️ 不在这里判断"能不能渲染 PDF"。
+
+                 WebView 版本差异很大（有的能内置渲染、有的会触发下载）。
+                 若把 PDF 交给系统下载器，用户至少拿到了文件 ——
+                 比我们自作聪明地拦住要好。
+
+                 ⚠️ 需要 setDownloadListener 才能在"内置查看器不可用"时
+                    优雅接管；但那属于另一个功能（下载），
+                     现在不引入。当前只保证"把 PDF 交给 WebView"。
+            */
+            debugLog("[raw] loading pdf: $id")
+            try {
+                webView.loadUrl(rawPdfUrlFor(id))
+            } catch (t: Throwable) {
+                Log.w(TAG, "原始视图：加载 PDF 失败 $id", t)
+                notifyRawClosed()
+            }
+        }
+    }
+
+    /** 拼原始视图的 URL。**只有这里**知道这个格式（网页不再自己拼） */
+    private fun rawPdfUrlFor(id: String): String =
+        "https://$APP_ASSETS_HOST$PDF_URL_PREFIX${Uri.encode(id)}"
+
+    /**
+     * 通知网页「已经从 PDF 回来了」，让它把视图状态归位。
+     *
+     * ⚠️ 只在**异常路径**（PDF 不存在 / loadUrl 抛异常）调用。
+     *    正常返回走 `webView.goBack()`，网页本来就是阅读视图，
+     *    不需要这一下（多调反而会让按钮闪）。
+     */
+    private fun notifyRawClosed() {
+        if (!::webView.isInitialized || !pageReady) return
+        try {
+            webView.evaluateJavascript(
+                "(function(){try{" +
+                    "if(window.ScholariusReader&&window.ScholariusReader.onRawClosed)" +
+                    "window.ScholariusReader.onRawClosed();" +
+                    "}catch(e){}})();",
+                null
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "通知原始视图关闭失败", t)
+        }
+    }
+
+    /**
+     * 把某篇文献的 PDF 以**受控 URL** 交给 WebView 加载（原始视图用）。
      *
      * ══ 为什么需要这条通道 ══
      *
@@ -370,6 +454,18 @@ class MainActivity : AppCompatActivity() {
          */
         backCallback = object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                /*
+                  ⚠️⚠️ 这一段必须在「问网页」之前 ——
+                        原始视图（PDF）是**顶层导航**，那时网页不在前台，
+                        问它也不会回答（它甚至不在当前文档里）。
+                        特征是：历史里多了一条，且当前 URL 是 PDF 通道。
+                */
+                if (isShowingRawPdf()) {
+                    debugLog("[back] raw pdf: going back to web")
+                    webView.goBack()
+                    return
+                }
+
                 if (!::webView.isInitialized || !pageReady) {
                     // 网页还没就绪：没有覆盖层可言，直接放行
                     passThroughBack()
@@ -392,6 +488,26 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }.also { onBackPressedDispatcher.addCallback(this, it) }
+    }
+
+    /**
+     * 当前 WebView 是否正在显示原始视图（PDF）。
+     *
+     * ⚠️ 判据用 **URL** 而不是 `canGoBack()` ——
+     *    后者只说明「历史里还有上一条」，未来若加入别的导航
+     *    （比如网页内的锚点跳转）会误判。
+     *    URL 直接说明「现在看的这个东西是不是我们的 PDF 通道」。
+     */
+    private fun isShowingRawPdf(): Boolean {
+        if (!::webView.isInitialized) return false
+        val url = try { webView.url } catch (t: Throwable) { null } ?: return false
+        return try {
+            val uri = Uri.parse(url)
+            uri.host == APP_ASSETS_HOST &&
+                uri.pathSegments.firstOrNull() == PDF_URL_PREFIX.trim('/')
+        } catch (t: Throwable) {
+            false
+        }
     }
 
     /**
@@ -492,6 +608,7 @@ class MainActivity : AppCompatActivity() {
                 },
                 onRequestLibrary = { runOnUiThread { pushLibraryToWeb() } },
                 onRequestDocText = { id -> requestDocText(id) },
+                onOpenRawPdf = { id -> openRawPdf(id) },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,

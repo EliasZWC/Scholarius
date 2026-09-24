@@ -37,6 +37,15 @@ class WebAppBridge(
     /** 请求某篇文献的正文文本（阅读页用） */
     private val onRequestDocText: (String) -> Unit,
     /**
+     * 把某篇文献的 PDF 装入 WebView（原始视图）。
+     *
+     * ⚠️ 为什么是「原生接管」而不是网页里 iframe：
+     *    Android WebView 的内置 PDF 查看器只为**顶层文档**工作，
+     *    塞进子框架（iframe）会是空白。所以网页只能把 id 交上来，
+     *    由原生做一次顶层 loadUrl。
+     */
+    private val onOpenRawPdf: (String) -> Unit,
+    /**
      * 改文献元数据。
      *
      * ⚠️ 第二个参数是 **JSON 对象字符串**（形如 `{"year":"2015"}`），
@@ -149,6 +158,21 @@ class WebAppBridge(
     @JavascriptInterface
     fun requestDocText(id: String) {
         onRequestDocText(id)
+    }
+
+    /**
+     * 把某篇文献的 PDF 装入 WebView（阅读页的「原始视图」）。
+     *
+     * ⚠️ 只传 id，**不传 URL** —— URL 的拼法（主机名、`/pdf/` 前缀）
+     *    是原生侧知识，让网页自己拼等于把它复制两份。
+     *
+     * ⚠️ 这是**顶层导航**，调用后网页就不再是当前文档了。
+     *    回到网页由原生处理（见 MainActivity 的返回键逻辑）：
+     *    PDF 查看器里按返回 → 原生 goBack() 回网页 → 再按才关阅读页。
+     */
+    @JavascriptInterface
+    fun openRawPdf(id: String) {
+        onOpenRawPdf(id)
     }
 
     /** 把 JSON 数组字符串解成 id 列表；解析失败返回空列表 */

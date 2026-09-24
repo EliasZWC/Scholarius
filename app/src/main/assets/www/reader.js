@@ -120,7 +120,6 @@
     var backBtn = null;
     var detailBtn = null;
     var viewToggleBtn = null;
-    var pdfEl = null;
     var bottomEl = null;
     var tocBtn = null;
     var settingsBtn = null;
@@ -140,6 +139,13 @@
     var tocOpen = false;
     /** 当前视图：'reading' | 'raw' */
     var view = 'reading';
+    /**
+     * 是否正在等原生把 PDF 装进来。
+     *
+     * ⚠️ 用来防止重复请求（用户连点两下会发起两次 loadUrl，
+     *    查看器会闪）。也用来在原生回报失败时判断该不该回退。
+     */
+    var rawViewRequested = false;
 
     /**
      * 目录条目：[{ level, title, line }]
@@ -183,7 +189,6 @@
         backBtn = document.getElementById('reader-back');
         detailBtn = document.getElementById('reader-detail');
         viewToggleBtn = document.getElementById('reader-view-toggle');
-        pdfEl = document.getElementById('reader-pdf');
         bottomEl = document.getElementById('reader-bottom');
         tocBtn = document.getElementById('reader-toc-btn');
         settingsBtn = document.getElementById('reader-settings-btn');
@@ -321,27 +326,6 @@
     // --- 原始 / 阅读 视图 ---------------------------------------------------
 
     /**
-     * PDF 受控通道的 URL 前缀。
-     *
-     * ⚠️ 必须与原生侧 MainActivity 的 `PDF_URL_PREFIX` **逐字一致**。
-     *    两头各有一份常量（网页改不了 Kotlin 的，反之亦然），
-     *    所以改一处就要同步改另一处 —— 两边都留了这条注释。
-     */
-    var PDF_URL_PREFIX = '/pdf/';
-
-    /**
-     * 拼某篇文献的 PDF URL。
-     *
-     * ⚠️ 用 `encodeURIComponent(id)` —— id 是 UUID，正常情况下没有
-     *    需要转义的字符，但**不能因此省略**：URL 里拼用户/数据来源的
-     *    字符串时永远要转义，否则将来 id 生成规则一变就出问题。
-     */
-    function pdfUrlFor(id) {
-        return 'https://appassets.androidplatform.net' + PDF_URL_PREFIX +
-            encodeURIComponent(String(id || ''));
-    }
-
-    /**
      * 顶栏视图切换按钮：绑事件 + 填图标。
      *
      * ══ 术语：为什么叫「阅读 / 原始」而不是「文本 / PDF」 ══
@@ -350,10 +334,13 @@
      *   · 阅读视图（reading）= 重排后的正文，用来**读**
      *   · 原始视图（raw）    = 出版方原始版面，用来**核对**
      *
-     * 图标用 Material Symbols 的 raw_on / raw_off（用户选定）：
-     * 两只都写着 "RAW"，差别是 raw_off 多一道斜杠 ——
-     * 图形本身就表达了「这是原始内容」+「开关」，
-     * 比抽象的 eye 图标更贴近含义，也不必依赖文字说明。
+     * 图标：visibility / visibility_off（用户选定）。
+     *
+     * ⚠️ 它们是**同一状态的两个面**（像"显示/隐藏"），
+     *    所以按钮**不要点击特效** —— 不要 .icon-button 的按压缩放/变色。
+     *    见 styles.css 里 .reader-view-toggle 对 :active 的覆盖。
+     *    用户原话：「二者类似于一个状态，所以不要有按钮的点击特效，
+     *    直接切换图标就行」。
      *
      * ⚠️ 两个图标**都要预先填进按钮**（一个显示、一个隐藏），
      *    切换时只切 hidden，不重建 innerHTML ——
@@ -367,14 +354,14 @@
         var ui = global.ScholariusUI;
         if (ui && ui.icon) {
             /*
-              ⚠️ 用两个 <span> 各装一只图标，不用 innerHTML 两次覆盖。
-                 理由见上：覆盖式重建会闪。这里一次性建好、之后只切显示。
+              ⚠️ 两个 <span> 各装一只图标，一次性建好，之后只切显示。
+                 理由见上：覆盖式重建会闪。
             */
             viewToggleBtn.innerHTML =
                 '<span class="reader-view-icon" data-view-icon="raw">' +
-                ui.icon('rawOff') + '</span>' +
+                ui.icon('visibilityOff') + '</span>' +
                 '<span class="reader-view-icon" data-view-icon="reading">' +
-                ui.icon('rawOn') + '</span>';
+                ui.icon('visibility') + '</span>';
         }
 
         viewToggleBtn.addEventListener('click', function () {
@@ -387,43 +374,78 @@
     /**
      * 切换视图。
      *
-     * ══ 为什么是「两个视图互斥」而不是「叠加一个覆盖层」══
+     * ══ ⚠️ 关键：原始视图由**原生**接管，不用 iframe ══
      *
-     * 原始视图要占满整个正文区（内置查看器自己带缩放/翻页），
-     * 叠加会让阅读视图在底下继续占内存、也可能被点到。
-     * 所以用 hidden 严格互斥，同时只有一个在文档流里。
+     * 原来的做法是在网页里放个 <iframe src="https://.../pdf/<id>">。
+     * 实测（用户 2026-09-24：「看不见 pdf」）：iframe 尺寸正常、
+     * URL 也真的发出去了，但**画面是空的**。
      *
-     * ⚠️ **只在切到原始视图时才设置 iframe.src**。
-     *    PDF 动辄几十 MB，进阅读页就加载会白等几秒；
-     *    而多数用户看的是重排后的阅读视图。
+     * 根因：Android WebView 的内置 PDF 查看器是为
+     * **顶层导航**设计的 —— 它的文档把自己当作主框架，
+     * 塞进子框架就不渲染。这是内置查看器的行为，不是我们代码错。
      *
-     * ⚠️ 切回阅读视图时**保留 iframe 的 src 不置空** ——
-     *    用户可能来回切（正文看到一半去核对原文），
-     *    每次置空都会重新下载 + 重新定位滚动位置。
-     *    释放交给 close()。
+     * 所以改为：切到原始视图时**请原生把 PDF 装入 WebView 本身**
+     * （等同用户在浏览器里直接打开一个 PDF 链接）。
+     * 网页这边把自己的 UI 退到一旁，让出整个屏幕。
+     *
+     * ⚠️ 代价：一旦原生导航走了，网页就**不在前台**了
+     *    （WebView 只维护一条主文档）。所以：
+     *      · 返回键由原生处理：先 pop 回网页，再关阅读页；
+     *      · 用户在 PDF 里时看不到我们的顶栏/选项栏（也无需看到 ——
+     *        查看器自带工具栏，里面有返回）。
+     *    这个取舍是刻意的：能**看见了**比“顶栏一直在”重要得多。
      *
      * @param {string} next 'reading' | 'raw'
      */
     function setView(next) {
         var want = (next === 'raw') ? 'raw' : 'reading';
+
+        /*
+          ⚠️ 已经在原始视图时不重复发起导航 ——
+             连续两次 loadUrl 会让查看器闪一下。
+        */
+        if (want === 'raw' && view === 'raw') return;
+
         view = want;
 
-        var isRaw = (want === 'raw');
+        if (want === 'raw') {
+            syncViewToggle();
+            rawViewRequested = true;
 
-        if (contentEl) contentEl.hidden = isRaw;
-        if (pdfEl) {
-            pdfEl.hidden = !isRaw;
-            if (isRaw) {
-                // 第一次进入（或换了文献）才真的设 src
-                var wantSrc = currentDoc ? pdfUrlFor(currentDoc.id) : '';
-                if (wantSrc && pdfEl.getAttribute('src') !== wantSrc) {
-                    pdfEl.setAttribute('src', wantSrc);
-                }
+            var bridge = global.ScholariusNative;
+            if (bridge && typeof bridge.openRawPdf === 'function' && currentDoc) {
+                /*
+                  ⚠️ 只传 id（不是 URL）—— URL 由原生拼。
+                     理由：id 转 URL 的规则（主机名、前缀）属于原生侧知识，
+                     网页自己拼等于把这份知识复制两份，改一处就错。
+                */
+                bridge.openRawPdf(String(currentDoc.id));
+            } else {
+                /*
+                  ⚠️ 桥不可用（浏览器预览）→ 回退到**文本视图**并提示，
+                     不能停在一个空白的原始视图上。
+                     实测：预览里点这个按钮，什么都不发生最让人迷惑。
+                */
+                view = 'reading';
+                rawViewRequested = false;
+                syncViewToggle();
+                showError('no-bridge');
             }
+            return;
         }
 
+        /*
+          回到阅读视图。
+
+          ⚠️ 正常路径下**根本不会走到这里** ——
+             用户是从 PDF 的全屏查看器里用原生返回键"pop"回网页的，
+             那时网页一直在显示阅读视图（从未被我们切走）。
+
+             能走到这里的只有：原生那边失败/被拒，又主动通知我们回来。
+             所以这里只需把状态归位。
+        */
+        rawViewRequested = false;
         syncViewToggle();
-        trace('reader:view', want);
     }
 
     /**
@@ -431,19 +453,16 @@
      *
      * ══ 图标与标签都描述**动作**，不是"当前状态" ══
      *
-     * raw_on / raw_off 是一对开关图标（用户选定）：
-     *
-     *   当前在阅读视图 → 显示 **raw_on**（把原始视图「打开」）
-     *                     标签 "Raw View"
-     *   当前在原始视图 → 显示 **raw_off**（把原始视图「关掉」）
-     *                     标签 "Reading View"
-     *
      * ⚠️ 两者**必须同向**：图标说"往哪去"、标签也说"往哪去"。
      *    曾经把标签写成动作、图标写成当前状态 ——
-     *    于是按钮在说两件事，谁看都会错。
+     *    按钮在说两件事，谁看都会错。
      *
      * ⚠️ 那「当前在哪个视图」由谁表达？aria-pressed。
      *    这是唯一表达状态的地方，不靠图标/标签重复。
+     *
+     * 图标含义（visibility 系列，用户选定）：
+     *   阅读视图 → 显示 visibility     （把原始视图"显示出来"）
+     *   原始视图 → 显示 visibility_off （原始视图已显示，点它收起来）
      */
     function syncViewToggle() {
         if (!viewToggleBtn) {
@@ -453,8 +472,7 @@
 
         /*
           ⚠️ 两图标预置在按钮里，靠 hidden 切显示。
-             不重建 innerHTML —— 那会让图标闪一下（重新解析 SVG）。
-             这里只切 hidden，不碰 innerHTML。
+             不重建 innerHTML —— 那会让图标闪一下。
         */
         var iconRaw = viewToggleBtn.querySelector('[data-view-icon="raw"]');
         var iconReading = viewToggleBtn.querySelector('[data-view-icon="reading"]');
@@ -473,6 +491,18 @@
              i18n 刷新由 refreshChrome() 主动调本函数负责。
         */
         viewToggleBtn.removeAttribute('data-i18n-aria-label');
+    }
+
+    /**
+     * 原生回报「已经从 PDF 回来了」。
+     *
+     * ⚠️ 必须由原生**主动通知**，不能靠网页轮询或猜。
+     *    因为 PDF 是全屏导航，网页期间根本收不到任何事件。
+     */
+    function onRawClosed() {
+        rawViewRequested = false;
+        view = 'reading';
+        syncViewToggle();
     }
 
     // --- 菜单 ---------------------------------------------------------------
@@ -534,22 +564,16 @@
         setPanel(false);
 
         /*
-          ⚠️ 每次打开都回到**阅读视图**，并清掉上一篇的 PDF。
+          ⚠️ 每次打开都回到**阅读视图**（重置视图状态）。
 
-             理由：
-             ① 用户上次可能停在原始视图，但新开一篇时默认给重排正文
-                更符合"读论文"的意图（原始视图是核对原文用的次要入口）；
-             ② 不清掉的话 iframe 里还是**上一篇**的 PDF ——
-                切到原始视图会先闪一下旧文献，很难看。
-
-             ⚠️ 置 src 为 about:blank（而不是 removeAttribute）：
-                空 src 会让 iframe 立刻卸载文档并释放内置查看器；
-                removeAttribute 在部分 WebView 上不触发卸载。
+             原始视图现在是“原生把 PDF 装进 WebView”的全屏导航，
+             网页被替换掉、不在前台，所以打开新文献时
+             网页这边的状态本来就已经是 reading；
+             这里显式重置是为了兼容“原生回报失败后转了一圈又回来”的路径。
         */
-        setView('reading');
-        if (pdfEl) {
-            pdfEl.setAttribute('src', 'about:blank');
-        }
+        rawViewRequested = false;
+        view = 'reading';
+        syncViewToggle();
 
         /*
           ⚠️ 打开时重算一次颜色行的色块。
@@ -583,18 +607,8 @@
                 if (contentEl) {
                     contentEl.textContent = '';
                 }
-                /*
-                  ⚠️ 释放原始视图的内置查看器。
-
-                     不释放的话它会一直持有文件句柄与渲染资源 ——
-                     读十几篇之后内存明显上涨（内置查看器不认识
-                     "这个 iframe 已经隐藏了"，隐藏不等于卸载）。
-                     置 about:blank 会真正卸载文档。
-                */
-                if (pdfEl) {
-                    pdfEl.setAttribute('src', 'about:blank');
-                }
                 view = 'reading';
+                rawViewRequested = false;
             }
         }, 280);
     }
@@ -1986,6 +2000,8 @@
         isOpen: isOpen,
         setText: setText,
         onExtractFailed: onExtractFailed,
+        /** 原生从 PDF 全屏视图返回后调用（见 setView 的长注释） */
+        onRawClosed: onRawClosed,
         /** 目录（供测试与将来的大纲导出用） */
         getToc: function () {
             return toc.slice();

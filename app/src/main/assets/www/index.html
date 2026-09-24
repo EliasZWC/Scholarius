@@ -783,7 +783,7 @@
               图标与 aria-label 由 JS 按当前视图切换
               （见 reader.js syncViewToggle）。
 
-              ⚠️ 图标用 raw_on / raw_off（用户选定），两只由 JS 注入 ——
+              ⚠️ 图标用 visibility / visibility_off（用户选定），两只由 JS 注入 ——
                  图标路径只在 components.js 定义一处。
             -->
             <button class="icon-button reader-view-toggle" type="button"
@@ -802,30 +802,15 @@
         <!--
           正文区：点它中间的 1/3 区域切换菜单。
 
-          ⚠️ 里面是**两个互斥的视图**：
-             · .reader-content —— 阅读视图（重排后的正文）
-             · .reader-pdf     —— 原始视图（WebView 内置查看器）
-             由 reader.js 的 setView() 用 hidden 切换，同时只显示一个。
+          ⚠️ 这里**只有**阅读视图（重排正文）。
+
+             原始视图（PDF）不在这里 —— 它由原生把 PDF 装入
+             WebView 本身（顶层导航），因为 Android WebView 的
+             内置 PDF 查看器只为顶层文档工作，塞进 iframe 会是空白。
+             详见 reader.js setView 的长注释。
         -->
         <div class="reader-body" id="reader-body">
             <div class="reader-content" id="reader-content"></div>
-            <!--
-              PDF 视图。
-
-              ⚠️ 用 <iframe> 而不是 <embed>/<object>：
-                 · WebView 对 iframe 加载 application/pdf 的支持最稳；
-                 · 内联 frame 的生命周期与 DOM 绑定，关闭阅读页时
-                   把 src 置空就能释放内置查看器（embed 常常残留）。
-
-              ⚠️ src 由 JS 按需设置（**不要**写死）：PDF 有几十 MB，
-                 一进阅读页就加载会白等；只在用户真的切到 PDF 视图时才设。
-
-              ⚠️ 沙箱与 allow 都不给 —— 内置 PDF 查看器不需要脚本权限，
-                 给它反而扩大攻击面（PDF 本身来自外部）。
-            -->
-            <!-- 原始视图（出版方版面，名字对应顶栏按钮的 raw 图标） -->
-            <iframe class="reader-pdf" id="reader-pdf" hidden
-                title="Raw View" data-i18n-title="reader.rawView"></iframe>
         </div>
 
         <!--
