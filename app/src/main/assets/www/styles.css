@@ -1343,6 +1343,73 @@ body {
 }
 
 /*
+  ══ 选中文字后的「建立区域」浮动按钮（v0.1.32）══
+
+  ⚠️ 只在原始视图里选中了文字才出现（`hidden` 属性控制）。
+     常驻会挤掉底栏的「内容 / 设置」两项，而且大部分时间没用。
+
+  ⚠️⚠️ 定位用 `bottom` 时必须**避开底栏**。
+     底栏高 `calc(64px + var(--safe-bottom))`，且菜单收起时是
+     `translateY(100%)` 滑出屏幕的 —— 但按钮在它之上，
+     所以固定按"菜单展开时的底栏高度"留位，两种状态都不会被压住。
+     实测踩过：诊断浮层贴 `bottom: 0` + 高 z-index 盖住了所有底部弹层。
+
+  ⚠️ z-index 定 6：要盖过页图（1）与标注层（2~3），
+     但**必须低于**顶栏（z=2 的容器 + 弹层 11）和更新/确认弹层（100）——
+     那些是用户主动触发的，不能被这个按钮挡住。
+*/
+.sel-fab {
+    position: absolute;
+    left: 50%;
+    bottom: calc(64px + var(--safe-bottom) + 12px);
+    transform: translateX(-50%);
+    z-index: 6;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 44px;
+    padding: 0 18px;
+    border: none;
+    border-radius: 22px;
+    background: var(--accent, #2f6fed);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+    cursor: pointer;
+    /* 浮出动画：从下方 8px 处淡入，避免"噗"地出现 */
+    animation: selFabIn 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+.sel-fab[hidden] {
+    display: none;
+}
+.sel-fab:active {
+    transform: translateX(-50%) scale(0.96);
+}
+.sel-fab-icon {
+    display: inline-flex;
+    width: 20px;
+    height: 20px;
+}
+.sel-fab-icon svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+}
+
+@keyframes selFabIn {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
+
+/*
   ⚠️ 设置面板展开时**不需要**给选项栏写上移。
      面板与选项栏是 .reader-stack 里紧邻的两个 flex 子元素，
      自下往上排：面板在上、选项栏在下，面板一展开就把选项栏往上顶。
@@ -2076,16 +2143,55 @@ body:has(.reader.is-raw.is-annotating.is-drawing) {
 }
 
 /*
-  ⚠️ 选中态的高亮必须**可见**：
-     `color: transparent` 会让浏览器默认的选中背景也变淡，
-     所以显式给一个半透明蓝底 + 恢复文字颜色。
+  ⚠️⚠️ 选中高亮**自己画**，不用 `::selection`（2026-09-25 真机结论）
+
+  用户反馈：「一闪而过，和之前随机框一样」。
+
+  实测（tools/_selvis.py）：手势结束后选区**确实还在**
+  （`getSelection().toString().length === 47`，`rangeCount === 1`，
+   等 3 秒后依然在），但**屏幕上一个像素的高亮都没有**。
+
+  → `::selection` 在 Android WebView 上只在"触摸激活"期间由系统层绘制，
+    手指一抬就没了。改 `::selection` 的样式救不了这个。
+
+  ✅ 所以改成真实 DOM 类 + 真实背景色：选中期间与松手后都常驻可见。
+
+  ⚠️ 图层 `z-index: 1` 在页图之上，所以这个背景会**盖住** PDF 上的字。
+     用半透明（0.42）让底下的字仍可读。
+     不透明的实色块会把文字糊掉，用户就看不清自己选了什么。
+
+  ⚠️⚠️ **不能给整行 `<span>` 加背景**（2026-09-25 修）：
+     第一版直接给选中的行加背景色 → 铺满**该词的整个盒子**。
+     实测拖 150px 时 7 行全被涂成横条 → 看起来像"选中了一大片"。
+
+     真正该高亮的是**从起点字符到终点字符**那一段，
+     所以由 `--sel-from` / `--sel-to`（0~1 的行内比例）决定色块区间：
+       · 第一行：起点比例 → 行尾
+       · 中间行：整行
+       · 最后一行：行首 → 终点比例
+
+  ⚠️ 用 `::before` 而不是 `background` —— `background` 没法只涂一部分宽度。
+     `::before` 是绝对定位的色块，用百分比精确控制左右边界。
 */
+.pdf-text-line.is-selected::before {
+    content: '';
+    position: absolute;
+    left: calc(var(--sel-from, 0) * 100%);
+    width: calc((var(--sel-to, 1) - var(--sel-from, 0)) * 100%);
+    top: -1px;
+    bottom: -1px;
+    background: rgba(64, 132, 255, 0.42);
+    border-radius: 1px;
+    pointer-events: none;
+}
+
+/* `::selection` 留一份（桌面浏览器 / 复制时仍走它），但不再是可见性来源 */
 .pdf-text-line::selection {
-    background: rgba(64, 132, 255, 0.35);
+    background: rgba(64, 132, 255, 0.45);
     color: transparent;
 }
 .pdf-text-layer ::selection {
-    background: rgba(64, 132, 255, 0.35);
+    background: rgba(64, 132, 255, 0.45);
 }
 
 /*

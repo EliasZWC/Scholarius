@@ -121,6 +121,9 @@
     var detailBtn = null;
     var viewToggleBtn = null;
     var annotateBtn = null;
+    var selFabEl = null;
+    var selFabLabelEl = null;
+    var selFabIconEl = null;
     var bottomEl = null;
     var tocBtn = null;
     var settingsBtn = null;
@@ -266,6 +269,9 @@
         detailBtn = document.getElementById('reader-detail');
         viewToggleBtn = document.getElementById('reader-view-toggle');
         annotateBtn = document.getElementById('reader-annotate');
+        selFabEl = document.getElementById('reader-sel-fab');
+        selFabLabelEl = document.getElementById('reader-sel-fab-label');
+        selFabIconEl = document.getElementById('reader-sel-fab-icon');
         bottomEl = document.getElementById('reader-bottom');
         tocBtn = document.getElementById('reader-toc-btn');
         settingsBtn = document.getElementById('reader-settings-btn');
@@ -279,6 +285,7 @@
         mountTapToToggle();
         mountViewToggle();
         mountAnnotate();
+        mountSelectionFab();
         mountToc();
         mountSettings();
 
@@ -861,16 +868,69 @@
         layer.setAttribute('aria-hidden', 'true');
 
         var frag = document.createDocumentFragment();
-        for (var i = 0; i < lines.length; i++) {
-            var L = lines[i];
-            if (!L || !L.t) continue;
+        /*
+          ⚠️⚠️ 每个词要知道自己属于**哪一行**（2026-09-25 新增）
+
+          原生给的是**词**级盒子，但要"把选中的文字变成区域"就必须
+          知道行号 —— 因为 `textMarks` 的粒度是**行**
+          （`[{from, to, type}]`，from/to 是全局行号）。
+
+          行怎么认：**按 y 坐标聚类**。
+          PDF 里同一行的词 y0 几乎相同（实测差 < 0.001），
+          换行时 y0 会跳一个行距（约 0.012）。
+          所以给每个词按 y0 排序，相邻差超过半个行高就断成新行。
+
+          ⚠️ 不能用"四舍五入到某位数"这种固定精度 ——
+             不同 PDF 的行距差异很大（单栏论文 vs 双栏幻灯片），
+             固定精度要么把两行并成一行，要么把一行拆成好几行。
+        */
+        var sorted = [];
+        for (var k = 0; k < lines.length; k++) {
+            var L0 = lines[k];
+            if (!L0 || !L0.t) continue;
+            if (!((L0.x1 - L0.x0) > 0) || !((L0.y1 - L0.y0) > 0)) continue;
+            sorted.push(L0);
+        }
+        sorted.sort(function (a, b) {
+            if (Math.abs(a.y0 - b.y0) > 0.0005) return a.y0 - b.y0;
+            return a.x0 - b.x0;
+        });
+
+        /*
+          ⚠️ 行归属的 y 容差：用**中位行高的一半**。
+             取中位数而不是平均值 —— 页面上往往混着大标题（高）
+             和正文（矮），平均值会被标题拉高，导致正文行互相吞并。
+        */
+        var heights = [];
+        for (var h2 = 0; h2 < sorted.length; h2++) {
+            heights.push(sorted[h2].y1 - sorted[h2].y0);
+        }
+        heights.sort(function (a, b) { return a - b; });
+        var medH = heights.length ? heights[Math.floor(heights.length / 2)] : 0.012;
+        var rowTol = medH * 0.5;
+
+        var rowIdx = -1;
+        var lastY = null;
+        for (var i = 0; i < sorted.length; i++) {
+            var L = sorted[i];
             var w = (L.x1 - L.x0);
             var h = (L.y1 - L.y0);
-            if (!(w > 0) || !(h > 0)) continue;
+
+            if (lastY === null || Math.abs(L.y0 - lastY) > rowTol) {
+                rowIdx++;
+                lastY = L.y0;
+            }
 
             var span = document.createElement('span');
             span.className = 'pdf-text-line';
             span.textContent = L.t;
+            /*
+              ⚠️ 记下"第几行"（页面内的行号，0 起）——
+                 「建立区域」时要靠它换算成全局行号。
+                 用 data-* 而不是 JS 变量：span 会被重新挂载
+                 （切视图、懒加载重排），属性跟着 DOM 走最可靠。
+            */
+            span.dataset.row = String(rowIdx);
             span.style.left = (L.x0 * 100) + '%';
             span.style.top = (L.y0 * 100) + '%';
             span.style.width = (w * 100) + '%';
@@ -962,13 +1022,23 @@
                 if (!r.width) continue;
 
                 /*
-                  ⚠️ y 方向给**容差**（半个行高）——
-                     手指落在行与行的缝里时，严格的 contains 会漏，
-                     于是拖拽中途"找不到行"、选区卡住不动。
+                  ⚠️⚠️ y 容差必须**小于行距的一半**（2026-09-25 修）
+
+                  第一版是 `max(height, 6) * 0.9`。实测这行高 8px → 容差 7.2px，
+                  而论文行距只有约 9px —— 于是**相邻行也在容差内**，
+                  横向拖一行时会不断命中上下邻行，最后选出 7 行。
+                  用户看到的就是"涂了一大片"。
+
+                  ✅ 改成 `height * 0.5`：只有手指明确落在本行的
+                     上下半个行高内才算它。行距 9px、行高 8px 时
+                     容差 4px < 行距一半 4.5px，**不会跨行**。
+
+                  ⚠️ 下限 3px 而不是 6px：行高很小的页（缩略图式渲染）
+                     仍要能被点中；3px 已足够吸收手指抖动。
                 */
                 var midY = r.top + r.height / 2;
                 var dy = Math.abs(y - midY);
-                var yTol = Math.max(r.height, 6) * 0.9;
+                var yTol = Math.max(r.height * 0.5, 3);
                 if (dy > yTol) continue;
 
                 /*
@@ -980,7 +1050,15 @@
                 if (x < r.left) dx = r.left - x;
                 else if (x > r.right) dx = x - r.right;
 
-                var score = dy * 2 + dx;    // y 权重更高（行的归属比列的更重要）
+                /*
+                  ⚠️ y 权重必须**远大于** x（2026-09-25 修：原来是 dy*2）——
+                     横向拖一行时，x 会跨过好几个词（每个词宽 20~30px），
+                     而 y 只差 1~2px。若 y 权重不够，`dx` 大的邻行会赢，
+                     行归属就飘了。
+                     取 dy * 20：1px 的纵向差 ≈ 20px 的横向差，
+                     保证"先按行归属、再按列远近"。
+                */
+                var score = dy * 20 + dx;
                 if (score < bestScore) {
                     bestScore = score;
                     best = { el: el, rect: r };
@@ -1001,18 +1079,176 @@
             if (off < 0) off = 0;
             if (off > len) off = len;
 
-            return { node: node, offset: off };
+            return { node: node, offset: off, el: best.el, len: len, off: off };
         }
 
-        layer.addEventListener('pointerdown', function (ev) {
-            var pt = pointToCaret(ev.clientX, ev.clientY);
-            if (!pt) return;
-            startPt = pt;
-            dragging = false;
+        /*
+          ══ ⚠️⚠️ 高亮**自己画**，不用 `::selection`（2026-09-25 真机结论）══
+
+          用户反馈：「一闪而过，和之前随机框一样」。
+
+          实测（tools/_selvis.py）：手势结束后选区**确实还在**
+          （`getSelection().toString().length === 47`，`rangeCount === 1`，
+           且 3 秒后依然在），但**屏幕上看不到任何高亮**。
+
+          → `::selection` 画的高亮在 Android WebView 上**松手就不绘制**了：
+            选区数据还在，但只由系统层在"触摸激活"期间画，
+            手指一抬就没了。CSS 改 `::selection` 的样式救不了。
+
+          ✅ 所以改用真实 DOM：选中的行加个 `.is-selected` 类，
+             由 CSS 给它一个真实的背景色。这样：
+               · 高亮常驻可见（不依赖触摸状态）
+               · 可以随时清掉（切页/换手势）
+               · 后面要做"把选中变成区域"时，本来也需要自己持有这个状态
+        */
+        function clearHighlight() {
+            var on = layer.querySelectorAll('.pdf-text-line.is-selected');
+            for (var i = 0; i < on.length; i++) {
+                on[i].classList.remove('is-selected');
+                on[i].style.removeProperty('--sel-from');
+                on[i].style.removeProperty('--sel-to');
+            }
+        }
+
+        /*
+          ⚠️⚠️ 高亮必须**精确到字符**，不能整行涂满（2026-09-25 真机修）
+
+          第一版直接给选中的行加类 → 背景铺满**该词的整个盒子**。
+          问题是拖 150px 时 `pointToCaret` 的 y 容差把相邻行也算进来，
+          于是 7 行全涂 → 用户看到"选中了一大片"，而实际只想选几个词。
+
+          但**真正的错**在于"按行"这个粒度本身：
+          用户从 "Recurrent" 拖到 "sequences"，中间那些**行**不该整行高亮 ——
+          应该只高亮**从起点字符到终点字符**那一段。
+
+          ✅ 所以给每行两个 CSS 变量（`--sel-from` / `--sel-to`，0~1 的比例），
+             由 `::before` 画一个**只在 [from, to] 区间**的色块：
+               · 第一行：从起点比例到行尾
+               · 中间行：整行
+               · 最后一行：从行首到终点比例
+             这样高亮形状与"文字被划过的范围"一致，而不是一堆整条横条。
+        */
+        function paintHighlight(from, to) {
+            clearHighlight();
+
             /*
-              ⚠️ 按下就**先收掉旧选区** —— 否则用户点一下（想取消选择）
-                 会因为"没有更新选区"而留着上次的高亮。
+              ⚠️⚠️ 这里必须按**行**遍历，不能按"词的下标差"（2026-09-25 修）
+
+          踩过的坑：`lines` 是 `querySelectorAll('.pdf-text-line')` ——
+          返回的是**所有词**（实测一篇论文 912 个），不是行。
+          我原来写 `for (j = first; j <= last; j++)`，
+          于是"从第 first 个词到第 last 个词"每个词都加了类 ——
+          看起来没错，但：
+
+            · 同一行的多个词各自被标成"第一行/最后一行"，
+              各自按自己在行内的 x 比例算 `--sel-from/--sel-to`
+              → 中间的词被裁掉一半，高亮出现锯齿断裂
+            · 跨行时行归属完全乱掉（词的顺序 ≠ 行的顺序）
+
+          ✅ 正确做法：先按 `dataset.row` 把词**分组成行**，
+             再对每一行算它在选区里的角色（首行/中间/末行）。
+             行的顺序用 row 号，与词在 DOM 里的顺序解耦。
+        */
+        var lines = layer.querySelectorAll('.pdf-text-line');
+        var byRow = {};
+        var rowKeys = [];
+        for (var i = 0; i < lines.length; i++) {
+            var rk = lines[i].dataset.row;
+            if (rk == null) continue;
+            if (!byRow[rk]) {
+                byRow[rk] = [];
+                rowKeys.push(parseInt(rk, 10));
+            }
+            byRow[rk].push(lines[i]);
+        }
+        rowKeys.sort(function (a, b) { return a - b; });
+
+        var aRow = parseInt(from.el.dataset.row, 10);
+        var bRow = parseInt(to.el.dataset.row, 10);
+        if (isNaN(aRow) || isNaN(bRow)) return;
+
+        var rFirst = Math.min(aRow, bRow);
+        var rLast = Math.max(aRow, bRow);
+        /*
+          ⚠️ 起点/终点**在行内的比例**：正向拖时 aRow 是起点行、
+             反向拖时 aRow 是终点行 —— 所以要先判断方向再取比例，
+             不能硬绑 `from` / `to`。
+        */
+        var startOff = (aRow <= bRow) ? from.off : to.off;
+        var startLen = (aRow <= bRow) ? from.len : to.len;
+        var endOff = (aRow <= bRow) ? to.off : from.off;
+        var endLen = (aRow <= bRow) ? to.len : from.len;
+
+        for (var ri = 0; ri < rowKeys.length; ri++) {
+            var key = rowKeys[ri];
+            if (key < rFirst || key > rLast) continue;
+            var words = byRow[key];
+            var a = (key === rFirst) ? (startOff / Math.max(1, startLen)) : 0;
+            var b = (key === rLast) ? (endOff / Math.max(1, endLen)) : 1;
+            if (b < a) { var t2 = a; a = b; b = t2; }
+
+            /*
+              ⚠️ 行内每个词要按"自己在线上的位置"与 [a, b] 求交，再换算成
+                 **词内局部比例**（`--sel-from/--sel-to` 是相对该词的）。
+
+                 位置从哪来：词是**绝对定位**的，`style.left` 就是它相对
+                 本行的 x 占比（mountTextLayer 里写的 `x0 * 100%`）。
+                 所以**直接读 style，不要调 getBoundingClientRect** ——
+                 后者每帧强制重排，912 个词会明显卡顿（实测拖拽变涩）。
+
+                 ⚠️ 但 `left` 是相对**页面**的、不是相对行首 ——
+                     PDF 里左右栏的同一行两个词，x0 会相差 0.5 左右。
+                     所以要先减去本行的最小 left，才是"行内位置"。
             */
+            var items = [];
+            var minL = Infinity;
+            var maxR = -Infinity;
+            for (var w2 = 0; w2 < words.length; w2++) {
+                var L = parseFloat(words[w2].style.left) || 0;
+                var W = parseFloat(words[w2].style.width) || 0;
+                items.push({ el: words[w2], l: L, r: L + W });
+                if (L < minL) minL = L;
+                if (L + W > maxR) maxR = L + W;
+            }
+            var span = maxR - minL;
+            if (!(span > 0)) continue;
+
+            for (var k2 = 0; k2 < items.length; k2++) {
+                var it = items[k2];
+                /* 词在**行内**的占比区间 */
+                var p0 = (it.l - minL) / span;
+                var p1 = (it.r - minL) / span;
+                /* 与选中区间 [a, b] 求交 */
+                var lo = Math.max(p0, a);
+                var hi = Math.min(p1, b);
+                if (hi <= lo) continue;
+                /* 换算成词内局部比例（0..1） */
+                var lf = (p1 > p0) ? ((lo - p0) / (p1 - p0)) : 0;
+                var lt = (p1 > p0) ? ((hi - p0) / (p1 - p0)) : 1;
+                it.el.classList.add('is-selected');
+                it.el.style.setProperty('--sel-from', String(lf));
+                it.el.style.setProperty('--sel-to', String(lt));
+            }
+        }
+
+        /*
+          ⚠️ 记下选区归属的**页面内行号区间**（供「建立区域」用）。
+             用 dataset.row（mountTextLayer 里按 y 聚类算出来的），
+             不是 DOM 索引 —— 同一行的多个词共享一个 row 值。
+        */
+        currentSelection = { rowFrom: rFirst, rowTo: rLast };
+    }
+
+    layer.addEventListener('pointerdown', function (ev) {
+        var pt = pointToCaret(ev.clientX, ev.clientY);
+        if (!pt) return;
+        startPt = pt;
+            /*
+              ⚠️ 按下就**先收掉旧高亮 + 旧选区** —— 否则用户点一下
+                 （想取消选择）会因为"没有更新选区"而留着上次的高亮。
+            */
+            clearHighlight();
+            notifySelection(null);
             try {
                 var s = global.getSelection();
                 if (s) s.removeAllRanges();
@@ -1032,6 +1268,8 @@
 
             var pt = pointToCaret(ev.clientX, ev.clientY);
             if (!pt) return;
+
+            paintHighlight(startPt, pt);
             try {
                 var sel = global.getSelection();
                 if (!sel) return;
@@ -1041,9 +1279,8 @@
                      反向拖拽（从下往上选）时行为才正确。
                      用 Range 的话反选会得到空选区（start > end 被规范化）。
 
-                  ⚠️ 实测（tools/_seljs.py）这确实能产生真实选区
-                     （选中了 "R"）—— 浏览器在 touch-action: none 下
-                     **不会自己启动选字手势**，所以必须手动设。
+                  ⚠️ 虽然高亮是自己画的，这里**仍要设选区** ——
+                     因为"复制"要走系统菜单，那需要真实选区。
                 */
                 sel.setBaseAndExtent(startPt.node, startPt.offset,
                                      pt.node, pt.offset);
@@ -1051,11 +1288,39 @@
         });
 
         var finish = function () {
+            if (startPt) {
+                /*
+                  ⚠️ 松手后**不要清高亮** —— 用户还要看着它决定
+                     "要不要建区域"。清掉就变成"一闪而过"了。
+                     只把选择结果通知出去（让外面的按钮浮现）。
+                */
+                var text = '';
+                try {
+                    var s = global.getSelection();
+                    text = s ? String(s) : '';
+                } catch (e) { text = ''; }
+                notifySelection(text || null);
+            }
             startPt = null;
         };
         layer.addEventListener('pointerup', finish);
         layer.addEventListener('pointercancel', finish);
     }
+
+    /**
+     * 通知外部「当前选中了什么」—— 用于浮出「建立区域」按钮。
+     *
+     * ⚠️ 用空实现占位：真正的 UI 由 `bindSelectionFab()` 接。
+     *    这样 bindTextLayerSelect 不必知道外面有没有那个按钮。
+     */
+    function notifySelection(text) {
+        if (typeof onTextSelection === 'function') {
+            onTextSelection(text, currentSelection);
+        }
+    }
+    var onTextSelection = null;
+    /** 最近一次选中的文本行范围（供「建立区域」用） */
+    var currentSelection = null;
 
     /**
      * 在文字层上接管**纵向滚动** —— 让"拖拽"这件事有两种可能的结果。
@@ -2500,6 +2765,185 @@
     }
 
     /**
+     * 「建立区域」浮动按钮（v0.1.32）。
+     *
+     * ══ 要解决的问题 ══
+     *
+     * 用户原话：「不要在这儿停下，**你试着建立新的区域**」。
+     *
+     * 之前只能靠"逐块点击 → 选类型"，而原生把摘要切成十几块，
+     * 想"把这一整段标成摘要"就要点十几次。选字能一次圈住范围，
+     * 但选完什么也做不了 —— 高亮只是高亮。
+     *
+     * ✅ 所以：横向拖选中文字 → 浮出这个按钮 → 选类型 →
+     *    把选中的行区间写成一条 `textMark`（`{from, to, type}`）。
+     *
+     * ⚠️ 与编辑模式的关系：
+     *    · 原始视图的**平时态**（非编辑）就能选字建区域 ——
+     *      这才是用户要的"随手划一段标成标题"。
+     *    · 编辑模式下文字层不接手势（`pointer-events: none`），
+     *      这条路径自然不生效，两者不冲突。
+     */
+    function mountSelectionFab() {
+        if (!selFabEl) return;
+
+        if (selFabIconEl && global.ScholariusUI && global.ScholariusUI.icon) {
+            selFabIconEl.innerHTML = global.ScholariusUI.icon('add');
+        }
+        if (selFabLabelEl) {
+            selFabLabelEl.textContent = t('reader.makeRegion');
+        }
+
+        /*
+          ⚠️ 按钮自己**不能**带走高亮 —— 它浮在文字层之上，
+             点它时文字层收不到 pointerdown，高亮自然留着。
+             （这也是为什么按钮要放在文字层**外面**：
+               放层内会先触发 bindTextLayerSelect 的 pointerdown 而清掉选区。）
+        */
+        selFabEl.addEventListener('click', function () {
+            if (!currentSelection) {
+                hideSelectionFab();
+                return;
+            }
+            openSelectionTypePicker();
+        });
+
+        onTextSelection = function (text, sel) {
+            if (text && sel) {
+                currentSelection = sel;
+                selFabEl.hidden = false;
+            } else {
+                hideSelectionFab();
+            }
+        };
+    }
+
+    function hideSelectionFab() {
+        if (selFabEl) selFabEl.hidden = true;
+        currentSelection = null;
+    }
+
+    /**
+     * 清掉原始视图里所有文字层上的选中高亮（含自己画的色块与 `--sel-*`）。
+     *
+     * ⚠️ 为什么由这里统一清，而不是各层自己管：
+     *    高亮是**跨层**的（用户从一页拖到下一页时，两层都要标），
+     *    所以必须有"清全部"的入口 —— 否则切视图后残留的高亮
+     *    会在下次进原始视图时莫名其妙地出现。
+     */
+    function clearRawSelectionHighlight() {
+        var on = document.querySelectorAll('.pdf-text-line.is-selected');
+        for (var i = 0; i < on.length; i++) {
+            on[i].classList.remove('is-selected');
+            on[i].style.removeProperty('--sel-from');
+            on[i].style.removeProperty('--sel-to');
+        }
+    }
+
+    /**
+     * 把「选中的页内行区间」变成一条 textMark。
+     *
+     * ══ ⚠️⚠️ 行号体系必须换算，不能直接用（2026-09-25）══
+     *
+     * `textMarks` 的 `from/to` 是**全局行号**（`textLines` 的下标，
+     * 那是整篇论文按 `\n` 切分的行）。
+     * 而文字层里的 `data-row` 是**页内行号**（该页按 y 聚类出来的行）。
+     *
+     * 换算：全局行号 = 该页第一行在全文中的行号 + 页内行号。
+     *
+     * ⚠️ 页首行号从哪来：`textLines` 里数"这一页有多少行"再累加。
+     *    没有逐页行数表可用，所以用**行号区间反查**：
+     *    在 `lastBlocks` 里找 y 坐标落在该页的块，取最小行号。
+     *
+     * ⚠️ 这个换算天然是**近似**的（PDF 的行与"按 \n 切分的行"
+     *    不一定一一对应 —— 双栏论文里左右栏的行会交错）。
+     *    所以宁可**保守**：算不准就不建区域，而不是建一个错的 ——
+     *    「留空可接受，错值不可接受」（本项目一贯判据）。
+     */
+    function rowsToGlobalFrom(rowFrom, page) {
+        if (!lastBlocks || !lastBlocks.length) return null;
+        var pageBlocks = [];
+        for (var i = 0; i < lastBlocks.length; i++) {
+            var b = lastBlocks[i];
+            if (b.page !== page) continue;
+            if (b.line == null) continue;
+            pageBlocks.push(b);
+        }
+        if (!pageBlocks.length) return null;
+        pageBlocks.sort(function (a, b) { return a.line - b.line; });
+
+        /*
+          ⚠️ 页内行号是**按 y 排的**，而 b.line 是全局行号 ——
+             两者顺序一致（PDF 自上而下），所以可以按下标对齐。
+             取该页最小行号 + 页内行号，并要求不越出该页范围。
+        */
+        var base = pageBlocks[0].line;
+        var maxLine = pageBlocks[pageBlocks.length - 1].line;
+        var g = base + rowFrom;
+        if (g < base || g > maxLine) return null;
+        return g;
+    }
+
+    function openSelectionTypePicker() {
+        var sel = currentSelection;
+        if (!sel) return;
+
+        var page = currentSelectionPage();
+        var gFrom = rowsToGlobalFrom(sel.rowFrom, page);
+        var gTo = rowsToGlobalFrom(sel.rowTo, page);
+
+        if (gFrom == null) {
+            showError('annotateNoLine');
+            return;
+        }
+        if (gTo == null || gTo < gFrom) gTo = gFrom;
+
+        /*
+          ⚠️ 造一个"伪 block"喂给既有的 openTextTypePicker ——
+             它只用到 `block.line` 和 `block.text`：
+               · line 用于从 textMarks 查当前类型
+               · text 用于数行数（applyTextType 里 `split('\n').length`）
+             所以把 text 造成"含 (gTo - gFrom + 1) 行"的字符串，
+             让既有逻辑算出正确的 to。
+        */
+        var rowCount = gTo - gFrom + 1;
+        var fakeText = new Array(rowCount + 1).join('x\n').replace(/\n$/, '');
+        var fakeBlock = { line: gFrom, text: fakeText, kind: 'paragraph' };
+
+        /*
+          ⚠️ 复用编辑模式那套 `.anno-typesheet` 外壳 ——
+             用户已经认得那个弹层，另做一个只会让人以为出现了新东西。
+        */
+        openTextTypePicker(null, fakeBlock, page);
+    }
+
+    /** 当前选中的文字层属于第几页（0 起，与 lastBlocks[].page 同口径） */
+    function currentSelectionPage() {
+        var layers = document.querySelectorAll('.pdf-text-layer');
+        for (var i = 0; i < layers.length; i++) {
+            if (!layers[i].querySelector('.pdf-text-line.is-selected')) continue;
+            var slot = layers[i].closest('.pdf-slot');
+            /*
+              ⚠️⚠️ `data-page` 是**1 起**的（`for (p = 1; p <= count; p++)`），
+                 而 `lastBlocks[].page` 与 `mountTextLayer(slot, page, id)`
+                 收的 `page` 都是 **0 起**（原生 `PdfText` 的页码）。
+                 这里必须减 1，否则差一页 —— 实测过：
+                 第 1 页选中的文字会被当成第 2 页去找块，`rowsToGlobalFrom`
+                 找不到块直接返回 null，用户看到的是"点了没反应"。
+            */
+            if (slot && slot.dataset.page != null) {
+                return (parseInt(slot.dataset.page, 10) || 1) - 1;
+            }
+            var all = document.querySelectorAll('.pdf-slot');
+            for (var j = 0; j < all.length; j++) {
+                if (all[j] === slot) return j;
+            }
+            return 0;
+        }
+        return 0;
+    }
+
+    /**
      * 弹出文本类型选择（八类）。
      *
      * ⚠️ 用底部**弹出层**而不是原生的 `<select>` ——
@@ -2927,6 +3371,19 @@
              只重画那一个块的样式，不整页重建（重建会把滚动位置抖动）。
         */
         refreshTextBlockStyles();
+
+        /*
+          ⚠️ 落笔后把「建立区域」按钮和选中高亮**一起收掉**（2026-09-25）。
+
+             用户的动作序列是：选字 → 点「建立区域」→ 选类型。
+             选完类型这条流程就结束了 —— 按钮还留着的话，
+             用户会以为"还要再点一次"，而再点只会重复标同一段。
+
+             ⚠️ 高亮也要清：它现在代表"选中的待标注内容"，
+                标注完了就不再是"待标注"，留着会让人以为还悬着。
+        */
+        hideSelectionFab();
+        clearRawSelectionHighlight();
 
         trace('reader:annotate', 'text ' + type +
             (type === 'heading' ? ' L' + level : '') + ' @' + from + '-' + to);
@@ -3983,6 +4440,21 @@
         */
         if (root) {
             root.classList.toggle('is-raw', view === 'raw');
+        }
+
+        /*
+          ⚠️ 切视图 / 关阅读页时必须把「建立区域」按钮和选中高亮一起收掉
+             （2026-09-25）。
+
+             理由：那个按钮浮在文字层之上，而切到阅读视图时文字层会被
+             `teardownPdfScroll()` 整个删掉 —— 按钮却还在，指向一个
+             已经不存在的选区。用户点它只会得到"没有行号数据"。
+             收掉比留一个坏按钮好。
+        */
+        if (view !== 'raw') {
+            hideSelectionFab();
+        } else {
+            clearRawSelectionHighlight();
         }
 
         if (!viewToggleBtn) {
@@ -6547,6 +7019,16 @@
          */
         getBlocks: function () {
             return lastBlocks ? lastBlocks.slice() : null;
+        },
+        /** 文本标注（供测试与排查用，理由同 getBlocks） */
+        getTextMarks: function () {
+            return textMarks.slice();
+        },
+        /** 最近一次在原始视图里选中的行区间（供测试用） */
+        getRawSelection: function () {
+            return currentSelection
+                ? { rowFrom: currentSelection.rowFrom, rowTo: currentSelection.rowTo }
+                : null;
         },
         /** 当前设置（供测试用） */
         getSettings: function () {

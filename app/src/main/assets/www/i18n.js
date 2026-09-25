@@ -236,6 +236,7 @@
             'reader.annotateTextTip': 'Tap a text region to reclassify it.',
             'reader.pickTextType': 'Reclassify As',
             'reader.annotateNoLine': 'This Region Has No Line Data.',
+            'reader.makeRegion': 'Make Region',
             'reader.annotatePickTip': 'Pick An Option Below To Start.',
 
             // 标注类型（全是短语 → 首字母大写）
@@ -563,6 +564,7 @@
             'reader.annotateTextTip': '点一下文字区域即可重新归类。',
             'reader.pickTextType': '改为哪一类',
             'reader.annotateNoLine': '该区域没有行号数据，无法标注。',
+            'reader.makeRegion': '建立区域',
             'reader.annotatePickTip': '选一个下方选项开始。',
 
             // 标注类型
