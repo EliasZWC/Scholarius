@@ -3713,7 +3713,39 @@
         annotating = false;
         annotateDirty = false;
         syncAnnotate();
+        /*
+          ══ ⚠️⚠️ 编辑态类必须**成套**清掉，不能只删 is-annotating ══
+
+          用户实测（2026-09-25，tools/emu_watch.py 旁观记录）：
+
+              「我进了模拟器这个框也消不掉啊」
+
+          记录里打开的论文，reader 类是：
+              reader is-text-mode is-open
+                        ^^^^^^^^^^^^ 不该存在（当时并没有在编辑模式）
+
+          真因就在这里：原来只写了
+              root.classList.remove('is-annotating')
+          而编辑态其实有**三个配套的类**：
+              is-annotating   —— 在编辑模式
+              is-text-mode    —— 编辑模式 + 选了「文本」选项
+              is-drawing      —— 编辑模式 + 选了画框选项之一
+
+          只删第一个 → 后两个残留 → 下一篇文献打开时：
+            · `reader is-text-mode is-open`
+            · CSS 里 `.reader.is-annotating.is-text-mode .anno-block`
+              虽然要求同时有 is-annotating（所以块样式没被带偏），
+              但**任何"看到 is-text-mode 就以为是文本模式"的判断都会错**，
+              而这正是后面一连串怪状态的温床。
+
+          ✅ 修法：交给 syncModeClass() —— 它是**唯一**负责写这两个类的
+             地方（判据 `annotating && annotateMode === 'text'` /
+             `annotating && isDrawingMode()`），这里 annotating 已是
+             false，所以两个类都会被 toggle 掉。
+             ⚠️ 不要在这里手写 remove —— 漏一个就又回到今天这个 bug。
+        */
         if (root) root.classList.remove('is-annotating');
+        syncModeClass();
         regionMarks = [];
         textMarks = [];
         loadAnnotations(doc.id);
@@ -3765,6 +3797,16 @@
                 lastText = '';
                 annotating = false;
                 annotateDirty = false;
+                /*
+                  ⚠️ 关闭阅读器时也要把**三个**编辑态类清干净 ——
+                     只清 annotating 不行（见 open() 里同一处的说明）。
+                     这里连 is-annotating 都得补上：原先一行都没写，
+                     于是完全靠 open() 兜底，而 open() 也漏了两个。
+                */
+                if (root) {
+                    root.classList.remove('is-annotating');
+                }
+                syncModeClass();
                 regionMarks = [];
                 textMarks = [];
                 teardownPdfScroll();
