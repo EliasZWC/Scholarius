@@ -57,13 +57,22 @@ def clear():
     print('已清空 files/library')
 
 
-def seed(pages=3, doc_id='devtest1'):
-    # 1) 造 PDF
-    pdf = os.path.join(HERE, '_seed.pdf')
+def seed(pages=3, doc_id='devtest1', pdf_path=None, paper=False):
+    # 1) 造 PDF（或直接用指定的）
     sys.path.insert(0, HERE)
-    from make_test_pdf import build_pdf
-    build_pdf(pdf, pages)
-    size = os.path.getsize(pdf)
+    if pdf_path:
+        pdf = pdf_path
+        if not os.path.isfile(pdf):
+            raise SystemExit('找不到 PDF：%s' % pdf)
+        size = os.path.getsize(pdf)
+    else:
+        pdf = os.path.join(HERE, '_seed.pdf')
+        from make_test_pdf import build_pdf, build_paper
+        if paper:
+            build_paper(pdf, pages)
+        else:
+            build_pdf(pdf, pages)
+        size = os.path.getsize(pdf)
 
     # 2) 建目录 + 推 PDF
     run_as('mkdir', '-p', 'files/library/%s' % doc_id)
@@ -76,7 +85,8 @@ def seed(pages=3, doc_id='devtest1'):
     # 3) 写 index.json —— 键名必须与 LibraryStore.writeIndex 一致
     doc = {
         'id': doc_id,
-        'title': 'Scholarius Test PDF',
+        'title': ('A Study of Something Important' if (paper or pdf_path)
+                  else 'Scholarius Test PDF'),
         'author': 'EliasZWC',
         'venue': 'TestConf',
         'venueType': 'conference',
@@ -86,7 +96,7 @@ def seed(pages=3, doc_id='devtest1'):
         'addedAt': int(time.time() * 1000),
         'pages': pages,
         'size': size,
-        'sourceName': '_seed.pdf',
+        'sourceName': os.path.basename(pdf),
     }
     index = json.dumps([doc], ensure_ascii=False)
     tmp = os.path.join(HERE, '_seed_index.json')
@@ -106,6 +116,9 @@ def main():
     ap.add_argument('--pages', type=int, default=3)
     ap.add_argument('--id', default='devtest1')
     ap.add_argument('--clear', action='store_true')
+    ap.add_argument('--pdf', help='直接用这个 PDF（不再生成最小 PDF）')
+    ap.add_argument('--paper', action='store_true',
+                    help='生成「论文版」测试 PDF（多字号多块，能触发原生各种判定）')
     ap.add_argument('--restart', action='store_true', default=True,
                     help='塞完后重启应用（默认开）')
     args = ap.parse_args()
@@ -113,7 +126,7 @@ def main():
     if args.clear:
         clear()
 
-    seed(args.pages, args.id)
+    seed(args.pages, args.id, args.pdf, args.paper)
 
     if args.restart:
         adb('shell', 'am', 'force-stop', PKG)

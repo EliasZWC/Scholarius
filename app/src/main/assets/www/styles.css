@@ -41,6 +41,17 @@
     --safe-left: env(safe-area-inset-left, 0px);
     --keyboard: 0px;
 
+    /*
+      ⚠️ 阅读页顶栏的**视觉高度**（安全区 + 8 + 48 + 8）。
+
+      为什么要抽成变量：编辑模式下要把正文整体下推这个高度，
+      而顶栏自己的 height / padding 也算同一份 ——
+      两处必须**逐字一致**，否则下推的量与实际遮挡量不符，
+      顶部内容依旧够不到（或下面凭空多一条空白）。
+      抽出来后只在一处改，几何关系不会漂移。
+    */
+    --reader-top-h: calc(64px + var(--safe-top));
+
     --bg: #EFEFED;
     --nav-bg: #FCFCFB;
     /*
@@ -1108,6 +1119,26 @@ body {
 
   ⚠️ 用户明确要求：菜单是**唤出式**的，盖在内容上面，
      不是把内容挤下去、也不为它预留空带。
+
+  ══ ⚠️⚠️ 但**编辑模式**下必须给正文让出高度（2026-09-25 真机实测）══
+
+  真机实测的几何（Pixel 6 / 412x915 CSS px）：
+      页图第一页 (.pdf-slot) : top=0   height=583   ← 从屏幕最顶端开始
+      标注层 (.anno-layer)   : top=25  height=533
+      顶栏 (.reader-top)     : top=0   height=113   z-index=2
+      .reader-body 的 padding-top: 0px             ← 没给顶栏留空间
+
+  于是论文页首的标题块落在 y=73~80 —— **整块在顶栏底下**：
+      elementFromPoint(134, 77) === HEADER.reader-top
+  用户点它 → 事件被顶栏吃掉 → **永远点不到** → 改不掉也删不掉。
+  这正是用户报的「清除后还剩一个无法改变的框」（tools/_diag9.js 实测）。
+
+  ⚠️ 上面"不预留空带"那条是针对**阅读视图**的（读文字，顶部被挡影响小）。
+     原始视图 + 编辑模式的目标是**操作页面上任意位置的内容**，
+     顶栏挡路就是功能性缺陷，与那条设计前提不冲突。
+
+  做法：只在编辑模式下给 .reader-body 加 padding-top（见下面的规则），
+        并把顶栏的 padding-top 一起算进去 —— 用同一个 CSS 变量保证一致。
 */
 .reader-top {
     position: absolute;
@@ -1125,8 +1156,10 @@ body {
 
       ⚠️ 尺寸与 .reader-bottom / .bottom-nav 同一套：
          安全区 + 8 + 48 + 8，保证三条栏的图标视觉重量一致。
+      ⚠️ 用 --reader-top-h（:root 里定义）—— 编辑模式下
+         .reader-body 要下推同一個值，两处必须一致。
     */
-    height: calc(64px + var(--safe-top));
+    height: var(--reader-top-h);
     padding: calc(var(--safe-top) + 8px) calc(8px + var(--safe-right))
         8px calc(8px + var(--safe-left));
     box-sizing: border-box;
@@ -1361,6 +1394,31 @@ body {
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
+}
+
+/*
+  ══ ⚠️⚠️ 编辑模式：把正文整体下推一个顶栏的高度 ══
+
+  为什么（2026-09-25 真机实测，用户报的「清除后还剩一个无法改变的框」）：
+
+    页图第一页从 y=0 开始渲染，而顶栏占 y=0~113 ——
+    论文页首标题块落在 y=73~80，**整块在顶栏底下**：
+        elementFromPoint(134, 77) === HEADER.reader-top
+    用户点它，事件被顶栏吃掉 → 永远点不到 → 改不掉也删不掉。
+    实测 6 个可见框里有 1 个是这种"够不到"的（tools/_diag9.js）。
+
+  ⚠️ 只在**编辑模式**下推，阅读模式保持原样 ——
+     用户要求过菜单是浮层式的、阅读时不占内容高度（见 .reader-top 的说明）。
+     编辑模式的目标是操作页面上任意位置，顶栏挡路就是功能性缺陷，
+     与那条设计前提不冲突。
+
+  ⚠️ 用 padding 而不是 margin：padding 属于滚动内容的一部分，
+     下推后**第一屏的内容整体下移**，滚动范围也跟着变 ——
+     用户滚到顶时能看见页首，而不是有一块永远够不到的死区。
+     用 margin 的话首屏那块内容会永久沉在顶栏下面。
+*/
+.reader.is-annotating .reader-body {
+    padding-top: var(--reader-top-h);
 }
 
 .reader-content {

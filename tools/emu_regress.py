@@ -34,21 +34,33 @@ def boxes(cdp):
     return cdp.evaluate("return document.querySelectorAll('.anno-box').length")
 
 
+def menu_on(cdp):
+    """确保阅读器菜单展开（底栏/顶栏按钮才点得到）。
+
+    ⚠️ 点屏幕正中是切菜单的手势 —— 必须**先读状态再决定点不点**，
+       盲点两次等于没点（第一版踩过）。
+    """
+    if cdp.evaluate("return document.getElementById('reader')"
+                    ".classList.contains('is-menu-open')") is True:
+        return True
+    vp = cdp.evaluate('return [window.innerWidth, window.innerHeight]')
+    cdp.touch('touchStart', [(vp[0] // 2, int(vp[1] * 0.45))])
+    time.sleep(0.05)
+    cdp.touch('touchEnd', [])
+    time.sleep(0.6)
+    return cdp.evaluate("return document.getElementById('reader')"
+                        ".classList.contains('is-menu-open')") is True
+
+
 def ensure_menu_open(cdp, tries=6):
     """确保菜单展开 —— 否则底栏滑到屏外（y≈923 > 视口 915），按钮点不到。
 
-    ⚠️ 点屏幕正中空白处是切菜单的手势，所以这里点一次就切一次状态。
-       要**先读状态再决定点不点**，不能盲点（盲点两次等于没点）。
+    ⚠️ 与 menu_on 是同一件事（这里保留旧名，避免改 E/F 两处调用点）。
+       menu_on 负责"读状态再决定点不点"，重试由本函数负责。
     """
     for _ in range(tries):
-        if cdp.evaluate("return document.getElementById('reader')"
-                        ".classList.contains('is-menu-open')") is True:
+        if menu_on(cdp):
             return True
-        vp = cdp.evaluate('return [window.innerWidth, window.innerHeight]')
-        cdp.touch('touchStart', [(vp[0] // 2, int(vp[1] * 0.45))])
-        time.sleep(0.05)
-        cdp.touch('touchEnd', [])
-        time.sleep(0.5)
     return False
 
 
@@ -101,19 +113,31 @@ def ensure_reader_editing(cdp):
 
     if cdp.evaluate("return document.getElementById('reader').classList.contains('is-open')") is not True:
         tap_sel('.doc-card')
-        time.sleep(0.8)
-    if cdp.evaluate("return document.getElementById('reader').classList.contains('is-menu-open')") is not True:
-        vp = cdp.evaluate('return [window.innerWidth, window.innerHeight]')
-        cdp.touch('touchStart', [(vp[0] // 2, vp[1] // 2)])
-        time.sleep(0.05)
-        cdp.touch('touchEnd', [])
-        time.sleep(0.5)
+        time.sleep(1.4)
+
+    # ⚠️ 幂等：已在编辑模式就先退出（否则后面的"点 annotate"反而会退出编辑）
+    if cdp.evaluate("return document.getElementById('reader')"
+                    ".classList.contains('is-annotating')") is True:
+        menu_on(cdp)
+        tap_sel('#reader-annotate')
+        time.sleep(1.2)
+
+    menu_on(cdp)
     if cdp.evaluate("return !!document.querySelector('.pdf-slot .pdf-page-img')") is not True:
         tap_sel('#reader-view-toggle')
-        time.sleep(0.8)
-    if cdp.evaluate("return document.getElementById('reader').classList.contains('is-annotating')") is not True:
+        time.sleep(1.4)
+    menu_on(cdp)
+
+    if cdp.evaluate("return document.getElementById('reader')"
+                    ".classList.contains('is-annotating')") is not True:
         tap_sel('#reader-annotate')
-        time.sleep(0.9)
+        time.sleep(1.4)
+    # ⚠️ 等标注层长出块来（真实论文 600+ 块，抽取要几秒）
+    for _ in range(50):
+        n = cdp.evaluate("return document.querySelectorAll('.anno-block').length")
+        if n and n > 0:
+            break
+        time.sleep(0.4)
     # 选 formula（矩形模式）
     if cdp.evaluate("""
         var a = document.querySelector('.reader-editbar [data-edit-mode][aria-pressed="true"]');
@@ -124,13 +148,28 @@ def ensure_reader_editing(cdp):
 
 
 def layer_rect(cdp, page=1):
-    return cdp.evaluate("""
+    """第 page 页标注层的屏幕矩形。
+
+    ⚠️ 必须检查 None —— 拿不到就说明"进编辑模式"这步实际没成功，
+       继续跑会在 int(r[2]) 处抛 TypeError，把真正的原因（没进编辑模式）
+       埋在一堆堆栈里（踩过）。
+    """
+    r = cdp.evaluate("""
         var l = document.querySelector('.anno-layer[data-page="%d"]');
         if (!l) return null;
         var b = l.getBoundingClientRect();
         return [Math.round(b.left), Math.round(b.top),
                 Math.round(b.width), Math.round(b.height)];
     """ % page)
+    if not r:
+        raise SystemExit('❌ 第 %d 页没有标注层 —— 进编辑模式失败？\n'
+                         '   （层数=%s 块数=%s is-annotating=%s）'
+                         % (page,
+                            cdp.evaluate("return document.querySelectorAll('.anno-layer').length"),
+                            cdp.evaluate("return document.querySelectorAll('.anno-block').length"),
+                            cdp.evaluate("return document.getElementById('reader')"
+                                         ".classList.contains('is-annotating')")))
+    return r
 
 
 def pick_point(cdp, x, y):

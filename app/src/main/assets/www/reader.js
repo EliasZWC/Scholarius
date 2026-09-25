@@ -1195,6 +1195,19 @@
         } else {
             unmountAnnotateLayer();
             /*
+              ⚠️ 退出编辑模式**必须**清掉 is-text-mode 类。
+
+                 否则它会残留（实测：退出后 reader 的类是
+                 "reader is-open is-menu-open is-text-mode"，
+                 没有 is-annotating）—— 一个"看起来在文本模式"
+                 但实际不在编辑模式的状态，很容易在后面读到它
+                 做错判断。类必须与 annotating 严格同步。
+
+                 ⚠️ 这里不能只靠 syncEditBar()（它在 annotating 为假时
+                 可能提前 return），必须显式调 syncModeClass()。
+            */
+            syncModeClass();
+            /*
               ⚠️ 退出编辑模式要把提示气泡收掉 ——
                  否则它会残留几秒，而那时编辑选项栏已经换回
                  「目录 / 设置」了，提示说的操作已经不存在。
@@ -2432,11 +2445,51 @@
         var removed = 0;
 
         /*
-          ⚠️ 第 1 步：丢掉命中类型的**用户标注**。
-             清空"章节标题"时，用户之前标的 heading 也要一起没。
+          ══ ⚠️⚠️ 第 1 步：丢掉命中类型的用户标注，但**保留 body 覆盖** ══
+
+          这里踩过一个很严重的坑（用户 2026-09-25 实测反馈）：
+            「一开始自动识别的框是乱的 → 点清除 → 清除后还剩一个
+              改不掉的框 → 再清除 → 又回到了自动识别的那些乱框」
+
+          根因：清除是**两步**——
+            ① 丢掉 textMarks 里命中的标注
+            ② 把当前非 body 的块标成 body（用**用户标注覆盖**原生判断，
+               因为原生判断改不动，见下面第 2 步的说明）
+
+          而 `type = null`（清除全部）时，第 ① 步会把第 ② 步上一轮
+          产生的覆盖标注**一起丢掉** → `effectiveTypeAt` 退回原生判定
+          → 第 ② 步又看到 heading → 重建覆盖。
+
+          看起来像"幂等"，实际每次清除都在
+          「丢掉上一轮的覆盖 → 按原生结果重新生成覆盖」之间循环。
+          而两次之间只要有任何**原生判非 body、但这次跳过了**的块
+          （比如 `b.line == null`，第 ② 步会 continue），
+          它的覆盖就丢了 → **原生乱框复活**。
+
+          真机实测（tools/emu_clear_check.py）：
+            ① 初始        : {"heading/L1": 1}
+            ② 清除一次后   : {}                  ← 清干净
+            ③ 再清除后     : {"heading/L1": 1}   ← ❌ 复活
+            日志：两次都是 `clear by type (all) affected=3`
+                  —— 第二次"清除"反而清出了 3 个东西
+
+          ✅ 解法：**覆盖标注是"清除操作的状态"，不是"用户的意图"**，
+             所以清空时不能丢它。判据：`type === 'body'` 的标注
+             一律保留 —— 它要么是上次清除留下的覆盖，
+             要么是用户手标的"这段是正文"（清空"全部"时也该留着，
+             因为它正是"我不想要任何特殊标记"的表达）。
         */
         for (var i = 0; i < textMarks.length; i++) {
             var m = textMarks[i];
+            /*
+              ⚠️ body 覆盖一律留下（理由见上）。
+                 非 body 的才按 type 过滤丢掉。
+                 `!type` 表示清空全部 —— 那时丢掉所有非 body 标注。
+            */
+            if (m.type === 'body') {
+                kept.push(m);
+                continue;
+            }
             if (!type || m.type === type) {
                 removed++;
                 continue;
@@ -4121,6 +4174,113 @@
     }
 
     /**
+     * ══ ⚠️⚠️ 过滤掉「被别的块包含」的重复块（2026-09-25 真机实测的真因）══
+     *
+     * 症状（用户连续多版反馈）：
+     *   「自动识别的框是乱的」「改分类旧分类跑到框右下角、越改越多」
+     *   「清除后新增的框删不掉」「无法增加其他的框」
+     *
+     * 真因：原生输出的块里存在**大量互相包含的重复块**。
+     *   实测 Transformer 论文第 1 页：
+     *       可见框 45 个，其中 **15 对是重叠的**，而且多对是
+     *       `ratio = 1.0`（小框 100% 被大框包住）。
+     *
+     *   典型一组（全部判成 heading）：
+     *       line=0  rect=[ 89,214,180,59]   ← 标题整体（大字粗体）
+     *       line=1  rect=[111,266, 68, 7]   ← 标题内的词 "Attention"
+     *       line=2  rect=[180,266, 61, 7]   ← 词 "Is"
+     *       line=3  rect=[242,266, 61, 7]   ← 词 "All"
+     *       line=4  rect=[ 94,266,241,14]   ← 又一层
+     *
+     *   为什么会产生：PdfText 的 `startsNewBlock` 用**字号/粗体**判标题，
+     *   而标题里的每个词本身也是大字粗体 → 每个词都独立成块；
+     *   同时整行又被合成一个块 → 两套重叠。
+     *
+     * 为什么必须在 web 侧过滤（而不是只改 PdfText）：
+     *   · 重叠框让「点击命中」变得不确定 —— 用户看到的是下层框，
+     *     点下去命中的是上层框。于是：
+     *       改分类 → 改的是另一个（看不见的）块 → 像是"旧分类跑到
+     *                右下角去了"（因为那些词块正好贴在标题右下）
+     *       删除   → 删掉上层，用户看到的那个还在 → 像是"删不掉"
+     *       反复操作 → 越积越多；一块位置堆满后 → "无法增加其他框"
+     *   · 这条因果链**一次解释了用户报的全部现象**。
+     *   · 在 web 侧过滤，渲染 / 标注 / 点击三处用的是同一份数据，
+     *     不会出现"渲染按 A 算、点击按 B 算"的错位。
+     *
+     * 判据：若块 A 的包围盒**基本被块 B 覆盖**（覆盖率 ≥ 0.85），
+     *       且 B 不是 A 自己，则丢掉 A（保留外层那个大的）。
+     *
+     * ⚠️ 只在**同页**比较（跨页的包围盒没有可比性）。
+     * ⚠️ 用 0.85 而不是 1.0：PDF 的字形边界有半像素误差，
+     *    实测完全包含时覆盖率是 0.97~1.0，而"相邻但不同"的块
+     *    通常低于 0.6。0.85 留出余量，不会误删相邻块。
+     * ⚠️ 覆盖率用**面积比**（交集 / A 的面积），不是任一方面积 ——
+     *    否则小框包含大框时也会被误判。
+     */
+    function dropContainedBlocks(blocks) {
+        if (!blocks || blocks.length < 2) return blocks;
+
+        var n = blocks.length;
+        var drop = [];
+        for (var i = 0; i < n; i++) drop.push(false);
+        var dropped = 0;
+
+        for (var a = 0; a < n; a++) {
+            if (drop[a]) continue;
+            var A = blocks[a];
+            if (!A || !A.page) continue;
+            var aArea = (A.x1 - A.x0) * (A.y1 - A.y0);
+            if (!(aArea > 0)) continue;
+
+            for (var b = 0; b < n; b++) {
+                if (b === a || drop[b]) continue;
+                var B = blocks[b];
+                if (!B || B.page !== A.page) continue;
+                if (!(B.x1 > B.x0) || !(B.y1 > B.y0)) continue;
+
+                var ix = Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0);
+                var iy = Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0);
+                if (ix <= 0 || iy <= 0) continue;
+
+                // A 被 B 覆盖的比例
+                var cover = (ix * iy) / aArea;
+                if (cover < 0.85) continue;
+
+                /*
+                  ⚠️ 两者互相覆盖（面积几乎相等）时，只丢**行号更大**的
+                     那个 —— 保持"丢后面的"这一确定性规则，
+                     否则同一份数据两次过滤结果可能不同（遍历顺序依赖）。
+                */
+                var bArea = (B.x1 - B.x0) * (B.y1 - B.y0);
+                if (bArea <= aArea * 1.02) {
+                    // B 不比 A 大 → 反向也判一次，避免把大的丢掉
+                    var coverB = (ix * iy) / bArea;
+                    if (coverB >= 0.85) {
+                        var loser = ((A.line == null ? 1e9 : A.line) >
+                                     (B.line == null ? 1e9 : B.line)) ? a : b;
+                        if (!drop[loser]) { drop[loser] = true; dropped++; }
+                        if (loser === a) continue;   // A 被丢，跳出内层
+                        continue;
+                    }
+                }
+                drop[a] = true;
+                dropped++;
+                break;
+            }
+        }
+
+        if (!dropped) return blocks;
+
+        var kept = [];
+        for (var k = 0; k < n; k++) {
+            if (!drop[k]) kept.push(blocks[k]);
+        }
+        trace('reader:blocks', 'dropped ' + dropped + ' contained of ' + n
+              + ' -> ' + kept.length);
+        return kept;
+    }
+
+    /**
      * 原生推来正文文本。
      *
      * ⚠️ 只接收**当前打开的那篇** —— 用户可能很快点开另一篇，
@@ -4184,6 +4344,24 @@
              不清的话，上一篇的 blocks 会残留在 lastBlocks 里，
              下一次切回时重新渲染出**上一篇的正文**（而不是本篇的纯文本）。
         */
+        if (blocks && blocks.length) {
+            /*
+              ⚠️⚠️ 必须先丢掉「被别的块包含」的重复块（见 dropContainedBlocks）。
+
+                 不丢的后果（用户实测报的一串问题）：
+                   · 框是乱的（同一行 4 个框层层叠着）
+                   · 改分类变了另一个看不见的块 → "旧分类跑到右下角"
+                   · 删除删的是上层 → "删不掉"
+                   · 反复操作越积越多 → "最多三个"
+                   · 那块位置被占满 → "无法增加其他框"
+
+                 ⚠️ 必须在这里（**渲染与缓存之前**）过滤，
+                    这样 renderBlocks / lastBlocks / 编辑模式的文字块
+                    用的是**同一份**数据，不会出现"渲染算一套、点击算另一套"。
+            */
+            blocks = dropContainedBlocks(blocks);
+        }
+
         if (blocks && blocks.length) {
             lastBlocks = blocks;
             lastText = '';
