@@ -21,8 +21,45 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from emu_js import ensure_ready, targets, pick_page  # noqa: E402
 from emu_touch import Cdp  # noqa: E402
 
-STATE_JS = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             '_diag14.js'), encoding='utf-8').read()
+# ⚠️ 状态探针内联（原来存在 tools/_diag14.js，被清理临时文件时删掉了 ——
+#    脚本依赖外部临时文件很脆弱，内联进来就不会再断）。
+STATE_JS = r"""
+return (function () {
+  var r = document.getElementById('reader');
+  var body = document.querySelector('.reader-body');
+  var bar = document.querySelector('.reader-editbar');
+  var normal = document.querySelectorAll('.reader-bottom .reader-action:not(.reader-edit-tab)');
+  var fab = document.querySelector('.anno-fab');
+  var tip = document.querySelector('.anno-tip');
+  function rc(el) {
+    if (!el) return null;
+    var b = el.getBoundingClientRect();
+    if (!b.width && !b.height) return null;
+    return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)];
+  }
+  var out = {
+    readerClass: r ? r.className : null,
+    hasIsAnnotating: r ? r.classList.contains('is-annotating') : null,
+    hasIsTextMode: r ? r.classList.contains('is-text-mode') : null,
+    layers: document.querySelectorAll('.anno-layer').length,
+    blocks: document.querySelectorAll('.anno-block').length,
+    bodyPaddingTop: body ? getComputedStyle(body).paddingTop : null,
+    editbarHidden: bar ? bar.hidden : 'no-editbar',
+    normalBtns: []
+  };
+  for (var i = 0; i < normal.length; i++) {
+    out.normalBtns.push({
+      id: normal[i].id || null,
+      hidden: normal[i].hidden,
+      rect: rc(normal[i])
+    });
+  }
+  out.fab = fab ? { hidden: fab.hidden, rect: rc(fab) } : null;
+  out.tip = tip ? { visible: tip.classList.contains('is-visible'),
+                    text: (tip.textContent || '').slice(0, 40) } : null;
+  return out;
+})();
+"""
 
 
 def js(cdp, code):

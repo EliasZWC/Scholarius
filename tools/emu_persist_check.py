@@ -139,16 +139,27 @@ def main():
         menu_on(cdp)
         if js(cdp, "return !!document.querySelector('.pdf-slot .pdf-page-img')") is not True:
             tap_sel(cdp, '#reader-view-toggle', 1.4)
+        # ⚠️ 切视图后**必须等页图真正出现**，否则下一步 `.anno-block` 会是 0，
+        #    报「找不到可测的块」—— 看着像功能坏了，其实是时序问题（踩过）。
+        for _ in range(30):
+            if js(cdp, "return !!document.querySelector('.pdf-slot .pdf-page-img')") is True:
+                break
+            time.sleep(0.3)
         menu_on(cdp)
         if js(cdp, "return document.getElementById('reader')"
                    ".classList.contains('is-annotating')") is not True:
             tap_sel(cdp, '#reader-annotate', 1.6)
-        for _ in range(30):
+        for _ in range(50):
             n = js(cdp, "return document.querySelectorAll('.anno-block').length")
             if n and n > 0:
                 break
             time.sleep(0.4)
         tap_sel(cdp, '.reader-editbar [data-edit-mode="text"]', 1.0)
+        # 再确认浮层真的挂上了
+        for _ in range(20):
+            if js(cdp, "return document.querySelectorAll('.anno-block').length") > 0:
+                break
+            time.sleep(0.3)
 
         print('初始：可见框 %s 个' % visible_count(cdp))
         print('annotations.json: %s' % (read_anno() or '(空/不存在)'))

@@ -169,8 +169,33 @@ def main():
         if cdp.evaluate("return document.getElementById('reader')"
                         ".classList.contains('is-annotating')") is not True:
             tap_sel(cdp, '#reader-annotate', 1.0)
-        # 选 Text 模式
-        tap_sel(cdp, '.reader-editbar [data-edit-mode="text"]', 0.8)
+        # 等浮层挂上
+        for _ in range(40):
+            if cdp.evaluate("return document.querySelectorAll('.anno-block').length") > 0:
+                break
+            time.sleep(0.4)
+
+        # ⚠️⚠️ 编辑栏的模式是**开关**语义 —— 点已选中的会**取消**（→ null）。
+        #     直接 tap 一次会让"上一轮已经是 text"变成"取消"，于是点块不弹表单，
+        #     报「类型选择弹层没打开」。看着像功能坏了，其实是脚本不幂等（踩过）。
+        #     正确做法：先读 `aria-pressed`，只有不是 text 时才点。
+        cur_mode = cdp.evaluate("""
+            var a = document.querySelector('.reader-editbar [data-edit-mode][aria-pressed="true"]');
+            return a ? a.getAttribute('data-edit-mode') : null;
+        """)
+        if cur_mode == 'text':
+            print('  已是 text 模式，跳过（开关语义：再点会取消）')
+        else:
+            tap_sel(cdp, '.reader-editbar [data-edit-mode="text"]', 0.8)
+        # 确认真的选中了（拿不到就再点一次）
+        for _ in range(3):
+            ok_mode = cdp.evaluate("""
+                var a = document.querySelector('.reader-editbar [data-edit-mode][aria-pressed="true"]');
+                return a ? a.getAttribute('data-edit-mode') : null;
+            """)
+            if ok_mode == 'text':
+                break
+            tap_sel(cdp, '.reader-editbar [data-edit-mode="text"]', 0.8)
 
         print('=== 初始状态 ===')
         st = cdp.evaluate("""
@@ -285,15 +310,54 @@ def main():
                     tap(cdp, t2['cx'], t2['cy'], 0.8)
                     dump(cdp, '第 2 次改分类后')
 
-        print('\n=== 内部 textMarks ===')
-        tm = cdp.evaluate("""
-            // 从 AnnotationStore 或暴露的接口读
-            if (window.ScholariusReader && window.ScholariusReader.debugMarks) {
-                return window.ScholariusReader.debugMarks();
-            }
-            return 'no-debug-api';
+        # ⚠️ 不要去读内部 `textMarks`（没有暴露调试 API，只会拿到
+        #    `"no-debug-api"`，看着像失败其实什么都没验证 —— 踩过）。
+        #    改用**日志判据**：
+        #      · `reader:annotate | text <type> @from-to`  用户改了什么
+        #      · `reader:marks | marks=N hit=H miss=M blocks=B`  命中几个块
+        #    这两条足以证明"改分类被记录、且命中了块"。
+        print('\n=== 标注日志（判据）===')
+        logs = cdp.evaluate("""
+            return (window.__bootLog || []).filter(function (x) {
+                return /reader:annotate|reader:marks|reader:regions|clear /.test(x);
+            }).map(function (x) { return String(x); });
         """)
-        print('  %s' % json.dumps(tm, ensure_ascii=False))
+        for l in logs:
+            print('  ' + str(l))
+
+        annots = [l for l in logs if 'reader:annotate | text' in l]
+        marks = [l for l in logs if 'reader:marks |' in l]
+        clear_l = [l for l in logs if 'clear by type' in l]
+
+        print('')
+        fails = []
+        if not annots:
+            fails.append('没有任何 reader:annotate | text 记录（改分类没生效）')
+        else:
+            print('  ✅ 有 %d 条改分类记录' % len(annots))
+            # 断言：同一块被改过两次 → 应有两条 @from-to 相同的记录
+            seen = {}
+            for a in annots:
+                frag = a.split('@')[-1].strip()
+                seen[frag] = seen.get(frag, 0) + 1
+            twice = [k for k, v in seen.items() if v >= 2]
+            if twice:
+                print('  ✅ 同一范围被改 %d 次（覆盖而非追加）：%s'
+                      % (len(twice), twice[:3]))
+            else:
+                print('  ⚠️ 未观察到同一范围被改两次（第 2 次可能没点中）')
+
+        if marks:
+            print('  ✅ 有 marks 命中日志：%s' % marks[-1])
+        else:
+            fails.append('没有 reader:marks 命中日志（改分类没命中任何块）')
+
+        if fails:
+            print('\n❌ 失败：')
+            for f in fails:
+                print('  - %s' % f)
+            return 1
+        print('\n✅ 改分类链路验证通过（记录 + 命中）')
         return 0
     finally:
         cdp.close()

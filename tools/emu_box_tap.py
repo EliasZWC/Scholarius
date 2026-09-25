@@ -136,63 +136,72 @@ def main():
             tap_sel(cdp, '.reader-editbar [data-edit-mode="formula"]', 0.8)
 
         print('=== 开始：画第 1 个框 ===')
-        # 找一个安全区域（避开顶栏底栏）
-        r = cdp.evaluate("""
+        # ⚠️ 起手点必须避开已有框（否则走"点框删除"分支，画不出来）——
+        #    前的测试脚本可能留下标注。同 emu_draw_check.py 的处理。
+        nb = cdp.evaluate("return document.querySelectorAll('.anno-box').length")
+        print('  画之前已有框：%d 个' % nb)
+        spot = cdp.evaluate("""
             var l = document.querySelector('.anno-layer');
-            var b = l.getBoundingClientRect();
-            return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)];
+            if (!l) return null;
+            var lr = l.getBoundingClientRect();
+            var boxes = document.querySelectorAll('.anno-box');
+            for (var fy = 0.12; fy < 0.55; fy += 0.06) {
+                for (var fx = 0.10; fx < 0.85; fx += 0.06) {
+                    var x0 = Math.round(lr.left + lr.width * fx);
+                    var y0 = Math.round(lr.top + lr.height * fy);
+                    var t0 = document.elementFromPoint(x0, y0);
+                    if (!t0 || !t0.classList ||
+                        !t0.classList.contains('anno-layer')) continue;
+                    var x1 = Math.round(x0 + lr.width * 0.40);
+                    var y1 = Math.round(y0 + lr.height * 0.28);
+                    if (x1 > lr.right - 8 || y1 > lr.bottom - 8) continue;
+                    var t1 = document.elementFromPoint(x1, y1);
+                    if (!t1 || !t1.classList ||
+                        !t1.classList.contains('anno-layer')) continue;
+                    var clash = false;
+                    for (var i = 0; i < boxes.length; i++) {
+                        var br = boxes[i].getBoundingClientRect();
+                        if (!(x1 < br.left - 6 || x1 > br.right + 6 ||
+                              y1 < br.top - 6 || y1 > br.bottom + 6)) clash = true;
+                    }
+                    if (clash) continue;
+                    return [x0, y0, x1, y1];
+                }
+            }
+            return null;
         """)
-        x0 = r[0] + int(r[2] * 0.22)
-        y0 = r[1] + int(r[3] * 0.22)
-        x1 = r[0] + int(r[2] * 0.75)
-        y1 = r[1] + int(r[3] * 0.62)
-        drag(cdp, x0, y0, x1, y1)
+        if not spot:
+            print('  ⚠️ 找不到空白起手点，退回固定比例')
+            r = cdp.evaluate("""
+                var l = document.querySelector('.anno-layer');
+                var b = l.getBoundingClientRect();
+                return [Math.round(b.left), Math.round(b.top),
+                        Math.round(b.width), Math.round(b.height)];
+            """)
+            spot = [r[0] + int(r[2] * 0.22), r[1] + int(r[3] * 0.22),
+                    r[0] + int(r[2] * 0.75), r[1] + int(r[3] * 0.62)]
+        drag(cdp, spot[0], spot[1], spot[2], spot[3])
         b1 = show(cdp, '画完第 1 个框')
-        if len(b1) != 1:
-            raise SystemExit('⚠️ 期望 1 个框，实得 %d' % len(b1))
+        if len(b1) != nb + 1:
+            raise SystemExit('⚠️ 期望 %d 个框，实得 %d' % (nb + 1, len(b1)))
 
-        # === 关键：在框中心点一下 ===
+        # === 关键：在**刚画的**框中心点一下 ===
+        # ⚠️ 用 `querySelector('.anno-box')` 会取到**残留的第一个框**（若有），
+        #    不是刚画的那个 —— 断言就会跑偏。取 `bs[bs.length-1]`。
         c = cdp.evaluate("""
-            var b = document.querySelector('.anno-box');
+            var bs = document.querySelectorAll('.anno-box');
+            var b = bs[bs.length - 1];
             var r = b.getBoundingClientRect();
             return [Math.round(r.left + r.width/2), Math.round(r.top + r.height/2)];
         """)
-        print('\n=== 在框中心点一下 (%d,%d) ===' % (c[0], c[1]))
+        print('\n=== 在刚画的框中心点一下 (%d,%d) ===' % (c[0], c[1]))
         print('  （用户预期：删除这个框）')
         tap(cdp, c[0], c[1], 0.7)
         show(cdp, '点了一下之后')
-
-        # 再点一下（如果还在）
-        if len(boxes(cdp)) > 0:
-            c2 = cdp.evaluate("""
-                var bs = document.querySelectorAll('.anno-box');
-                var b = bs[bs.length - 1];
-                var r = b.getBoundingClientRect();
-                return [Math.round(r.left + r.width/2), Math.round(r.top + r.height/2)];
-            """)
-            print('\n=== 再点一下 (%d,%d) ===' % (c2[0], c2[1]))
-            tap(cdp, c2[0], c2[1], 0.7)
-            show(cdp, '点第二下之后')
-
-        if len(boxes(cdp)) > 0:
-            c3 = cdp.evaluate("""
-                var bs = document.querySelectorAll('.anno-box');
-                var b = bs[bs.length - 1];
-                var r = b.getBoundingClientRect();
-                return [Math.round(r.left + r.width/2), Math.round(r.top + r.height/2)];
-            """)
-            print('\n=== 点第三下 (%d,%d) ===' % (c3[0], c3[1]))
-            tap(cdp, c3[0], c3[1], 0.7)
-            show(cdp, '点第三下之后')
-
-        print('\n=== anno 日志 ===')
-        log = cdp.evaluate("""
-            return (window.__bootLog || []).filter(function (l) {
-                return /anno/.test(l);
-            }).slice(-20);
-        """)
-        for l in log:
-            print('  ' + str(l))
+        n_after = len(boxes(cdp))
+        if n_after != nb:
+            raise SystemExit('⚠️ 点一下后应回到 %d 个框，实得 %d' % (nb, n_after))
+        print('  ✅ 点一下删除了刚画的框（%d -> %d）' % (nb + 1, n_after))
         return 0
     finally:
         cdp.close()

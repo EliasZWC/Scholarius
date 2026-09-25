@@ -4,6 +4,172 @@
 
 ---
 
+## [0.1.29] - 2026-09-25
+
+### 修复「编辑状态与视图不同步」+「标注不影响阅读视图排版」
+
+用户反馈（原话）：
+
+> 1. 「清除按钮可以清除框，但单独框点开表单选择清除依旧无法清除。」
+> 2. 「无法拖拽形成框，相当于整个选中功能不可用；点击可用，但这是错误的
+>      逻辑，因为单纯点击应该是唤出菜单，而不是形成一个框（且框的大小
+>      无法确定）。」
+> 3. 「阅读视图并没有按照更改后的框重新排版。」
+
+#### ⚠️ 共同根源：编辑栏选项是「开关」，点了会取消，但没有可见反馈
+
+`makeEditTab` 里选项按**开关**语义实现（用户要求：
+
+> 「就是点击这个选项，再点击就可以取消这个选项」）——
+再点已选中的会 `annotateMode = null`。
+
+而 `null` 时浮层是 `pointer-events: none`、也不绑画框监听，
+页面纯滚动。**用户以为还在矩形模式，实际已经是"没选任何类型"**
+→ 拖拽毫无反应、点框行为错乱、且**没有任何提示**。
+
+#### 问题 2：「无法拖拽形成框」
+
+两个原因：
+
+**① `annotateMode === null` 时无提示**
+
+`null` 时页面纯滚动（这个行为本身是对的，用户明确要求
+「哪个选项都没点，就不需要画框啊」），但缺"为什么画不出框"的反馈。
+
+✅ 新增 `bindNoModeHint()`：`null` 时在浮层上绑一个**轻量**监听 ——
+   只在"短促点击"（位移 < 12px 且 < 600ms）时弹一次提示
+   `Pick An Option Below To Start.`；拖拽（想滚页面）不打扰。
+   ⚠️ 不 `preventDefault`、不改 `touch-action` → 滚动不受影响。
+
+**② `MIN` 太小 → 「点一下」被记成一个极小的框**
+
+```
+MIN = 0.012 是**归一化**值 → 412px 页宽上只相当于 4.9 CSS px
+DRAG_SLOP = 11.3px
+```
+
+只要手指抖动超过 slop（约 12px 位移）就能产生 4.9px 以上的框，
+于是"点一下"经常生成一个**大小莫名其妙的小框**。
+
+✅ `MIN` 提到 `0.05`（≈ 20.6 CSS px）—— 真想画框时随手一拖都是
+   几十像素，"点一下 + 抖动"到不了这个尺寸。
+   真机验证：15px 拖拽被 `anno:reject | too-small w=0.0267 h=0.0188` 拒绝。
+
+#### 问题 2 的另一半：「点击应该是唤出菜单，不是形成框」
+
+✅ 矩形模式下**未超 slop 的点击**改为主动 `toggleMenu()`。
+
+⚠️ 为什么不能靠 click 冒泡：`touch-action: none` 之下真机**不派发
+   click**（见 `makeRegionBox` 的说明），`bodyEl` 的切菜单监听收不到。
+   不主动唤起的话，矩形模式下点空白处**毫无反应**。
+⚠️ 唤菜单前先 `markDragged()` —— 这一次 pointerup 之后浏览器仍可能
+   补发 click（桌面/部分机型），不标记会**再切一次**，菜单闪一下又回去。
+
+#### 问题 3：「阅读视图没有按更改后的框重新排版」
+
+⚠️ 真机诊断出的真因（三个独立缺陷叠加）：
+
+**① `b.textType` 全项目没有任何地方赋值**
+
+```js
+makeRegionEl:   var el = makeBlockEl(b, b.textType);   // 唯一读取处
+b.textType = …  // 不存在
+```
+
+于是 `ttype` 永远是 `undefined`，`makeBlockEl` 只按 `b.kind`
+（**原生判定**）决定标签与样式 → **用户标注对阅读视图毫无影响**。
+
+✅ 在 `buildRegions` 算完 `type` / `level` 之后写回 `blk.textType`。
+
+**② 位置判据覆盖了用户标注**
+
+```js
+if (!sawBody && !sawTitle && …) type = 'title';       // 无 !mark 守卫
+if (!sawBody && authorPending && type === 'body') type = 'author';
+```
+
+实测：把首页的一段标成「章节标题」，被第一条判据强制改成 `title`
+→ 归入首页区 → 走 `makeRegionHeader`（只输出文字、不读 textType）
+→ 标注被彻底忽略。
+
+✅ 两处都加 `!mark` 守卫 —— 用户表过态就不该被位置判据改写。
+
+**③ `appendToStack` 没传 `level`**
+
+```js
+target.blocks.push({ kind, text, page, textType });   // 少了 level
+```
+
+`makeBlockEl` 里 `var lv = (b.level >= 3) ? 4 : …` 读到 `undefined`
+→ 恒为 h2，用户标的 L2/L3 全部丢失。
+
+✅ 补上 `level: blk.level`。
+
+**真机验证**（用 `buildRegions` 的决策日志，最可靠）：
+
+```
+改前: blk48 | mark=null    type=body             → appendToStack（正文块）
+改后: blk48 | mark=heading type=heading level=1  → openRegion（建标题区）✅
+```
+
+#### 问题 1 + 状态错乱：`setView()` 切视图时不退出编辑模式
+
+真机抓到的矛盾状态：
+
+```
+readerClass   : "reader is-open is-menu-open is-annotating"
+hasPageImg    : false     ← 不在原始视图
+hasReaderPara : true      ← 在阅读视图
+layers        : 0         ← **没有任何标注层**
+pressed       : "formula" ← 编辑栏还选着矩形模式
+```
+
+`setAnnotating` 规定了「只有原始视图能进编辑模式」
+（`if (next && view !== 'raw') return;`），但那条守卫**只在进入时检查
+一次**。之后切视图没有联动 —— `teardownPdfScroll()` 把页图连同标注层
+全部销毁，**但 `annotating` 仍是 true**、`is-annotating` 类还在、
+编辑栏还挂着、`annotateMode` 还是 `formula`。
+
+用户于是处于「看起来在编辑模式、但页面上没有任何可编辑的东西」的状态——
+想画框没层、想改框没层、阅读视图也不反映标注。
+
+✅ `setView()` 里离开原始视图前先 `setAnnotating(false)`
+   （走存盘 + 恢复底栏 + 清类）。理由：进编辑模式本就要求原始视图，
+   两个状态必须一致；用户切到阅读视图的意图是"看正文"。
+
+#### 另外修掉
+
+`setAnnotating(false)` 未清 `is-text-mode` 类 → 退出编辑模式后类残留。
+
+#### 真机验证工具（新增/加固）
+
+| 脚本 | 用途 |
+|---|---|
+| `tools/emu_reflow_check.py` | 改标注 → 切回阅读视图 → 验证**排版结构**真的变了 |
+| `tools/emu_fix4_check.py` | 点击唤菜单 / 未选类型提示 / MIN 提高 / 切视图退出编辑 |
+| `tools/emu_issue3_check.py` | 用户三个问题的逐步复现（观察用） |
+
+⚠️ 全部做成**幂等**：无论应用处于阅读视图/原始视图/编辑模式/
+   未打开阅读器，都能自己走到目标状态再断言。
+
+#### ⚠️ 排查方法论教训（血亏几轮）
+
+1. **验证脚本的断言本身可能错**：
+   - 以为 `.anno-block` 含文本 → 它其实是**空定位框**（文字在页图位图里），
+     `textContent` 只有标签文字
+   - 以为"heading 元素数量变化"能证明重排 → 被改的块原本已是 heading，
+     数量不变，**功能是好的却报失败**
+   - 最后改用 `buildRegions` 的**决策日志**（`blkX` / `openX`）才可靠
+
+2. **行号是"按累计行数估算"的**，与 DOM 的 `data-block-line`
+   不一定一一对应 —— "按 line 去 DOM 找元素"本身就不可靠。
+
+3. **诊断 trace 要打在"决策点"上**，而不是只打结果。
+   本轮正是靠 `reader:blkX`（type 算完后）+ `reader:openX`（走哪个分支）
+   两条日志，一次定位到"标注命中了但没影响渲染"。
+
+---
+
 ## [0.1.28] - 2026-09-25
 
 ### 过滤重复重叠块 —— 一次修好「框是乱的 / 删不掉 / 越改越多」

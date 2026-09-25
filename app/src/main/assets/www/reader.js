@@ -578,6 +578,48 @@
         var want = (next === 'raw') ? 'raw' : 'reading';
 
         if (want === view) return;
+
+        /*
+          ══ ⚠️⚠️ 切视图时必须先退出编辑模式（2026-09-25 真机实测的真因）══
+
+          症状（用户报的，三个问题是同一个根源）：
+            1. 「无法拖拽形成框，整个选中功能不可用」
+            2. 「单独框点开表单选择清除依旧无法清除」
+            3. 「阅读视图没有按照更改后的框重新排版」
+
+          真机抓到的矛盾状态：
+              readerClass   : "reader is-open is-menu-open is-annotating"
+              hasPageImg    : false     ← 不在原始视图
+              hasReaderPara : true      ← 在阅读视图
+              layers        : 0         ← **没有任何标注层**
+              pressed       : "formula" ← 编辑栏还选着矩形模式
+
+          真因：setAnnotating 里规定了「只有原始视图能进编辑模式」
+          （`if (next && view !== 'raw') return;`），
+          但那条守卫**只在进入时检查一次**。之后切视图时没有联动 ——
+          用户点「视图切换」后：
+            · teardownPdfScroll() 把页图连同标注层**全部销毁**
+            · restoreReadingContent() 渲染正文
+            · **但 annotating 仍是 true**、is-annotating 类还在、
+              编辑栏还挂着、annotateMode 还是 formula
+
+          于是用户处于一个"看起来在编辑模式、但页面上没有任何可编辑的东西"
+          的状态 —— 想画框没层、想改框没层、阅读视图也不反映标注。
+
+          ✅ 修法：离开原始视图就退出编辑模式。
+             理由：进编辑模式本就要求原始视图，那两个状态必须一致；
+             用户切到阅读视图的意图是"看正文"，不是"继续标注"。
+             退出会走 setAnnotating(false) → 存盘 + 恢复底栏 + 清类。
+
+          ⚠️ 必须在改 `view` **之前**退 —— 因为 setAnnotating 里的
+             守卫会看 view；先改 view 再退虽然也能退出，
+             但若将来守卫改成"raw 才能退出"就会卡住。
+             这里显式调用，顺序依赖最小。
+        */
+        if (annotating) {
+            setAnnotating(false);
+        }
+
         view = want;
         syncViewToggle();
 
@@ -1770,8 +1812,65 @@
                 trace('anno:bind', 'page=' + page +
                       ' ta=' + getComputedStyle(layer).touchAction +
                       ' pe=' + getComputedStyle(layer).pointerEvents);
+            } else if (annotateMode === null) {
+                /*
+                  ══ ⚠️⚠️ 没选任何类型时，拖拽要给**明确提示**，不能静默无反应 ══
+
+                  用户 2026-09-25 反馈：「无法拖拽形成框，相当于整个选中功能不可用」
+
+                  原因：编辑栏的选项是**开关**语义 —— 再点已选中的会**取消**
+                  （见 makeEditTab 的说明），`annotateMode` 变成 null。
+                  而 null 时浮层 `pointer-events: none`、也不绑画框监听，
+                  页面纯滚动 —— 用户拖了半天什么都画不出来，**且没有任何反馈**，
+                  自然会认为"功能坏了"。
+
+                  ⚠️ 「null 时页面纯滚动」这个行为本身是对的
+                     （用户明确要求「哪个选项都没点，就不需要画框啊」）。
+                     缺的只是**告诉用户为什么**。
+
+                  做法：在层上绑一个**轻量**监听 —— 只在 `pointerup`
+                        且位移不明显时弹一次提示气泡，不拦截滚动。
+                        ⚠️ 用 `touch-action: auto`（默认，能滚动）+
+                          不 preventDefault，所以页面照常滚。
+                */
+                bindNoModeHint(layer);
             }
         }
+    }
+
+    /**
+     * 没选类型时：拖拽/点击给出「先选一个框类型」的提示。
+     *
+     * ⚠️ 只在**短促手势**（点击）时提示，长拖拽（用户其实想滚页面）不打扰 ——
+     *    滚动是此时的正常操作，弹提示反而烦。
+     * ⚠️ 不 preventDefault、不改 touch-action → 滚动不受影响。
+     */
+    function bindNoModeHint(layer) {
+        var down = null;
+
+        layer.addEventListener('pointerdown', function (ev) {
+            down = { x: ev.clientX, y: ev.clientY, t: Date.now() };
+        });
+
+        layer.addEventListener('pointerup', function (ev) {
+            if (!down) return;
+            var dx = Math.abs(ev.clientX - down.x);
+            var dy = Math.abs(ev.clientY - down.y);
+            var dist = Math.sqrt(dx * dx + dy * dy);
+            var dt = Date.now() - down.t;
+            down = null;
+            /*
+              ⚠️ 判据：位移小（< 12px，确实是"点"）且够快（< 600ms）。
+                 拖拽滚动不提示 —— 那是用户的正常意图。
+            */
+            if (dist < 12 && dt < 600) {
+                showAnnoTip('reader.annotatePickTip');
+            }
+        });
+
+        layer.addEventListener('pointercancel', function () {
+            down = null;
+        });
     }
 
     /**
@@ -3170,9 +3269,9 @@
                     `touch-action: none` 之下真机不派发 click，
                     框自己那个监听形同虚设（桌面能跑、手机不能）。
             */
-            if (pend.onBox || !dragging) {
+            if (pend.onBox) {
                 dragging = false;
-                trace('anno:delete-try', 'onBox=' + !!pend.onBox + ' hitBox=' + !!pend.hitBox);
+                trace('anno:delete-try', 'onBox=true hitBox=' + !!pend.hitBox);
                 if (pend.hitBox) {
                     var idx = parseInt(pend.hitBox.getAttribute('data-index'), 10);
                     if (!isNaN(idx) && idx >= 0 && idx < regionMarks.length) {
@@ -3209,6 +3308,38 @@
                         }
                     }
                 }
+                return;
+            }
+
+            /*
+              ══ 情况二：没在框上、而且没有拖动 ══
+
+                 用户的意图是**普通点击** —— 在原始视图里那意味着"唤出/收起菜单"
+                 （与 mountTapToToggle 的分工一致）。
+
+                 用户 2026-09-25 明确要求：
+                   「点击可用，但这是错误的逻辑，因为单纯点击应该是唤出菜单，
+                     而不是形成一个框（且框的大小无法确定）」
+
+                 ⚠️ 为什么这里要**主动 toggleMenu**，而不是让 click 冒泡去处理：
+                    `touch-action: none` 之下真机**不派发 click**
+                    （见 makeRegionBox 的说明），所以 bodyEl 的切菜单监听
+                    在原始视图里收不到这一次点击 ——
+                    不主动唤起的话，矩形模式下点空白处**毫无反应**。
+
+                 ⚠️ 唤菜单前先 markDragged()：这一次 pointerup 之后
+                    浏览器仍可能补发一个 click（桌面 / 部分机型），
+                    不标记的话会**再切一次**，菜单闪一下又回去。
+            */
+            if (!dragging) {
+                dragging = false;
+                start = null;
+                trace('anno:click-blank', 'toggle menu');
+                if (global.ScholariusUI &&
+                    typeof global.ScholariusUI.markDragged === 'function') {
+                    global.ScholariusUI.markDragged();
+                }
+                toggleMenu();
                 return;
             }
 
@@ -3253,8 +3384,25 @@
                  而 `AnnotationStore.load()` 会把 `x1 <= x0` 当退化数据丢掉
                  → 用户重进页面框就消失了。所以下面还要给退化边
                  一个最小宽度（MIN_EDGE），让它在数据上合法。
-            */
-            var MIN = 0.012;
+
+              ══ ⚠️⚠️ MIN 从 0.012 提到 0.05（2026-09-25 真机实测）══
+
+              用户原话：「无法拖拽形成框……点击可用，但这是错误的逻辑，
+                        因为单纯点击应该是唤出菜单，而不是形成一个框
+                        （且框的大小无法确定）」
+
+              原因：0.012 是**归一化**值，在 412px 宽的页面上只相当于
+                    0.012 × 412 ≈ **4.9 CSS px**。
+                    而 DRAG_SLOP 是 11.3px —— 只要抖动超过 slop
+                    （约 12px 位移）就能产生 4.9px 以上的框。
+                    于是"点一下"经常被记成一个**极小的框**，
+                    用户看到的就是"点击却生成了框，大小还莫名其妙"。
+
+              改成 0.05 ≈ 20.6 CSS px：这是"至少拖出一小段"的合理下限。
+                    真想画框时随手一拖都是几十像素；
+                    "点一下 + 抖动"到不了这个尺寸。
+          */
+            var MIN = 0.05;
             var w = box.x1 - box.x0;
             var h = box.y1 - box.y0;
             if (Math.max(w, h) < MIN) {
@@ -3691,6 +3839,13 @@
                 var m = marks[k];
                 if (!m || m.from > span.from || m.to < span.to) continue;
                 // 完整覆盖才认（见函数头的「宁可少覆盖」）
+                /*
+                  ⚠️ 调试用：打一条日志说明"这个 mark 命中了哪个块"。
+                     排查"改了标注但阅读视图不变"时，这是最快的定位点 ——
+                     要么这里没命中（行号对不上），要么命中了但渲染没用它。
+                */
+                trace('reader:mark-hit', 'mark ' + m.type + ':' + m.from + '-' + m.to +
+                      ' -> block#' + idx + ' span ' + span.from + '-' + span.to);
                 return m;
             }
             return null;
@@ -3711,6 +3866,9 @@
         */
         var sawTitle = false;
         var authorPending = false;
+        /** 调试计数：标注命中/未命中的块数（见下方 markHit++） */
+        var markHit = 0;
+        var markMiss = 0;
         /*
           ⚠️ 当前"敞开着的"首页区（title/author/abstract/keyword）。
              摘要标题之后的正文要靠它归位 —— 见下面用到处的说明。
@@ -3724,6 +3882,13 @@
 
             var mark = markFor(j);
             var type = mark ? mark.type : guessKind(blk, sawBody);
+            /*
+              ⚠️ 调试：统计"有标注但没生效"的块数。
+                 用户报「阅读视图没按标注重排」时，
+                 若这里命中数为 0 而 textMarks 非空 → 行号对不上（本函数的问题）；
+                 若命中数 > 0 但视图没变 → 渲染侧没用 textType（makeBlockEl 的问题）。
+            */
+            if (mark) markHit++; else if (marks.length) markMiss++;
             /*
               ⚠️ 层级：**用户标的优先且不合并原生猜测**。
 
@@ -3740,6 +3905,27 @@
                 : blk.level;
 
             /*
+              ══ ⚠️⚠️ 把最终类型写回块上，供渲染读取 ══
+
+              用户 2026-09-25 反馈：「阅读视图并没有按照更改后的框重新排版。」
+
+              真因：渲染侧 `makeRegionEl` 调的是
+                  `makeBlockEl(b, b.textType)`
+              而 **`b.textType` 全项目没有任何地方赋值** ——
+              它永远是 `undefined`，于是 `makeBlockEl` 只按 `b.kind`
+              （**原生判定**）决定标签与样式。用户改的标注对阅读视图
+              毫无影响，改完切回去看还是原样。
+
+              ✅ 这里补上赋值。放在**算完 type / level 之后**，
+                 保证写进去的是"用户标注优先"的最终结果。
+
+              ⚠️ 同时写 level：`makeBlockEl` 用 `b.level` 决定 h2/h3/h4，
+                只用 `b.kind` 会拿原生的 level，用户标的层级就丢了。
+            */
+            blk.textType = type;
+            if (type === 'heading') blk.level = level;
+
+            /*
               ⚠️ 标题区是**位置**判据：文章的**第一个块**就是题目。
 
                  判据从"内容像不像标题"改成位置，是因为：
@@ -3749,7 +3935,31 @@
                      （字号与正文相同、只是加粗居中）。
                  而"第一个块"这个位置在所有论文里都成立。
             */
-            if (!sawBody && !sawTitle && type !== 'abstract' && type !== 'keyword') {
+            /*
+              ══ ⚠️⚠️ 位置判据只在**用户没标注**时才生效 ══
+
+              用户 2026-09-25：「阅读视图并没有按照更改后的框重新排版。」
+
+              真因：下面这两处"位置判据"会**覆盖用户标注**：
+                 `if (!sawBody && !sawTitle && …) type = 'title';`
+                 `if (!sawBody && authorPending && type === 'body') type = 'author';`
+              实测：用户把 `line=48` 那一段标成「章节标题」，
+                   但那一段在首页（题目之后、摘要之前）→ 被判据强制改成
+                   `author` → 归入作者首页区 → 走 `makeRegionHeader`
+                   渲染成作者标签，**完全不读 region.blocks**，
+                   于是 `makeBlockEl(b, b.textType)` 那条路根本不执行，
+                   用户的标注被彻底忽略（日志可见：render-block 只打了 line=0）。
+
+              ✅ 修法：**用户标注（mark）优先，位置判据只做兜底**。
+                 这与本函数开头写的原则一致（"用户标注优先，自动识别兜底"），
+                 只是下面这两处当初漏了加 `!mark` 守卫。
+
+              ⚠️ 判据用 `mark`（而不是 `type !== 'heading'`）——
+                 用户标的可能是 abstract / keyword 等任何类型，
+                 只要他表过态，就不该被位置判据改写。
+            */
+            if (!mark && !sawBody && !sawTitle &&
+                type !== 'abstract' && type !== 'keyword') {
                 type = 'title';
             }
 
@@ -3772,7 +3982,7 @@
                     **摘要/关键词之前**整段，靠"遇到 abstract/keyword
                     就关窗"来收口。
             */
-            if (!sawBody && authorPending && type === 'body') {
+            if (!mark && !sawBody && authorPending && type === 'body') {
                 type = 'author';
             }
 
@@ -3848,6 +4058,17 @@
             appendToStack(stack, out, blk, type);
         }
 
+        /*
+          ⚠️ 调试总结（见上面 markHit++ 处的说明）。
+             排查「改了标注但阅读视图不变」时一眼定位：
+                hit=0 且 marks 非空 → 行号对不上（本函数的 markFor 匹配问题）
+                hit>0               → 行号没问题，查渲染侧
+        */
+        if (marks.length) {
+            trace('reader:marks', 'marks=' + marks.length + ' hit=' + markHit +
+                  ' miss=' + markMiss + ' blocks=' + blocks.length);
+        }
+
         return out;
     }
 
@@ -3908,6 +4129,15 @@
             kind: blk.kind,
             text: blk.text,
             page: blk.page,
+            /*
+              ⚠️⚠️ 必须带上 **level**（2026-09-25 补）。
+                 原来只带 kind —— 于是 `makeBlockEl` 里
+                 `var lv = (b.level >= 3) ? 4 : (...)`
+                 读到 undefined → 恒为 h2，用户标的 L2/L3 全部丢失。
+                 在 `makeBlockEl` 从 `textType` 推导 kind 之后，
+                 level 也必须一起传，否则层级依然错。
+            */
+            level: blk.level,
             textType: type
         });
     }
@@ -3973,7 +4203,11 @@
     function renderFlat(blocks) {
         var frag = document.createDocumentFragment();
         for (var i = 0; i < blocks.length; i++) {
-            var el = makeBlockEl(blocks[i], null);
+            /*
+              ⚠️ 传 `blocks[i].textType` 而不是 null ——
+                 兜底路径也要反映用户标注（见 buildRegions 里写回 textType 的说明）。
+            */
+            var el = makeBlockEl(blocks[i], blocks[i].textType);
             if (el) frag.appendChild(el);
         }
         contentEl.appendChild(frag);
@@ -3992,7 +4226,42 @@
     function makeBlockEl(b, ttype) {
         if (!b || !b.text) return null;
 
-        var kind = b.kind || 'paragraph';
+        /*
+          ══ ⚠️⚠️ `kind` 的判据：**用户标注（ttype）优先于原生判定（b.kind）** ══
+
+          用户 2026-09-25：「阅读视图并没有按照更改后的框重新排版。」
+
+          原来这里只读 `b.kind` —— 那是**原生自动识别**的结果，
+          不含用户标注。于是用户把一段正文标成「章节标题」之后，
+          阅读视图里它**仍然是 <p>**，看起来标注毫无作用。
+
+          ⚠️ 映射关系：
+             ttype === 'heading'      → 当标题渲染（h2/h3/h4）
+             ttype === 'formula'      → 当公式渲染（等宽 + 底纹）
+             其它 / 未标注            → 沿用原生 kind
+             ⚠️ 逆向不需要：用户把原生的标题标成「正文」时，
+                `ttype === 'body'` 会让它落到 else 分支 → <p> ——
+                正是期望的行为（用户有权把误判的标题降为正文）。
+        */
+        var kind;
+        if (ttype === 'heading') {
+            kind = 'heading';
+        } else if (ttype === 'formula') {
+            kind = 'formula';
+        } else if (ttype) {
+            /*
+              ⚠️ 用户明确标了某个**非标题/非公式**的类型
+                 （body / abstract / author / title / keyword / …）→
+                 不再当作 heading。
+                 理由：用户去编辑模式里改它，就是要推翻原生判断；
+                 这里若还沿用 `b.kind === 'heading'`，改了就白改。
+                 ⚠️ 但 formula 由原生判成 formula 时仍要保留等宽样式 ——
+                    所以只在"用户标了东西"时覆盖，不标时才信原生。
+            */
+            kind = 'paragraph';
+        } else {
+            kind = b.kind || 'paragraph';
+        }
         var el;
 
         if (kind === 'heading') {
@@ -4075,8 +4344,23 @@
      */
     function renderRegions(regions) {
         var frag = document.createDocumentFragment();
+        trace('reader:regions', 'count=' + regions.length);
         for (var i = 0; i < regions.length; i++) {
-            frag.appendChild(makeRegionEl(regions[i]));
+            /*
+              ⚠️ 每建一个区域都记一条 —— 排查"某个区域凭空消失"时，
+                 这能立刻看出是"没建出 region"还是"建了但渲染抛异常"。
+            */
+            try {
+                var el = makeRegionEl(regions[i]);
+                trace('reader:region-el', '#' + i + ' type=' + regions[i].type +
+                      ' lv=' + regions[i].level +
+                      ' head=' + (regions[i].heading ? String(regions[i].heading.text).slice(0, 24) : 'null') +
+                      ' blocks=' + regions[i].blocks.length +
+                      ' el=' + (el ? el.tagName : 'null'));
+                if (el) frag.appendChild(el);
+            } catch (e) {
+                trace('reader:region-err', '#' + i + ' ' + (e && e.message));
+            }
         }
         contentEl.appendChild(frag);
     }
@@ -4124,6 +4408,17 @@
         // 直接内容
         for (var i = 0; i < region.blocks.length; i++) {
             var b = region.blocks[i];
+            /*
+              ⚠️ 调试：确认渲染侧拿到的 textType 与 line。
+                 排查「buildRegions 命中了标注、但视图没变」时，
+                 这一条能立刻区分：
+                   · 这里 textType 为空 → buildRegions 写的不是同一个对象
+                   · 这里 textType 有值 → 问题在 makeBlockEl 的分支
+            */
+            if (b && b.textType && b.textType !== 'body') {
+                trace('reader:render-block', 'line=' + b.line + ' textType=' +
+                      b.textType + ' kind=' + b.kind);
+            }
             var el = makeBlockEl(b, b.textType);
             if (el) body.appendChild(el);
         }

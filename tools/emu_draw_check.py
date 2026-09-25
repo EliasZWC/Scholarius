@@ -138,7 +138,17 @@ def main():
                     True, what='编辑模式')
 
         print('[3] 选矩形类型 (formula)')
-        tap_css(cdp, '.reader-editbar [data-edit-mode="formula"]', '(Formula)')
+        # ⚠️ 编辑栏的模式是**开关**语义：点已选中的会**取消**（annotateMode=null）。
+        #    所以必须先读当前状态，只有不是 formula 时才点 ——
+        #    否则重复跑脚本会把它取消掉，拿到"层 pe=none"的假失败（踩过）。
+        cur = cdp.evaluate("""
+            var a = document.querySelector('.reader-editbar [data-edit-mode][aria-pressed="true"]');
+            return a ? a.getAttribute('data-edit-mode') : null;
+        """)
+        if cur == 'formula':
+            print('  已是 formula，跳过（开关语义：再点会取消）')
+        else:
+            tap_css(cdp, '.reader-editbar [data-edit-mode="formula"]', '(Formula)')
 
         print('[4] 断言层可交互')
         st = wait_js(cdp, """
@@ -183,10 +193,60 @@ def main():
 
         print('[5] 真实拖拽画框')
         r = layer_rect(cdp, 1)
-        x0 = r[0] + int(r[2] * 0.20)
-        y0 = r[1] + int(r[3] * 0.20)
-        x1 = r[0] + int(r[2] * 0.78)
-        y1 = r[1] + int(r[3] * 0.70)
+
+        # ⚠️⚠️ 拖拽起点必须**避开已存在的框**（踩过的坑）
+        #
+        # 本脚本曾经按固定比例取 (20%, 20%) 作为起点。若前一个测试脚本
+        # 留下了标注（例如 `emu_reflow_check.py` 把某块标成 title），
+        # 那个块正好在页 1 上方 —— 起点落进去后走的是"点框删除"分支：
+        #   anno:down | hit=box  →  anno:delete-try | onBox=true
+        # 于是**画不出新框**，断言报 `期望 1 个框，实得 0`。
+        # 看着像功能坏了，其实是脚本不够幂等。
+        #
+        # 正确做法：先扫一遍网格，**跳过所有 `.anno-box` 覆盖的格子**，
+        # 在本页找一块真正空白的地方起手。
+        spot = cdp.evaluate("""
+            var l = document.querySelector('.anno-layer');
+            if (!l) return null;
+            var lr = l.getBoundingClientRect();
+            // 起点候选：页面 10%~85% 宽、12%~55% 高，步长 6%
+            for (var fy = 0.12; fy < 0.55; fy += 0.06) {
+                for (var fx = 0.10; fx < 0.85; fx += 0.06) {
+                    var x0 = Math.round(lr.left + lr.width * fx);
+                    var y0 = Math.round(lr.top + lr.height * fy);
+                    var t0 = document.elementFromPoint(x0, y0);
+                    if (!t0 || !t0.classList ||
+                        !t0.classList.contains('anno-layer')) continue;
+                    // 终点：往右下方 40% x 28%
+                    var x1 = Math.round(x0 + lr.width * 0.40);
+                    var y1 = Math.round(y0 + lr.height * 0.28);
+                    if (x1 > lr.right - 8 || y1 > lr.bottom - 8) continue;
+                    var t1 = document.elementFromPoint(x1, y1);
+                    if (!t1 || !t1.classList ||
+                        !t1.classList.contains('anno-layer')) continue;
+                    // 还要确认终点附近没有 .anno-box（避免终点落在框里）
+                    var boxes = document.querySelectorAll('.anno-box');
+                    var clash = false;
+                    for (var i = 0; i < boxes.length; i++) {
+                        var br = boxes[i].getBoundingClientRect();
+                        if (!(x1 < br.left - 6 || x1 > br.right + 6 ||
+                              y1 < br.top - 6 || y1 > br.bottom + 6)) clash = true;
+                    }
+                    if (clash) continue;
+                    return { x0: x0, y0: y0, x1: x1, y1: y1,
+                             boxesAtStart: boxes.length };
+                }
+            }
+            return null;
+        """)
+        if not spot:
+            raise SystemExit('❌ 找不到空白的起手位置（页面上框太多？）')
+        print('  找到空白起手点：(%d,%d) -> (%d,%d)  页面现有框 %d 个'
+              % (spot['x0'], spot['y0'], spot['x1'], spot['y1'],
+                 spot['boxesAtStart']))
+        # 画之前先记下框数：断言用**增量**，不再假定初始为 0
+        n_before = count_boxes(cdp)
+        x0, y0, x1, y1 = spot['x0'], spot['y0'], spot['x1'], spot['y1']
         cdp.evaluate('window.__touchRec = []; return 1')
         cdp.touch('touchStart', [(x0, y0)])
         time.sleep(0.04)
@@ -207,14 +267,14 @@ def main():
             print('  ⚠️ 出现 pointercancel！')
 
         n = count_boxes(cdp)
-        print('[6] 框数量 = %d' % n)
-        if n != 1:
+        print('[6] 框数量 = %d（画前 %d，应 +1）' % (n, n_before))
+        if n != n_before + 1:
             # 打印诊断日志
             log = cdp.evaluate('return (window.__bootLog||[]).filter(function(l){return /anno/.test(l)}).slice(-15)')
             print('  --- anno 日志 ---')
             for l in log:
                 print('  ' + str(l))
-            raise SystemExit('❌ 期望 1 个框，实得 %d' % n)
+            raise SystemExit('❌ 期望 %d 个框，实得 %d' % (n_before + 1, n))
 
         if args.keep:
             print('✅ 画框成功（--keep，未删）')
