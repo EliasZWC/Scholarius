@@ -207,6 +207,68 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 取**某一页的文字行布局**（JSON 数组字符串），供网页叠透明文字层用。
+     *
+     * ══ ⚠️⚠️ 为什么需要：让 PDF 上的文字可以被选中（2026-09-25）══
+     *
+     * 用户反复反馈（v0.1.22 起，最终说清）：
+     *   「字体根本无法选中啊」「面对任何形式的拖拽都没有办法识别」
+     *   「我说的是原始视图」
+     *
+     * 原始视图的页面是 `PdfRenderer` 渲染出的 **JPEG 位图** ——
+     * 位图里没有文字对象，手指划过它浏览器不知道要选什么。
+     *
+     * ✅ 正解（Chrome/Adobe 阅读器也是这么做的）：
+     *    在页图上面叠一层**透明的真实文字**，按坐标逐行定位。
+     *    视觉上还是原始版面，但文字真实存在 → 能选中/高亮/复制。
+     *
+     * 本方法提供那一层的数据（见 [PdfText.pageLines]）。
+     *
+     * ⚠️ **同步返回**，理由同 [pdfPageFor]：网页渲染页图时要立刻把
+     *    文字层一起铺上，异步会让页图先出现、文字层后到 —— 中间那一帧
+     *    用户划不动任何东西，正是要修的症状。
+     *    实测单页 300~600 行，序列化 + 跨桥约 10~40ms，可接受。
+     *
+     * @param page 页码，**从 1 开始**
+     * @return JSON 数组字符串；PDF 不存在/加密/越界/扫描件都返回 `[]`
+     *         （不是空串 —— 网页可以直接 `JSON.parse` 不判 null）
+     */
+    private fun pdfPageLinesFor(id: String, page: Int): String {
+        if (!DOC_ID_PATTERN.matches(id)) {
+            Log.w(TAG, "文字层请求的 id 非法：$id")
+            return "[]"
+        }
+        val file = LibraryStore.pdfFile(this, id)
+        if (!file.exists()) return "[]"
+
+        val lines = PdfText.pageLines(file, page)
+        if (lines.isEmpty()) return "[]"
+
+        /*
+          ⚠️ 只带**叠字层需要的字段**，不带 font/size 之外的元数据。
+
+             每个行对象会被序列化进 JS，而一篇论文单页可能有 600 行 ——
+             多带一个字段就是多 600 个值跨桥。这里保留：
+               t  = 文本
+               x0/y0/x1/y1 = 归一化包围盒（0..1，屏幕方向）
+               s  = 主字号（磅）—— 用来估行高，让文字层与位图对齐
+             其余（font / paragraphStart）叠字层用不到，省掉。
+        */
+        val arr = org.json.JSONArray()
+        for (l in lines) {
+            val o = org.json.JSONObject()
+            o.put("t", l.text)
+            o.put("x0", l.x0.toDouble())
+            o.put("y0", l.y0.toDouble())
+            o.put("x1", l.x1.toDouble())
+            o.put("y1", l.y1.toDouble())
+            o.put("s", l.size.toDouble())
+            arr.put(o)
+        }
+        return arr.toString()
+    }
+
+    /**
      * 取用户标注（json 对象字符串）。
      *
      * ⚠️ **同步**，理由同 [pdfPageFor]：网页进编辑模式/渲染文本视图时
@@ -604,6 +666,12 @@ class MainActivity : AppCompatActivity() {
                 */
                 onGetPdfPage = { id, page -> pdfPageFor(id, page) },
                 onGetPdfPageCount = { id -> pdfPageCountFor(id) },
+                /*
+                  ⚠️ 文字层同样**必须同步** —— 网页铺页图时要立刻
+                     把透明文字层一起铺上，异步会出现中间那一帧
+                     "页图看得见但划不动"，正是要修的症状。
+                */
+                onGetPdfPageLines = { id, page -> pdfPageLinesFor(id, page) },
                 onGetAnnotations = { id -> annotationsFor(id) },
                 onSetAnnotations = { id, json -> saveAnnotationsFor(id, json) },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },

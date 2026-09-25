@@ -1986,6 +1986,219 @@ body:has(.reader.is-raw.is-annotating.is-drawing) {
     background: #FFFFFF;
 }
 
+/* ==========================================================================
+   PDF 文字层 —— 让位图上的文字**可以被手指选中**
+   ==========================================================================
+
+   ══ ⚠️⚠️ 为什么需要这一层（用户 2026-09-25，反复反馈后说清）══
+
+   用户原话：
+     「字体根本无法选中啊」
+     「都是只能识别点击」「面对任何形式的拖拽都没有办法识别」
+     「我说的是原始视图」
+
+   真因：原始视图的页面是 `PdfRenderer` 渲染出的 **JPEG 位图**，
+   网页这边就是一个 `<img>` —— **位图里没有文字对象**，
+   手指划过它，浏览器不知道该"选中"什么。
+
+   内置 PDF 查看器（PDFium）能选，但它**必须在顶层文档**渲染，
+   会盖掉我们的顶栏/底栏（见 MainActivity 里三次失败尝试的记录）。
+
+   ✅ 本层就是正解（Chrome / Adobe 阅读器也是这么做的）：
+      在页图**上面**叠一层**真实文字**，位置与位图严格重合，
+      但 `color: transparent` 让它**看不见** ——
+      视觉上仍是原始版面，而手指划过能选中、能高亮、能复制。
+
+   ══ 三个必须同时满足的条件（少一个都不工作）══
+
+     ① `color: transparent`  —— 看不见（视觉上还是那张位图）
+     ② `user-select: text`   —— 能选中（图层默认为 none，要显式放开）
+     ③ `pointer-events: auto` —— 手指能碰到（否则事件穿到下面的页图）
+
+   ⚠️ 用 `color: transparent` 而不是 `opacity: 0` / `visibility: hidden`：
+     后两者会让元素**不可选中**（浏览器认为它不可见就不参与选择），
+     只有 transparent 是"渲染出来但看不见"，才能被选中。
+
+   ⚠️ 不能用 `display: none` / `font-size: 0` —— 同理，直接失去可选择能力。
+*/
+
+.pdf-text-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    /*
+      ⚠️ overflow: hidden —— 个别 PDF 的文字盒略超出 CropBox
+         （字体溢出），不裁会在页边露出一截"隐形的可选中区域"，
+         手指划到页外也能选中文字，很怪。
+    */
+    overflow: hidden;
+    /*
+      ⚠️ 默认**不接手势**：页图上还有标注浮层（.anno-layer, z-index 1），
+         编辑模式要靠它接手势。文字层若无条件接会抢走画框的 pointerdown。
+         只在**需要选字的状态**才打开（见下面两条规则）。
+    */
+    pointer-events: none;
+    /*
+      ⚠️ `user-select: text` 必须写在这里，不能指望继承 ——
+         `body` 上是 `user-select: none`，而那是**有意**的
+         （长按按钮/列表不该弹选择手柄）。正文区域要能选，
+         所以在这里显式放开。
+    */
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+.pdf-text-line {
+    position: absolute;
+    /*
+      ⚠️⚠️ `line-height: 1` 是**对齐的关键**（见 reader.js 的说明）：
+         字号直接用"行盒子的高度百分比"给，而默认 line-height 是 1.2，
+         会让字比盒子矮一截 —— 累积到行尾就与位图上的字错开，
+         表现为"选中的字与看到的字偏了半个字"。
+    */
+    line-height: 1;
+    /*
+      ⚠️ 不换行：每行的盒子宽度是按位图上的**实际行宽**给的，
+         自动换行会把文字挤到下一行、彻底错位。
+    */
+    white-space: nowrap;
+    overflow: hidden;
+    /*
+      ⚠️ 字间距按 0 给 —— 浏览器排版与 PDF 排版的字宽略有差异，
+         所以行尾可能差几个像素。这里**不试图修正**：
+         修正要靠逐字定位（DOM 爆炸），而"选中的高亮与看到的字
+         差几个像素"用户感知不到，不值得那个代价。
+    */
+    letter-spacing: 0;
+    color: transparent;
+    /* 选中时给个可见的高亮，否则"选中了但看不出" */
+    background: transparent;
+}
+
+/*
+  ⚠️ 选中态的高亮必须**可见**：
+     `color: transparent` 会让浏览器默认的选中背景也变淡，
+     所以显式给一个半透明蓝底 + 恢复文字颜色。
+*/
+.pdf-text-line::selection {
+    background: rgba(64, 132, 255, 0.35);
+    color: transparent;
+}
+.pdf-text-layer ::selection {
+    background: rgba(64, 132, 255, 0.35);
+}
+
+/*
+  ⚠️ 正在滚页面时（bindTextLayerPan 判成纵向拖）不要让文字显示选中态 ——
+     否则"滚一下"会顺带选中一大片文字，松手后那段高亮还在，很混乱。
+*/
+.pdf-text-layer.is-panning,
+.pdf-text-layer.is-panning .pdf-text-line {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+/*
+  ══ 什么时候文字层接手势 ══
+
+  ① 非编辑模式（阅读式浏览原始版面）→ 接，用户可以随手选字复制
+  ② 编辑模式里的「文本」选项         → 接（那正是"选中文字"的意图）
+
+  ⚠️ 画框模式（formula/table/figure）**绝不接** ——
+     否则拖拽起点落在文字上会被它吃掉，画不出框。
+
+  ══ ⚠️⚠️ `touch-action` 要改**整条祖先链**（2026-09-25 真机实测）══
+
+     第一版只写了 `pointer-events: auto`，结果：
+
+        起点命中: SPAN.pdf-text-line      ← 文字层在工作 ✅
+        选区: {"n":0,"text":"","len":0}   ← 但一个字都没选中 ❌
+
+     第二版只给 `.pdf-text-layer` 自己加了 `touch-action: none`，**还是不行**，
+     实测祖先链：
+
+        .pdf-text-layer   none    ← 改了
+        .pdf-slot         auto
+        .pdf-scroll       auto
+        .pdf-slot         auto
+        .reader-content   auto
+        .reader-body      auto    ← ⚠️ overflow-y: auto（真能滚）
+        body              none
+
+     `touch-action` 取的是**整条祖先链的交集** —— 只要 `.reader-body`
+     还允许平移、而它又真的能滚，浏览器就判定"用户在滚页面"，
+     根本不启动选字手势。这与画框那个 bug **完全同源**。
+
+     ✅ 所以下面把整条链一起收回（`none`）。
+        代价是**选字时不能滚页面** —— 而这正是要的
+        （拖拽=选字，不是滚动；滚动仍可在链以外的地方做，
+         见下面"能滚的地方"那条说明）。
+*/
+.reader:not(.is-annotating) .reader-body,
+.reader:not(.is-annotating) .reader-content,
+.reader:not(.is-annotating) .pdf-scroll,
+.reader:not(.is-annotating) .pdf-slot,
+.reader:not(.is-annotating) .pdf-text-layer,
+.reader.is-annotating.is-text-mode .reader-body,
+.reader.is-annotating.is-text-mode .reader-content,
+.reader.is-annotating.is-text-mode .pdf-scroll,
+.reader.is-annotating.is-text-mode .pdf-slot,
+.reader.is-annotating.is-text-mode .pdf-text-layer {
+    touch-action: none;
+}
+
+.reader:not(.is-annotating) .pdf-text-layer,
+.reader.is-annotating.is-text-mode .pdf-text-layer {
+    pointer-events: auto;
+}
+
+/*
+  ⚠️ 祖先链最后一段：body 在 .reader 之外，只能用 :has() 限定。
+*/
+body:has(.reader:not(.is-annotating) .pdf-text-layer),
+body:has(.reader.is-annotating.is-text-mode .pdf-text-layer) {
+    touch-action: none;
+}
+
+/*
+  ══ ⚠️⚠️ 但滚页面必须仍然可用（用户明确要求）══
+
+     用户原话：「编辑模式哪个选项都没点，就不需要画框啊，比如滚动页面啥的」
+
+     上面把整条链锁成 none 之后，**手指在文字层上纵向拖也会变成"选字"
+     而不是滚动** —— 这在手机上会让人以为"页面卡住了"。
+
+     ✅ 解法：纵向滚动改由 JS 接管（见 reader.js 的 bindTextLayerPan）——
+        在文字层上按纵向为主的拖拽时，手动改 `.reader-body.scrollTop`。
+        这样两种手势并存：
+          · 纵向拖  → 滚页面（用户的第一直觉）
+          · 横向拖  → 选文字（要选字的自然动作）
+
+     ⚠️ 不用 `touch-action: pan-y` 的原因（实测）：
+        `pan-y` 仍允许纵向平移 → 浏览器照样把"斜着一点的拖拽"
+        判成滚动并发 `pointercancel`，选字时断时续。只有 `none` 稳。
+*/
+
+/*
+  ⚠️ 画框模式下要**显式交还**（不能只靠"不写"）——
+     `pointer-events` 的初始值是 `auto`，父级是 none 时子元素
+     仍可能因为自身规则拿到 auto（本项目踩过这个坑，见 .anno-block 的说明）。
+
+     ⚠️ touch-action 也要一起交还 —— 否则画框模式下文字层仍锁着
+        `none`，页面完全滚不动（用户明确要求"没选类型时要能滚页面"）。
+*/
+.reader.is-annotating.is-drawing .pdf-text-layer {
+    pointer-events: none;
+}
+
+.reader.is-annotating.is-drawing .reader-body,
+.reader.is-annotating.is-drawing .reader-content,
+.reader.is-annotating.is-drawing .pdf-scroll,
+.reader.is-annotating.is-drawing .pdf-slot,
+.reader.is-annotating.is-drawing .pdf-text-layer {
+    touch-action: initial;
+}
+
 /* 某一页取不到图时的提示，铺在占位框中间 */
 .pdf-slot-hint {
     position: absolute;

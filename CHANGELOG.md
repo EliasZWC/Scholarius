@@ -4,6 +4,93 @@
 
 ---
 
+## [0.1.30] - 2026-09-25
+
+### 新增「原始视图里直接选中 PDF 文字」
+
+用户反馈（原话）：
+
+> 1. 「依旧拖拽无法形成，我根本无法正常选中任何内容。」
+> 2. 「不是，pdf 中的文本选中这么难吗？划分个 pdf 的区域这么难吗？」
+> 3. 「不是画框也无所谓，字体根本无法选中啊」「都是只能识别点击」
+> 4. 「面对任何形式的拖拽都没有办法识别啊」
+
+#### 做了三件事
+
+1. **原生侧按页吐文字盒** —— `PdfText.pageLines()`（新增），
+   `WebAppBridge.getPdfPageLines(id, page)` 暴露给网页，
+   `MainActivity.pdfPageLinesFor()` 序列化成 JSON。
+   实测真实论文第 1/2/3 页分别 402 / 629 / 283 个词盒。
+
+2. **网页侧铺一层透明文字层** —— `mountTextLayer()` 在每个页图上
+   按归一化坐标摆一组 ``<span class="pdf-text-line">``，
+   文字颜色透明（看不见）但可选中。
+   字号**直接用行盒高度**（`y1 - y0`），不做磅值换算 ——
+   避免引入"A4 宽 595pt"这类会跨版式出错的假设。
+
+3. **手势自己接管** —— 这是最关键的一步，理由见下。
+
+#### ⚠️ 为什么必须自己实现选字（真机实测）
+
+`touch-action` 的取值是**整条祖先链的交集**。
+链条里 `.reader-body` 是 `overflow-y: auto`，
+只要有一环允许 `pan-y`，浏览器就把手指拖拽认领成**滚动**，
+发 `pointercancel` 掐断 pointer 链 —— 事件根本收不全。
+
+所以必须把整条链锁成 `touch-action: none`。
+但锁成 `none` 之后，浏览器**连选字手势也不发起了**：
+
+```
+pointerdown @76,655  -> SPAN.pdf-text-line
+pointermove ×16      -> SPAN.pdf-text-line   ← 事件全到达
+pointerup @228,663   -> SPAN.pdf-text-line
+滚动: 0 -> 0                                  ← touch-action 生效
+选区: len=0                                   ← ❌ 浏览器不选
+```
+
+而 CSS 里**没有**"允许选择、不允许滚动"这个值。
+→ 只能自己实现（PDF.js 也是这么做的）：
+
+- `pointerdown` 记起点（词 + 词内偏移）
+- `pointermove` 用 `selection.setBaseAndExtent()` 更新选区
+- 纵向为主的拖拽 → 自己改 `.reader-body.scrollTop`（滚页面）
+
+#### 两种拖拽的区分
+
+| 手势 | 结果 |
+|---|---|
+| 横向为主 | 选中文字（`setBaseAndExtent`） |
+| 纵向为主 | 滚页面（`scrollTop`，1:1 跟手） |
+| 未过阈值 | 什么都不做（避免"点一下"误触） |
+
+阈值按物理尺寸定（3mm ≈ 11.3 CSS px），与编辑模式的 `DRAG_SLOP` 同源 ——
+真机手指"点一下"的天然抖动有 10~15px，写死 8px 会误判。
+
+#### 顺带修掉的两个真 bug
+
+- `showPdfScroll()` 在 `contentEl` / `currentDoc` 未就绪时提前 return，
+  但 `view` 已经被改成 `'raw'` → **状态与 DOM 不一致**：
+  界面上是阅读视图内容，`is-raw` 类却挂着，再点切换按钮会因
+  `want === view` 直接 return，永远修不回来。
+
+- `bindTextLayerPan` 的文档注释头在一轮编辑中被吃掉，只剩孤立的 `*`，
+  导致整个 `reader.js` 抛 `SyntaxError: Unexpected token '*'`
+  → `ScholariusReader` 从未定义 → **点击文献卡片毫无反应**。
+  这个错误 `node --check` 也会报，但当时漏跑了。
+
+#### 验证（真机模拟器，真实论文，真实触摸）
+
+| 脚本 | 结果 |
+|---|---|
+| `tools/emu_select_check.py` | ✅ 层挂上 / 可选中 / 透明 / 画框模式不抢手势；拖拽选中 1017 字符 |
+| `tools/emu_pan_check.py` | ✅ 纵向拖 -260px → `scrollTop` 精确 +260，且不误选字 |
+| `tools/emu_lines_api.py` | ✅ 桥接口 402 / 629 / 283 行 |
+| `tools/emu_class_check.py` | ✅ 编辑态类不残留（9/9） |
+| `tools/emu_reflow_check.py` | ✅ 阅读视图按更改后的类型重排 |
+| `tools/emu_delete_hit.py` | ✅ 删除键可达 |
+
+---
+
 ## [0.1.29] - 2026-09-25
 
 ### 修复「编辑状态与视图不同步」+「标注不影响阅读视图排版」

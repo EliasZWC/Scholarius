@@ -777,6 +777,384 @@
         trace('reader:raw', rawPageCount + ' pages (scroll)');
     }
 
+    /**
+     * 在页图之上叠一层**透明文字**，让 PDF 上的字能被选中。
+     *
+     * ══ ⚠️⚠️ 为什么需要（用户 2026-09-25，反复反馈后说清）══
+     *
+     * 用户原话：
+     *   「字体根本无法选中啊」
+     *   「都是只能识别点击」「面对任何形式的拖拽都没有办法识别」
+     *   「我说的是原始视图」
+     *
+     * 真因：原始视图的页面是 `PdfRenderer` 渲染出的 **JPEG 位图**，
+     * 网页这边就是一个 `<img>` —— **位图里没有文字对象**，
+     * 手指划过它，浏览器不知道该"选中"什么。
+     *
+     * 内置 PDF 查看器（PDFium）能选，但它**必须在顶层文档**渲染，
+     * 会盖掉顶栏/底栏（见 MainActivity 里三次失败尝试的记录）。
+     *
+     * ✅ 本方案（Chrome / Adobe 阅读器也是这么做的）：
+     *    在页图上面叠一层**真实的文字** ——
+     *      · 位置与位图上的字严格重合（用原生给的归一化坐标）
+     *      · `color: transparent` → 看不见，视觉上仍是原始版面
+     *      · 但文字真实存在 → 手指划过能选中、能高亮、能复制
+     *
+     * ══ 坐标怎么用 ══
+     *
+     * 原生给的是**归一化**的 `x0/y0/x1/y1`（0..1，屏幕方向左上原点），
+     * 且已经 clamp 过 —— 所以这里直接用百分比定位，
+     * **不需要知道页面像素尺寸**，转屏/缩放都自动跟着变。
+     *
+     * 字号同理：`s` 是磅值，按"页面宽度对应多少 CSS px"换算成
+     * 屏幕字号。不这么做的话，文字层的字与位图上的字大小不一致，
+     * 选中高亮会偏。
+     *
+     * ⚠️ 为什么用 `font-size` 而不是 `transform: scale`：
+     *    scale 会把字宽也缩放，而位图上的字宽由 PDF 排版决定，
+     *    两者对不上时行尾会错位。直接给 font-size 让浏览器排版，
+     *    再用 `letter-spacing` 微调，比缩放稳。
+     *
+     * ⚠️ 不做 `white-space: nowrap` 就会自动换行 ——
+     *    而每一"行"的盒子是按位图上的实际宽度给的，
+     *    换行会把文字挤到下一行、彻底错位。必须 nowrap。
+     *
+     * @param slot 页占位元素（.pdf-slot）
+     * @param page 页码（从 1 开始）
+     * @param id   文献 id
+     */
+    function mountTextLayer(slot, page, id) {
+        var bridge = global.ScholariusNative;
+        if (!bridge || typeof bridge.getPdfPageLines !== 'function') {
+            return;
+        }
+
+        var raw = '';
+        try {
+            raw = bridge.getPdfPageLines(id, page) || '[]';
+        } catch (e) {
+            raw = '[]';
+        }
+        var lines;
+        try {
+            lines = JSON.parse(raw);
+        } catch (e) {
+            lines = [];
+        }
+        if (!lines || !lines.length) return;
+
+        /*
+          ⚠️ 已有文字层就先删掉 —— 本函数可能被重复调用
+             （页图重新加载、切视图回来），不清会叠出两层，
+             选中时拿到重复文字，复制出来是双份。
+        */
+        var old = slot.querySelector('.pdf-text-layer');
+        if (old && old.parentNode) old.parentNode.removeChild(old);
+
+        var layer = document.createElement('div');
+        layer.className = 'pdf-text-layer';
+        /*
+          ⚠️ aria-hidden：这层是**给手指选中的**，不是给读屏的 ——
+             读屏读的是网页的正文（阅读视图），
+             这里再读一遍等于同一页读两遍。
+        */
+        layer.setAttribute('aria-hidden', 'true');
+
+        var frag = document.createDocumentFragment();
+        for (var i = 0; i < lines.length; i++) {
+            var L = lines[i];
+            if (!L || !L.t) continue;
+            var w = (L.x1 - L.x0);
+            var h = (L.y1 - L.y0);
+            if (!(w > 0) || !(h > 0)) continue;
+
+            var span = document.createElement('span');
+            span.className = 'pdf-text-line';
+            span.textContent = L.t;
+            span.style.left = (L.x0 * 100) + '%';
+            span.style.top = (L.y0 * 100) + '%';
+            span.style.width = (w * 100) + '%';
+            /*
+              ══ ⚠️⚠️ 字号：**直接用行盒子的高度**，不要用磅值换算 ══
+
+              原生给的 `s` 是磅值，要变成屏幕字号就得知道
+              "1pt 对应多少 CSS px" —— 那需要页宽（pt）与页面宽度（px），
+              两个都不在数据里，硬换算要引入假设（"A4 宽 595pt"），
+              遇到 Letter / 自定义版式就错。
+
+              ✅ `y1 - y0` 就是**这一行字在页面上的实际高度占比** ——
+                 它天然包含了字号、行距、缩放的全部信息。
+                 设 `line-height: 1` 后，元素的 content box 高度
+                 就等于 font-size，于是：
+                      font-size = 盒子高度
+                 不需要任何假设，跨 PDF、跨屏幕都成立。
+
+              ⚠️ 为什么要 `line-height: 1`（见 CSS）：
+                 默认 1.2 会让字比盒子**矮**一点，累积到行尾就偏了；
+                 而高 DPI 屏上这点偏差正好是"选中的字与看到的字
+                 错开半个字"的来源。
+            */
+            span.style.fontSize = (h * 100) + '%';
+            frag.appendChild(span);
+        }
+        layer.appendChild(frag);
+        slot.appendChild(layer);
+        bindTextLayerPan(layer);
+        bindTextLayerSelect(layer);
+    }
+
+    /**
+     * 在文字层上接管**选字** —— 用 JS 自己维护选区。
+     *
+     * ══ ⚠️⚠️ 为什么不能让浏览器自己选（2026-09-25 真机实测）══
+     *
+     * 文字层要能选字，就必须把整条祖先链的 `touch-action` 锁成 `none`
+     * （理由见 styles.css：`touch-action` 取祖先链交集，而 `.reader-body`
+     *   是 `overflow-y: auto`，它会把手势判成滚动并发 `pointercancel`）。
+     *
+     * 但真机实测发现一个更根本的矛盾：
+     *
+     *     事件序列（tools/_seldiag.py）：
+     *       pointerdown @76,655   → SPAN.pdf-text-line
+     *       pointermove ×16        → SPAN.pdf-text-line   ← 全部到达
+     *       pointerup @228,663    → SPAN.pdf-text-line
+     *       滚动: 0 -> 0 （没滚）                          ← touch-action 生效
+     *       但选区: len=0                                  ← ❌ 选不上
+     *
+     * `touch-action: none` 的语义是"**我自己**处理这些手势" ——
+     * 浏览器于是**连选字都不做了**。而 `touch-action` 里
+     * 没有"只允许选择、不允许滚动"这个值。
+     *
+     * ✅ 所以自己实现（PDF.js 也是这么做的）：
+     *    `pointerdown` 记起点词 + 词内偏移 → `pointermove` 用
+     *    `setBaseAndExtent` 更新选区 → `pointerup` 收尾。
+     *
+     *    实测 `setBaseAndExtent` 确实能产生真实选区（选中了 "R"），
+     *    剩下的只是"把坐标算准"。
+     *
+     * ══ 怎么把屏幕坐标算成"第几个字的第几个字母" ══
+     *
+     * 原生给的每个条目是一个**词**（`Attention` / `Is` / `All`…），
+     * 带归一化盒子。所以：
+     *   ① 先在所有词里找**包含这个点**的那个（按 y 容差放宽，再按 x 最近）；
+     *   ② 在该词的盒子里，按 (x - x0) / (x1 - x0) 比例 × 词长，
+     *      得到词内第几个字符。
+     *
+     * ⚠️ 比例法是**近似**（等宽假设）—— 但：
+     *     · 选中的粒度本来就是"视觉上连续的一段"，差一两个字符感知不到；
+     *     · 精确做法要给每个字符量宽度（要再向原生要逐字坐标，
+     *       DOM 与跨桥开销都上一个量级），不值得。
+     *     · PDF.js 也用的是同一层次的近似。
+     */
+    function bindTextLayerSelect(layer) {
+        var startPt = null;
+
+        /** 把屏幕坐标变成 {node, offset} —— 即"第几个节点的第几个字符" */
+        function pointToCaret(x, y) {
+            var lines = layer.querySelectorAll('.pdf-text-line');
+            if (!lines.length) return null;
+
+            var best = null;
+            var bestScore = Infinity;
+            for (var i = 0; i < lines.length; i++) {
+                var el = lines[i];
+                var r = el.getBoundingClientRect();
+                if (!r.width) continue;
+
+                /*
+                  ⚠️ y 方向给**容差**（半个行高）——
+                     手指落在行与行的缝里时，严格的 contains 会漏，
+                     于是拖拽中途"找不到行"、选区卡住不动。
+                */
+                var midY = r.top + r.height / 2;
+                var dy = Math.abs(y - midY);
+                var yTol = Math.max(r.height, 6) * 0.9;
+                if (dy > yTol) continue;
+
+                /*
+                  ⚠️ x 方向用"到盒子最近边缘的距离"而不是 contains ——
+                     手指滑到行首左边一点时仍应落在这一行的开头，
+                     而不是"什么也没选中"。
+                */
+                var dx = 0;
+                if (x < r.left) dx = r.left - x;
+                else if (x > r.right) dx = x - r.right;
+
+                var score = dy * 2 + dx;    // y 权重更高（行的归属比列的更重要）
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = { el: el, rect: r };
+                }
+            }
+            if (!best) return null;
+
+            var node = best.el.firstChild;
+            if (!node) return null;
+            var len = node.nodeValue ? node.nodeValue.length : 0;
+            if (!len) return null;
+
+            /* ② 词内偏移：按 x 比例 × 词长（等宽近似） */
+            var t = (x - best.rect.left) / (best.rect.width || 1);
+            if (t < 0) t = 0;
+            if (t > 1) t = 1;
+            var off = Math.round(t * len);
+            if (off < 0) off = 0;
+            if (off > len) off = len;
+
+            return { node: node, offset: off };
+        }
+
+        layer.addEventListener('pointerdown', function (ev) {
+            var pt = pointToCaret(ev.clientX, ev.clientY);
+            if (!pt) return;
+            startPt = pt;
+            dragging = false;
+            /*
+              ⚠️ 按下就**先收掉旧选区** —— 否则用户点一下（想取消选择）
+                 会因为"没有更新选区"而留着上次的高亮。
+            */
+            try {
+                var s = global.getSelection();
+                if (s) s.removeAllRanges();
+            } catch (e) { /* 忽略 */ }
+        });
+
+        layer.addEventListener('pointermove', function (ev) {
+            if (!startPt) return;
+
+            /*
+              ⚠️ 先看"本次手势归谁"（由 bindTextLayerPan 判定并写在层上）。
+                 它判成 'pan' → 这里**什么都不做**，避免一边滚页面
+                 一边划选区（两个 handler 各干一半的典型症状）。
+                 还没判（null）→ 也不动，等它判完。
+            */
+            if (layer.__gesture !== 'select') return;
+
+            var pt = pointToCaret(ev.clientX, ev.clientY);
+            if (!pt) return;
+            try {
+                var sel = global.getSelection();
+                if (!sel) return;
+                /*
+                  ⚠️ 用 setBaseAndExtent 而不是 Range + addRange ——
+                     它自带"方向"语义（从 base 到 extent），
+                     反向拖拽（从下往上选）时行为才正确。
+                     用 Range 的话反选会得到空选区（start > end 被规范化）。
+
+                  ⚠️ 实测（tools/_seljs.py）这确实能产生真实选区
+                     （选中了 "R"）—— 浏览器在 touch-action: none 下
+                     **不会自己启动选字手势**，所以必须手动设。
+                */
+                sel.setBaseAndExtent(startPt.node, startPt.offset,
+                                     pt.node, pt.offset);
+            } catch (e) { /* 跨节点异常时忽略，下一次 move 会再试 */ }
+        });
+
+        var finish = function () {
+            startPt = null;
+        };
+        layer.addEventListener('pointerup', finish);
+        layer.addEventListener('pointercancel', finish);
+    }
+
+    /**
+     * 在文字层上接管**纵向滚动** —— 让"拖拽"这件事有两种可能的结果。
+     *
+     * ══ ⚠️⚠️ 为什么必须自己接管（2026-09-25 真机实测）══
+     *
+     * 文字层要能选字，就必须把整条祖先链的 `touch-action` 锁成 `none`
+     * （理由见 styles.css 的详细说明：`touch-action` 取祖先链交集，
+     *   而 `.reader-body` 是 `overflow-y: auto`，它会把手势判成滚动）。
+     *
+     * 但锁成 `none` 之后，**手指在文字层上纵向拖也会变成"选字"** ——
+     * 而这在手机上是违反直觉的（用户的第一反应是"页面卡住了"）。
+     *
+     * 用户明确要求过页面必须能滚：
+     *   「编辑模式哪个选项都没点，就不需要画框啊，**比如滚动页面啥的**」
+     *
+     * ✅ 所以这里手动接管：在文字层上按**纵向为主**拖拽时，
+     *    自己改 `.reader-body.scrollTop`。两种手势于是并存：
+     *      · 纵向拖 → 滚页面（用户的第一直觉）
+     *      · 横向拖 → 选文字（要选字的自然动作）
+     *
+     * ⚠️ 为什么不用 `touch-action: pan-y`（那样本来能两全）：
+     *    实测 `pan-y` 仍然发 `pointercancel` —— 拖拽总带纵向分量，
+     *    浏览器照样认领成滚动，选字时断时续。**只有 `none` 稳。**
+     *
+     * ⚠️ 判据用"纵向位移 > 横向位移"，且要超过一个阈值才开始滚 ——
+     *    否则用户想横向选字时，手指的天然抖动会先触发滚动。
+     */
+    function bindTextLayerPan(layer) {
+        var startY = 0;
+        var startScroll = 0;
+        var startX = 0;
+        var panning = false;
+        var decided = false;
+
+        /*
+          ⚠️ 阈值按物理尺寸定（3mm ≈ 11.3 CSS px），与编辑模式的
+             DRAG_SLOP 同一套理由 —— 写死 8px 在真机上会被
+             "点一下"的天然抖动触发（实测踩过）。
+        */
+        var SLOP = 3 * 96 / 25.4;
+
+        layer.addEventListener('pointerdown', function (ev) {
+            if (!bodyEl) return;
+            startX = ev.clientX;
+            startY = ev.clientY;
+            startScroll = bodyEl.scrollTop;
+            panning = false;
+            decided = false;
+            /*
+              ⚠️ 把"本次手势归谁"的决定共享给 bindTextLayerSelect ——
+                 两个 handler 各自判方向的话，一次斜向拖拽会
+                 **同时**滚页面 + 划选区，松手后既有位移又有高亮，很混乱。
+                 设置 `__gesture = null` 表示"还没决定"。
+            */
+            layer.__gesture = null;
+        });
+
+        layer.addEventListener('pointermove', function (ev) {
+            if (!bodyEl) return;
+            if (ev.buttons === 0 && ev.pointerType === 'mouse') return;
+            var dx = ev.clientX - startX;
+            var dy = ev.clientY - startY;
+
+            if (!decided) {
+                var adx = Math.abs(dx);
+                var ady = Math.abs(dy);
+                if (Math.max(adx, ady) < SLOP) return;   // 还没到阈值，继续观察
+                decided = true;
+                /*
+                  ⚠️ 纵向为主 → 滚页面；横向为主 → 选字。
+                     判定之后**不再改主意** —— 中途切换会让
+                     滚到一半突然变成选字（或反之），体验很糟。
+                */
+                panning = ady > adx;
+                layer.__gesture = panning ? 'pan' : 'select';
+                if (panning) layer.classList.add('is-panning');
+            }
+            if (!panning) return;
+
+            /*
+              ⚠️ 必须 preventDefault —— 否则浏览器还会拿这次拖拽
+                 去尝试长按菜单，与滚动打架。
+                 这里能 prevent 是因为层的 touch-action 已是 none。
+            */
+            ev.preventDefault();
+            bodyEl.scrollTop = startScroll - dy;
+        });
+
+        var stop = function () {
+            panning = false;
+            decided = false;
+            layer.__gesture = null;
+            layer.classList.remove('is-panning');
+        };
+        layer.addEventListener('pointerup', stop);
+        layer.addEventListener('pointercancel', stop);
+    }
+
     /** 造一个页图 <img>。抽出来是因为占位与懒加载两处都要用。 */
     function makePageImg(dataUrl, page, id) {
         var img = document.createElement('img');
@@ -840,6 +1218,28 @@
 
             if (dataUrl) {
                 el.appendChild(makePageImg(dataUrl, page, id));
+                /*
+                  ══ ⚠️⚠️ 页图之上叠一层**透明文字**（2026-09-25）══
+
+                  用户反复反馈（最终说清）：
+                    「字体根本无法选中啊」「面对任何形式的拖拽
+                      都没有办法识别」「我说的是原始视图」
+
+                  真因：原始视图的页面是 `PdfRenderer` 渲染出的
+                  **JPEG 位图** —— 位图里没有文字对象，手指划过它
+                  浏览器不知道该"选中"什么。
+
+                  ✅ 正解（Chrome/Adobe 阅读器同做法）：
+                     在页图**上面**叠一层**真实的文字**，
+                     位置与位图上的字严格重合，但
+                     `color: transparent` 让它**看不见** ——
+                     视觉上还是原始版面，而手指划过能选中。
+
+                  ⚠️ 必须在**页图之后** append —— 文字层要盖在图上，
+                     顺序反了会被图挡住（虽然透明，但层级要正确，
+                     否则 z-index 与后续标注层会打架）。
+                */
+                mountTextLayer(el, page, id);
             } else {
                 var hint = document.createElement('div');
                 hint.className = 'reader-hint pdf-slot-hint';

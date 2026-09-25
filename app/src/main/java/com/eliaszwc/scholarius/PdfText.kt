@@ -624,6 +624,86 @@ object PdfText {
     }
 
     /**
+     * 取**某一页**的文字行布局（含每行的归一化包围盒与字号）。
+     *
+     * ══ ⚠️⚠️ 为什么需要它：让 PDF 上的文字**可以被选中**（2026-09-25）══
+     *
+     * 用户从 v0.1.22 起反复反馈，最终说清：
+     *   「字体根本无法选中啊」「都是只能识别点击」
+     *   「面对任何形式的拖拽都没有办法识别啊」
+     *   「我说的是原始视图」
+     *
+     * 真因：原始视图的页面是 `PdfRenderer` 渲染出的 **JPEG 位图**，
+     * 网页那边就是一个 `<img>` —— **位图里没有文字对象**，
+     * 手指划过它，浏览器不知道该"选中"什么。
+     *
+     * 内置 PDF 查看器（PDFium）能选，但它**必须在顶层文档**渲染，
+     * 会盖掉我们的顶栏/底栏（见 MainActivity 里三次失败尝试的记录）。
+     *
+     * ✅ 唯一可行的路（也是 Chrome/Adobe 阅读器的做法）：
+     *    在页图**上面**叠一层**透明的真实文字**，按坐标逐行定位。
+     *      · 视觉上还是原始版面（文字 `color: transparent`）
+     *      · 但文字真实存在 → 手指划过能选中、能高亮、能复制
+     *
+     * 这个方法提供那一层所需的全部数据。
+     *
+     * ══ 为什么按**行**而不是按字 ══
+     *
+     * 按字定位最准，但：
+     *   · 一篇论文几万字，每字一个元素 → DOM 爆炸，滚动卡顿；
+     *   · PDF 里同一行内字号可能混杂（正文里插一个数学符号），
+     *     逐字要各自算字号；
+     *   · 而"选中"这个操作**本来就以行为单位**才自然
+     *     （手指划过的是一行或几行）。
+     * 所以给整行一个盒子 + 行文字，让浏览器自己排版那一行 ——
+     * 选中的粒度就是行，足够用且性能可接受。
+     *
+     * ⚠️ 只读**一页**：一篇 11 页的论文有上千行，
+     *    全量序列化进 JS 会卡。网页按需（滚动到哪页取哪页）调用。
+     *
+     * ⚠️ 坐标系与 [Line] 完全一致（归一化 0..1、屏幕方向左上原点）
+     *    —— 网页直接用百分比定位即可，不需要知道页面尺寸。
+     *
+     * @param page 页码，**从 1 开始**
+     * @return 该页的文字行；PDF 不存在/加密/页码越界/扫描件都返回空列表
+     */
+    fun pageLines(pdf: File, page: Int): List<Line> {
+        if (!pdf.exists() || !pdf.isFile || page < 1) return emptyList()
+
+        return try {
+            PDDocument.load(pdf).use { document ->
+                if (page > document.numberOfPages) return emptyList()
+
+                val collector = LineCollector()
+                collector.startPage = page
+                collector.endPage = page
+                collector.lineSeparator = "\n"
+                /*
+                  ⚠️ 必须 sortByPosition —— 不设的话按内容流顺序输出，
+                     双栏论文会左右栏交错，叠出来的文字层与位图**对不上**，
+                     点选会选到隔壁栏的字。
+                */
+                collector.sortByPosition = true
+
+                val buffer = java.io.StringWriter()
+                collector.writeText(document, buffer)
+
+                /*
+                  ⚠️ 过滤掉退化行（无文字 / 零尺寸盒子）。
+                     零尺寸的盒子叠到页面上是个点，会挡住相邻文字的选择，
+                     而且它自己选不中任何东西 —— 纯噪音。
+                */
+                collector.raw.filter { l ->
+                    l.text.isNotBlank() && l.x1 > l.x0 && l.y1 > l.y0
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "pageLines failed: ${pdf.name} page=$page", t)
+            emptyList()
+        }
+    }
+
+    /**
      * 从首页行里猜标题与作者。
      *
      * 拆出来是为了可测：不依赖 PDFBox，纯函数，

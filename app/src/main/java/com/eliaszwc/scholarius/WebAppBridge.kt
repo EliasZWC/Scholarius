@@ -50,6 +50,38 @@ class WebAppBridge(
     /** 取文献总页数；读不到返回 0 */
     private val onGetPdfPageCount: (String) -> Int,
     /**
+     * 取某页的**文字行布局**（JSON 数组字符串），供网页叠透明文字层用。
+     *
+     * ══ ⚠️⚠️ 用途：让 PDF 上的文字可以被选中（2026-09-25）══
+     *
+     * 用户反复反馈：「字体根本无法选中啊」「面对任何形式的拖拽
+     * 都没有办法识别」「我说的是原始视图」。
+     *
+     * 真因：原始视图的页面是 `PdfRenderer` 渲染出的 **JPEG 位图**，
+     * 位图里没有文字对象 —— 手指划过它，浏览器不知道该选什么。
+     *
+     * ✅ 正解（Chrome/Adobe 阅读器同做法）：在页图**上面**叠一层
+     * **透明的真实文字**，按坐标逐行定位。视觉上还是原始版面，
+     * 但文字真实存在 → 能选中、能高亮、能复制。
+     *
+     * 元素形如：
+     * ```json
+     * [{"t":"Attention Is All You Need",
+     *   "x0":0.34,"y0":0.13,"x1":0.65,"y1":0.15,"s":14.4}]
+     * ```
+     * 坐标已归一化到 0..1（屏幕方向：左上原点、y 向下），
+     * 网页直接用百分比定位，不需要知道页面尺寸。
+     *
+     * ⚠️ **同步返回** —— 网页铺页图时要立刻把文字层一起铺上，
+     *    异步会让页图先出现、文字层后到，中间那一帧正是
+     *    「看得见但划不动」的症状。单页约 10~40ms，可接受。
+     *
+     * @param page **从 1 开始**
+     * @return JSON 数组字符串；拿不到时返回 `[]`
+     *         （不是空串 —— 网页可以直接 JSON.parse 不判 null）
+     */
+    private val onGetPdfPageLines: (String, Int) -> String,
+    /**
      * 取某篇文献的用户标注，返回 **JSON 对象**字符串。
      *
      * ⚠️ **同步返回**，理由同 [getPdfPage]：网页进编辑模式时要立刻
@@ -226,6 +258,19 @@ class WebAppBridge(
     /** 取文献总页数（网页据此显示「3 / 12」并限制翻页范围） */
     @JavascriptInterface
     fun getPdfPageCount(id: String): Int = onGetPdfPageCount(id)
+
+    /**
+     * 取某页的**文字行布局**（JSON 数组字符串），供网页叠透明文字层。
+     *
+     * ⚠️ 这是「在 PDF 上选中文字」的数据源 ——
+     *    页图是位图、没有文字对象，必须在它上面叠一层真实文字。
+     *    见 [onGetPdfPageLines] 的详细说明。
+     *
+     * @param page 页码，**从 1 开始**
+     */
+    @JavascriptInterface
+    fun getPdfPageLines(id: String, page: Int): String =
+        onGetPdfPageLines(id, page)
 
     /**
      * 取用户对该文献的标注（JSON 对象字符串，见 [onGetAnnotations]）。
