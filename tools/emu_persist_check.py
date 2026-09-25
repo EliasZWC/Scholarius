@@ -36,6 +36,31 @@ def read_anno():
     return (p.stdout or b'').decode('utf-8', 'replace').strip()
 
 
+def _anno_summary(raw):
+    """把 annotations.json 压成一行摘要。
+
+    ⚠️ 为什么不直接 print 全文（踩过的坑）：
+       一篇论文的 texts 数组有几百条，全文一次打印就是几万字符。
+       在 PowerShell 里这会被管道截断，看起来像"命令失败"，
+       而脚本其实返回了 0 —— 回归汇总里就会报假失败。
+       这里只给条数 + regions 的类型，足够判断标注存没存。
+    """
+    if not raw:
+        return '(空/不存在)'
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return '(解析失败) %s' % raw[:80]
+    regs = d.get('regions') or []
+    texts = d.get('texts') or []
+    types = {}
+    for r in regs:
+        k = r.get('type', '?')
+        types[k] = types.get(k, 0) + 1
+    return 'regions=%d %s  texts=%d' % (
+        len(regs), json.dumps(types, ensure_ascii=False), len(texts))
+
+
 def js(cdp, code):
     return cdp.evaluate(code)
 
@@ -65,6 +90,35 @@ def menu_on(cdp):
                ".classList.contains('is-menu-open')") is not True:
         vp = js(cdp, 'return [window.innerWidth, window.innerHeight]')
         tap(cdp, vp[0] // 2, vp[1] // 2, 0.8)
+
+
+def clear_boxes(cdp):
+    """清掉页面上已有的矩形框（幂等）。
+
+    ⚠️ 为什么需要（踩过的坑）：
+       本脚本测的是**文字块**标注的持久化，但前面的脚本
+       （emu_draw_clean / emu_draw_check …）会留下矩形框。
+       框浮在文字块上面（z-index 更高），于是后面 `tap` 文字块时
+       点到的是框 —— 走"点框删除"分支，断言就假失败。
+       单独跑是绿的、序列里是红的，就是这个原因。
+    """
+    n = js(cdp, "return document.querySelectorAll('.anno-box').length")
+    if not n:
+        return 0
+    print('  （清理 %d 个遗留框，保证幂等）' % n)
+    for _ in range(n + 3):
+        b = js(cdp, """
+            var bs = document.querySelectorAll('.anno-box:not(.is-ghost)');
+            if (!bs.length) return null;
+            var r = bs[bs.length - 1].getBoundingClientRect();
+            if (!r.width) return null;
+            return [Math.round(r.left + r.width/2),
+                    Math.round(r.top + r.height/2)];
+        """)
+        if not b:
+            break
+        tap(cdp, b[0], b[1], 0.6)
+    return js(cdp, "return document.querySelectorAll('.anno-box').length")
 
 
 def block_state(cdp, line):
@@ -161,8 +215,11 @@ def main():
                 break
             time.sleep(0.3)
 
+        # ⚠️ 清掉遗留矩形框 —— 它们 z-index 更高，会挡住文字块的点击
+        clear_boxes(cdp)
+
         print('初始：可见框 %s 个' % visible_count(cdp))
-        print('annotations.json: %s' % (read_anno() or '(空/不存在)'))
+        print('annotations.json: %s' % _anno_summary(read_anno()))
 
         # ---- 找一个可点的块 ----
         blk = js(cdp, """
@@ -217,14 +274,14 @@ def main():
         tap(cdp, t['cx'], t['cy'], 1.0)
         st = block_state(cdp, line)
         print('    DOM: type=%s tag=%s vis=%s' % (st['ttype'], st['tag'], st['vis']))
-        print('    annotations.json: %s' % (read_anno() or '(空/不存在)'))
+        print('    annotations.json: %s' % _anno_summary(read_anno()))
 
         # ---- B. 退出编辑模式（触发保存）----
         print('\n[B] 退出编辑模式（应触发 saveAnnotations）')
         menu_on(cdp)
         tap_sel(cdp, '#reader-annotate', 1.6)
         raw = read_anno()
-        print('    annotations.json: %s' % (raw or '(空/不存在)'))
+        print('    annotations.json: %s' % _anno_summary(raw))
         saved = False
         if raw and '"title"' in raw:
             saved = True
@@ -286,7 +343,7 @@ def main():
         menu_on(cdp)
         tap_sel(cdp, '#reader-annotate', 1.6)
         raw2 = read_anno()
-        print('    annotations.json: %s' % (raw2 or '(空/不存在)'))
+        print('    annotations.json: %s' % _anno_summary(raw2))
         gone = not (raw2 and '"title"' in raw2)
         print('    %s title 已从存储中移除' % ('✅' if gone else '❌'))
         ok.append(('D 删除并持久化', gone))

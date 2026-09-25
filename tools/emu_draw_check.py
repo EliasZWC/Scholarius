@@ -137,6 +137,34 @@ def main():
             wait_js(cdp, "return document.getElementById('reader').classList.contains('is-annotating')",
                     True, what='编辑模式')
 
+        # ⚠️⚠️ 先清掉遗留的框（幂等，踩过的坑）
+        #
+        # 本脚本的断言是「拖完框数 +1」，后面还会"点框删除"再断言。
+        # 前面的脚本会留下框，于是：
+        #   · 拖拽起点撞上已有框 → 走"点框删除"分支，画不出新框
+        #   · "点框删除"点到的是旧框 → 数量断言错位
+        # 单独跑绿、序列里红，就是这个原因。
+        n_old = cdp.evaluate("return document.querySelectorAll('.anno-box').length")
+        if n_old:
+            print('  清理遗留 %d 个框（幂等）' % n_old)
+            for _ in range(n_old + 3):
+                b = cdp.evaluate("""
+                    var bs = document.querySelectorAll('.anno-box:not(.is-ghost)');
+                    if (!bs.length) return null;
+                    var r = bs[bs.length - 1].getBoundingClientRect();
+                    if (!r.width) return null;
+                    return [Math.round(r.left + r.width/2),
+                            Math.round(r.top + r.height/2)];
+                """)
+                if not b:
+                    break
+                cdp.touch('touchStart', [(b[0], b[1])])
+                time.sleep(0.05)
+                cdp.touch('touchEnd', [])
+                time.sleep(0.6)
+            print('  清理后剩 %d 个框'
+                  % cdp.evaluate("return document.querySelectorAll('.anno-box').length"))
+
         print('[3] 选矩形类型 (formula)')
         # ⚠️ 编辑栏的模式是**开关**语义：点已选中的会**取消**（annotateMode=null）。
         #    所以必须先读当前状态，只有不是 formula 时才点 ——

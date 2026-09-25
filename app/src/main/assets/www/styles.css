@@ -1394,6 +1394,90 @@ body {
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
+
+    /*
+      ══ ⚠️⚠️ 原始视图：从滚动容器到 body，整条链都不抢横向手势 ══
+
+      用户原话（2026-09-25）：
+        「面对任何形式的拖拽都没有办法识别啊」
+        「画框也画不了啊」「我说的是原始视图」
+
+      ══ 真机实测的事件序列（tools/emu_rawview_probe.py）══
+
+        pointerdown   → IMG.pdf-page-img      (103,187)
+        touchstart    → IMG.pdf-page-img      (103,187)
+        pointermove   → IMG.pdf-page-img
+        touchmove     → IMG.pdf-page-img      (120,191)
+        **pointercancel**                    ← 第 2 次移动就发了
+        touchmove ... （后续 pointer 链已断，只剩 touch）
+        touchend
+
+      然后 `anno:down` / `anno:drag` 一条日志都没有 —— 拖拽连监听器都没到达。
+
+      ══ 根因：`touch-action` 取的是**整条祖先链的交集** ══
+
+      实测整条链的 touch-action：
+        img.pdf-page-img      auto
+        div.pdf-slot          auto
+        div.pdf-scroll        auto
+        div.reader-content    auto
+        div.reader-body       auto      ← overflow-y: auto（可滚动）
+        section.reader        auto
+        body                  **manipulation**  ← ⚠️ 就是它
+
+      `manipulation` == `pan-x pan-y pinch-zoom` —— **明确允许平移**。
+      而 `.reader-body` 是 `overflow-y: auto`（真的能滚），
+      两者一结合，浏览器就把拖拽判成「滚动页面」→ 发 `pointercancel`
+      掐断 pointer 链。
+
+      ✅ 正解（下面的规则）：**原始视图下**把链上的 touch-action
+         全部收回给自己（`none`），滚动改由 JS 手动接管 ——
+         见 reader.js 的 bindRawViewPan。
+
+      ⚠️ 不能简单把 body 改成 none —— 那会让整个应用（文库列表、
+         设置面板等所有可滚区域）都失去原生滚动。
+         所以只在**原始视图**这个状态下改。
+
+      ⚠️ 也不能改成 `pan-y` —— 实测仍然会发 pointercancel：
+         `pan-y` 允许纵向平移，而拖拽总带一点纵向分量，
+         浏览器照样认领。真正有效的是 `none`。
+    */
+}
+
+/*
+  ⚠️ **只在"正在画框"时**整条祖先链交出 touch-action。
+     （`is-drawing` = 选了三类画框选项之一；见下面 .anno-layer 的说明）
+
+  为什么要连 body 一起写：`touch-action` 取**整条祖先链的交集**，
+  链上任何一层不允许，手势就用不了（见 .reader-body 的实测说明）。
+
+  ⚠️ 为什么必须带 `is-drawing` 条件，不能只要是原始视图就 none：
+     用户明确要求「编辑模式哪个选项都没点，就不需要画框啊，
+     比如滚动页面啥的」——没选类型时要能正常滚页面。
+     一刀切 none 会把滚动也一起锁死。
+
+  ⚠️ 为什么不改成 `pan-y`（那样理论上"能滚又能画"）：
+     实测 `pan-y` 仍然发 pointercancel —— 拖拽总带纵向分量，
+     浏览器照样认领成滚动。**只有 `none` 有效**。
+     代价是画框时不能滚页面，而这正是要的（拖拽=画框）。
+*/
+.reader.is-raw.is-annotating.is-drawing .reader-body,
+.reader.is-raw.is-annotating.is-drawing .reader-content,
+.reader.is-raw.is-annotating.is-drawing .pdf-scroll,
+.reader.is-raw.is-annotating.is-drawing .pdf-slot,
+.reader.is-raw.is-annotating.is-drawing .pdf-page-img {
+    touch-action: none;
+}
+
+/*
+  ⚠️ 祖先链最后一段：body 在 .reader 之外，只能用 :has() 限定。
+
+  不支持 :has() 的旧内核会忽略这条 —— 那种情况下降级为
+  「.reader-body 已是 none，滚动手势落到它身上时不被认领」，
+  于是拖拽能成立；代价是画框模式下滚页面需要用双指。
+*/
+body:has(.reader.is-raw.is-annotating.is-drawing) {
+    touch-action: none;
 }
 
 /*

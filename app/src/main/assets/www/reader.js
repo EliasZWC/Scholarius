@@ -1587,6 +1587,38 @@
     function syncModeClass() {
         if (!root) return;
         root.classList.toggle('is-text-mode', annotating && annotateMode === 'text');
+        /*
+          ══ ⚠️⚠️ `is-drawing` 也要写到 `.reader` 上（2026-09-25）══
+
+          以前只有 `.anno-layer` 带 `is-drawing`（控制那一层的
+          pointer-events / touch-action）。但那只解决了"层自己收不收手势"，
+          **没解决整条祖先链**。
+
+          用户实测：「面对任何形式的拖拽都没有办法识别」
+                    「画框也画不了啊」「我说的是原始视图」
+
+          真机事件序列（tools/emu_rawview_probe.py）：
+            pointerdown   (103,187)  IMG.pdf-page-img
+            touchstart    (103,187)  IMG.pdf-page-img
+            pointermove              IMG.pdf-page-img
+            touchmove     (120,191)  IMG.pdf-page-img
+            **pointercancel**        ← 第 2 次移动就发了
+            touchend
+
+          → 拖拽连监听器都没到达。根因：`touch-action` 取
+            **整条祖先链的交集**，而链最外层 `body` 是 `manipulation`
+            （全局设定），`.reader-body` 又是 `overflow-y: auto`，
+            浏览器判定"用户在滚页面" → pointercancel。
+
+          ✅ 所以要在 `.reader` 上也标一个 `is-drawing`，
+             CSS 用 `.reader.is-raw.is-annotating.is-drawing ...`
+             一次性把整条链的 touch-action 收回给自己。
+
+          ⚠️ 条件必须与 `.anno-layer` 的完全一致（都用 isDrawingMode()），
+             否则会出现"层收手势、祖先链不收"的半吊子状态 ——
+             那正是现在这个 bug 的形态。
+        */
+        root.classList.toggle('is-drawing', annotating && isDrawingMode());
     }
 
     /**
@@ -3484,6 +3516,15 @@
      *   原始视图 → 显示 visibility_off （原始视图已显示，点它收起来）
      */
     function syncViewToggle() {
+        /*
+          ⚠️ 视图状态类必须**无条件**先写 —— 它决定原始视图能不能拖拽
+             （见下面 is-raw 的说明），不能因为"按钮还没建好"就跳过。
+             `isRaw` 只看 `view`，与按钮无关。
+        */
+        if (root) {
+            root.classList.toggle('is-raw', view === 'raw');
+        }
+
         if (!viewToggleBtn) {
             return;
         }
@@ -3511,6 +3552,26 @@
         */
         viewToggleBtn.removeAttribute('data-i18n-aria-label');
 
+        /*
+          ══ ⚠️⚠️ 视图状态类（详见本函数开头）══
+
+          真因：`touch-action` 取**整条祖先链的交集**，而链的最外层
+          `body` 是 `manipulation`（全局设定，界面需要）。原始视图里
+          `.reader-body` 又是 `overflow-y: auto`（真能滚），
+          两者一结合 → 浏览器把拖拽判成"滚页面" → 发 `pointercancel`
+          → pointer 链断掉 → 画框的监听器永远收不到 move。
+
+          真机事件序列（tools/emu_rawview_probe.py）：
+            pointerdown   (103,187)  IMG.pdf-page-img
+            touchstart    (103,187)  IMG.pdf-page-img
+            pointermove              IMG.pdf-page-img
+            touchmove     (120,191)  IMG.pdf-page-img
+            **pointercancel**        ← 第 2 次移动就发了
+            touchend
+
+          ✅ 修法：CSS 里 `.reader.is-raw ...` 把整条链的 touch-action
+             收回给自己。类已在函数开头写好，这里不再重复。
+        */
         /*
           ⚠️ 标注按钮**只在原始视图里出现**。
              它是 PDF 专属功能：文本视图里段落本来就是可选的，
@@ -5881,6 +5942,38 @@
         /** 目录（供测试与将来的大纲导出用） */
         getToc: function () {
             return toc.slice();
+        },
+        /**
+         * 当前正文块（供测试与排查用）。
+         *
+         * ⚠️ 为什么需要（吃过亏）：
+         *   以前排查「框乱 / 改不掉 / 重排不生效」时，只能从 DOM 里数
+         *   `.anno-block`、读 `data-block-line` 去猜。但：
+         *     · `.anno-block` 是**空定位框**（文字在页图位图里），
+         *       `textContent` 只有标签文字，取不到块文本；
+         *     · `data-block-line` 是**按累计行数估算**的，
+         *       与 DOM 元素不是一一对应。
+         *   于是断言经常"看着失败、其实功能正常"。
+         *   把真实的块数组暴露出来，断言可以直接打在任何字段上。
+         */
+        getBlocks: function () {
+            return lastBlocks ? lastBlocks.slice() : null;
+        },
+        /**
+         * 当前正文块（供测试与排查用）。
+         *
+         * ⚠️ 为什么需要（吃过亏）：
+         *   以前排查"框乱/改不掉/重排不生效"时，只能从 DOM 里数
+         *   `.anno-block`、读 `data-block-line` 猜。但：
+         *     · `.anno-block` 是**空定位框**（文字在页图位图里），
+         *       `textContent` 只有标签文字；
+         *     · `data-block-line` 是**按累计行数估算**的，
+         *       与 DOM 元素不是一一对应。
+         *   于是断言经常"看着失败其实功能正常"。这里直接把
+         *   真实的块数组暴露出来，断言可以打在任何字段上。
+         */
+        getBlocks: function () {
+            return lastBlocks ? lastBlocks.slice() : null;
         },
         /** 当前设置（供测试用） */
         getSettings: function () {
