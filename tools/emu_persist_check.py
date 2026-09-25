@@ -162,6 +162,27 @@ def main():
     cdp = Cdp(pick_page(targets())['webSocketDebuggerUrl'])
     ok = []
     try:
+        # ---- ⚠️ 先清掉磁盘上的标注（幂等，踩过的坑）----
+        #
+        # 本脚本测的是"标注存/取/删"的持久化，断言依赖"初始时没有标注"。
+        # 但前面的脚本（emu_clear_why / emu_clear_fab …）会把标注状态
+        # 改成"整篇拍平成 body"并写盘，于是本脚本跑起来时：
+        #   · 所有块都是 body → 文字块在页图上被大量覆盖
+        #   · 点块时命中不到目标 → 报「找不到可测的块」
+        # 单独跑是绿的、序列里是红的，就是这个原因。
+        # 所以进来先删除文件，再重进阅读器让它重新加载。
+        subprocess.run([ADB, 'shell', 'run-as', PKG, 'rm', '-f',
+                        'files/library/devtest1/annotations.json'],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       timeout=60)
+        js(cdp, """
+            if (window.ScholariusReader && window.ScholariusReader.close) {
+                window.ScholariusReader.close();
+            }
+            return 1;
+        """)
+        time.sleep(1.5)
+
         # ---- 就绪 ----
         for _ in range(40):
             if js(cdp, "return !!document.getElementById('reader')") is True:

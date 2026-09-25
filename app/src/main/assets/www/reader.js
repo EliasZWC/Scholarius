@@ -2659,6 +2659,47 @@
             textMarks = kept;
             annotateDirty = true;
             refreshTextBlockStyles();
+            /*
+              ══ ⚠️⚠️ 清空后必须**重新渲染阅读视图**（2026-09-25 用户实测）══
+
+              用户原话：
+                「我在编辑模式里面清空了所有区域，怎么阅读视图还没有变化？」
+
+              真机实测（tools/emu_clear_fab.py）：
+                清空前 类型分布: {"heading":4,"body":619,"author":1}
+                清空后 类型分布: {"body":624}          ← 数据全变了
+                日志：clear by type (all) affected=10
+
+                但阅读视图的标签：
+                  "Attention Is All You Need"  H2 → H2   ❌ 没变
+                  "Uszkoreit∗Google Brain"     H2 → H2   ❌ 没变
+                  "Kaiser∗Google"              H2 → H2   ❌ 没变
+                  "Abstract The"               H2 → H2   ❌ 没变
+                6 个里只有 2 个碰巧变了。
+
+              ⚠️ 根因：阅读视图的 DOM（h2/p）是上次 renderBlocks 时
+                 生成的，标签与字号**在那一刻就定死了**。
+                 `refreshTextBlockStyles()` 只刷新**编辑模式页图上**
+                 那些 `.anno-block` 的样式，**碰不到阅读视图的字**。
+                 所以清空只改了数据，画面不动。
+
+              ✅ 修法：数据变过就重放一次正文渲染。
+                 复用 restoreReadingContent（它内部就是
+                 `contentEl.textContent=''` + `renderBlocks(lastBlocks)`，
+                 与"从原始视图切回阅读视图"走同一条路，
+                 保证两条路径渲染结果一致 —— 这正是之前
+                 refreshTextBlockStyles 注释里强调过的"同源"要求）。
+            */
+            if (!annotating) {
+                /*
+                  ⚠️ 只在**不在编辑模式**时重渲。
+                     编辑模式下 contentEl 里是页图（不是正文），
+                     重渲会把页图清掉 —— 那是灾难性的。
+                     编辑模式里改了类型，退出时（setAnnotating(false)）
+                     本来就会走一次重渲，这里不必也不该插手。
+                */
+                restoreReadingContent();
+            }
         }
         trace('reader:annotate', 'clear by type ' + (type || '(all)') + ' affected=' + removed);
         return removed;
@@ -4098,8 +4139,44 @@
 
             /*
               ══ 章节区 ══
+
+              ══ ⚠️⚠️ `blk.kind === 'heading'` 这个后门必须被用户标注盖住 ══
+
+              用户原话（2026-09-25）：
+                「我在编辑模式里面清空了所有区域，怎么阅读试图还没有变化？」
+
+              真机实测（tools/emu_clear_why.py）抓到的矛盾：
+                每个块的字段：
+                  line=0  kind=heading    textType=body   ← textType 已是 body
+                  line=1  kind=heading    textType=body
+                  line=3  kind=heading    textType=body
+                但阅读视图仍然渲染成 H2 21.25px × 4。
+
+              根因就是下面这个 `|| blk.kind === 'heading'`：
+                清空后 `type` 正确变成了 `'body'`（用户标注没了），
+                **但 `blk.kind` 仍是原生判的 `'heading'`** ——
+                这个 `||` 让块照样进 openRegion，变成**区域头**。
+                而区域头由 makeRegionHeader 渲染，**永远输出
+                `<h2>/<h3>/<h4>`，根本不读 textType** ——
+                所以清空对画面毫无影响。
+
+              ⚠️ 同一个后门还导致另一个更常见的毛病：
+                 用户在编辑模式里把某个原生判成标题的块改成「正文」，
+                 阅读视图**不会**降级 —— 因为 `blk.kind` 还是 heading。
+                 「改了标注没反应」的一半症状都出自这里。
+
+              ✅ 判据：`blk.kind === 'heading'` **只在用户没表态时**算数。
+                 用户明确标了 body（清空留下的覆盖、或手标的"这段是正文"）
+                 → 必须尊重他，落成 <p>。
+
+              ⚠️ 为什么不能简单删掉 `blk.kind === 'heading'`：
+                 没有它，那些"原生判成标题、但位置启发式没认出来"的块
+                 会掉进下一段（`appendToStack` 当正文）——
+                 实测那会让原本正常的标题全部降级成段落。
+                 所以是**加守卫**，不是删除。
             */
-            if (type === 'heading' || blk.kind === 'heading') {
+            if (type === 'heading' ||
+                (!mark && blk.kind === 'heading')) {
                 var lv = (level > 0) ? level : 1;
                 sawBody = true;
                 stack = openRegion(out, stack, lv, blk);
@@ -4455,7 +4532,16 @@
              与论文题目（.rd-region-title 容器）区分开，见我 CSS 里的说明。
         */
         if (region.type === 'section') {
-            sec.appendChild(makeRegionHeader(region));
+            /*
+              ⚠️ makeRegionHeader 可能返回 null（无真标题的兜底区，
+                 见它的说明）—— 不能无条件 appendChild，否则
+                 `appendChild(null)` 会抛 TypeError，
+                 整个区域渲染失败（症状：阅读视图一片空白）。
+            */
+            var head = makeRegionHeader(region);
+            if (head) {
+                sec.appendChild(head);
+            }
         } else if (FRONT_LABEL_KEY[region.type]) {
             var label = document.createElement('div');
             label.className = 'rd-region-titletext';
@@ -4520,12 +4606,38 @@
         var title = document.createElement('h' + lv);
         title.className = 'reader-heading rd-region-title';
         /*
-          ⚠️ 没有标题的一级区（PDF 直接以正文开头）要有个占位文案，
-             否则会出现一片没有归属的正文，用户不知道那属于哪一节。
+          ══ ⚠️⚠️ 没有真标题时**不出这个头部**（2026-09-25 用户实测）══
+
+          用户原话（关于「清空」的预期）：「**全部拍平成纯正文**」。
+
+          清空后所有块的 textType 都成了 body → buildRegions 里
+          没有任何块走"首页区"或"章节区"的判据 → 整篇落进那条
+          兜底分支 `openRegion(out, stack, 1, null)`（headingBlock = null）。
+
+          旧行为：给这个无标题区起个占位文案
+                  `t('reader.untitledSection')` = **"Section"**，
+                  于是阅读视图顶上凭空出现一个 `H2 "Section"`。
+
+          真机实测（tools/emu_clear_why.py）清空后的阅读视图：
+              H2 21.25px  "Section"              ← 这个是伪标题
+              P  17px     "Attention Is All You N"
+              P  17px     "Uszkoreit∗Google Brain"
+              …
+
+          用户要的是"拍平成纯正文"，而这个 H2 "Section" 把正文
+          又切出了一个区、凭空造了一个不存在的章节名 ——
+          它**没有任何信息量**（既不是论文里的词，也不表示任何结构），
+          纯粹是内部数据结构的产物泄漏到了界面上。
+
+          ✅ 修法：没有 heading 就不出头部。
+             区域本身仍然存在（DOM 结构、CSS 都照旧），
+             只是不渲染那行标题文字 —— 正文照样拍平，
+             且不会出现凭空的 "Section"。
         */
-        title.textContent = region.heading
-            ? region.heading.text
-            : t('reader.untitledSection');
+        if (!region.heading || !region.heading.text) {
+            return null;
+        }
+        title.textContent = region.heading.text;
         return title;
     }
 
