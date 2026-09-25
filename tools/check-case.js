@@ -108,6 +108,12 @@ const ALLOWED_LOWER = new Set([
     'doi', 'isbn', 'arxiv', 'nips', 'cvpr', 'icml', 'acl', 'neurips',
     'phd', 'pdf', 'github', 'onedrive', 'apk',
     'a', 'an', 'the',
+    // ⚠️ 2026-09-25 补：`of` 是标准 Title Case 里该小写的短介词
+    //    （与 a/an/the 同类）。之前漏了导致 'Shown Instead of Title'
+    //    被报成违规。同时补上其它常见短介词，避免下次再撞。
+    'of', 'in', 'on', 'at', 'by', 'to', 'for', 'from', 'with',
+    // ⚠️ 但 'To' 在不定式里也常大写（见 'Tap + To Import a PDF'）——
+    //    白名单只影响"全小写不报错"，写 'To' 同样不报错，两种都放过。
     'e.g.', 'i.e.', 's'
 ]);
 
@@ -153,6 +159,21 @@ const BE_PREDICATE_RE = /\b(are|is|was|were|has been|have been|will be)\s+\w+/i;
 /* 内嵌从句：to + 动词 / that + 从句 */
 const CLAUSE_EMBED_RE = /\b(to\s+\w+|that\s+\w+)\b/i;
 
+/*
+  ⑧ **名词主语 + 助动词/情态动词** —— 完整主谓结构。
+
+  ⚠️ 2026-09-25 补：`"Cards will show the full venue name again."`
+     是明显的句子，但上面 7 条一条都不命中 ——
+     因为主语 `Cards` 是普通名词，不在 SUBJECT_VERB_RE 的代词白名单里。
+
+     判据：紧跟冠词/名词之后的助动词或情态动词。
+     `\w+s?\s+(will|would|can|could|should|may|must|is|are|was|were|
+              has|have|had|does|do|did)\b`
+     要求**词数 ≥ 5**，避免把 `Cancel Changes` 这种名词短语误判。
+     仍偏向"当成句子"（见上面注释里说明的取舍）。
+*/
+const NOUN_VERB_RE = /\b[a-z]+s?\s+(will|would|can|could|should|may|might|must|is|are|was|were|has|have|had|does|do|did|shows?|showed)\b/i;
+
 function isSentence(value) {
     const v = value.trim();
     const wordCount = (v.match(/[A-Za-z][A-Za-z'’]*/g) || []).length;
@@ -171,6 +192,8 @@ function isSentence(value) {
     if (wordCount >= 5 && CLAUSE_EMBED_RE.test(v)) return true;
     // ⑦ 句子典型开头且够长
     if (wordCount >= 4 && SENTENCE_START_RE.test(v)) return true;
+    // ⑧ 名词主语 + 助动词/情态动词
+    if (wordCount >= 5 && NOUN_VERB_RE.test(v)) return true;
 
     return false;
 }

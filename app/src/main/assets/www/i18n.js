@@ -96,7 +96,9 @@
             //    · 它天然表达了「是标题的短形式」——
             //      正好对上「顶替标题显示」这个行为。
             'vault.field.shortTitle': 'Short Title',
-            'vault.hint.shortTitle': 'Shown instead of title',
+            // ⚠️ 是**短语**（过去分词短语，无主谓）→ Title Case，
+            //    小介词 `of` 保持小写。别写成句子。
+            'vault.hint.shortTitle': 'Shown Instead of Title',
 
             // 期刊
             'vault.field.journalName': 'Journal',

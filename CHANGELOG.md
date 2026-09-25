@@ -4,6 +4,127 @@
 
 ---
 
+## [0.1.27] - 2026-09-25
+
+### 画框功能修复：真机实测找到三层真因（并建立本地模拟器验证）
+
+用户连续三版（0.1.24/25/26）都反馈「无法删除框，无法拖拽建立新框」。
+本版**在本地 Android 模拟器上复现并修好了**，同时把
+「改完必须先在真机验证」变成能力而不是口号。
+
+#### 为什么之前三版都没修好
+
+之前所有验证都在**桌面 Chromium（Playwright）**里做，
+而这三个 bug 全是 WebView 手势相关 —— **桌面复现不出来**，
+所以每次本地测全绿、推给用户全废。
+
+本版装了本机模拟器（JDK 17 + Android SDK + AVD），
+并打通了 WebView 远程调试，于是能在**真 Android WebView** 里：
+
+- 执行任意 JS（`tools/emu_js.py`）
+- 派发**真实触摸事件**并记录完整事件序列（`tools/emu_touch.py`）
+
+真实触摸是必须的：合成 `PointerEvent` 不走浏览器的内部
+pointer 状态机，复现不出 `touch-action` 相关的吞并行为。
+
+#### 真因（三层，缺一层都修不好）
+
+**① 文字块抢走了 `pointerdown`**
+
+```
+.anno-block   z-index: 2   ← 一页几十个，几乎铺满页面
+.anno-layer   z-index: 1
+```
+
+`.anno-block` 是 `.anno-layer` 的子元素且层级更高，所以
+`elementFromPoint` 命中的是**块**而不是层。而 CSS 里有
+
+```css
+.reader.is-annotating .anno-block { pointer-events: auto; }
+```
+
+它在**所有**编辑模式下都让块接事件。于是拖拽起点只要碰到
+文字块（大概率），浏览器就把它当成"在可滚动元素上拖动"。
+
+**② `pointer-events` 的初始值就是 `auto` —— "不写" ≠ "none"**
+
+第一轮我改成"只在文本模式给 auto"，结果仍然失败：
+非文本模式下没写规则，块取默认值 `auto`，照样吞事件。
+必须写**两条互斥规则**：
+
+```css
+.reader.is-annotating .anno-block         { pointer-events: none; }
+.reader.is-annotating.is-text-mode .anno-block { pointer-events: auto; }
+```
+
+**③ `touch-action: manipulation` 允许 `pan-y` → 浏览器判成滚动**
+
+`.anno-layer` 的祖先是 `.reader-body`（`overflow-y: auto`，可滚动）。
+`manipulation` 展开是 `pan-x pan-y pinch-zoom`，**明确允许平移**。
+于是浏览器开始滚动页面并发出 `pointercancel`，掐断整条指针链：
+
+```
+pointerdown   -> DIV.anno-layer.is-drawing
+pointermove   -> DIV.anno-layer.is-drawing
+pointercancel                    ← 链被掐断，框画不出来
+```
+
+⚠️ **0.1.26 的结论是误诊**。那一版认为"`touch-action: none`
+会吞掉整条 pointer 链"，于是改用 `manipulation`。
+实际当时真正的元凶是 ①，`none` 是被冤枉的 ——
+改成 `manipulation` 反而制造了 ③。
+
+正解就是 `touch-action: none`：把这一元素上的平移/缩放
+全部收回给自己。页面仍可滚动 —— 在标注层以外的地方照常滑
+（层只覆盖页图）。画框时不能滚页面，这正是我们要的语义。
+
+#### 修复
+
+| 文件 | 改动 |
+|---|---|
+| `styles.css` | `.anno-block` 改为**两条互斥规则**；`.is-drawing` 的 `touch-action` 改回 `none`（附推翻旧结论的说明） |
+| `reader.js` | 新增 `syncModeClass()`，在 `mountAnnotateLayer()` **之前**同步 `is-text-mode` 类（顺序反了会有一帧漏洞） |
+
+#### 真机回归结果（全部真实触摸）
+
+```
+A. 点一下不生成框          ✅   ← 用户报的「点击直接生成一个框」
+B. 抖动不生成框            ✅
+C. 拖拽生成 1 个框         ✅   ← 用户报的「无法拖拽建立新框」
+D. 点框删除                ✅   ← 用户报的「无法删除框」
+E. 文本模式文字块可点       ✅
+F. 非编辑模式可滚动         ✅   （scrollTop 0 → 485.7）
+```
+
+#### 新增验证工具
+
+| 脚本 | 用途 |
+|---|---|
+| `tools/emu_js.py` | 在真机 WebView 里执行 JS |
+| `tools/emu_touch.py` | 派发真实触摸 + 记录事件序列 |
+| `tools/emu_draw_check.py` | 画框 8 步带断言回归 |
+| `tools/emu_regress.py` | 手势全量回归（A–F） |
+
+#### ⚠️ 排查方法论（写进记忆）
+
+- **判断元素能不能被点到，唯一可靠的方法是 `elementFromPoint`。**
+  `getComputedStyle(el).pointerEvents` **不能**用来判断 ——
+  未显式设置时它返回初始值 `auto`，**即使父层是 `none`**。
+  这个坑让本轮多花了一轮重建。
+- 回归脚本里按百分比取测试点不可靠：顶栏/底栏是浮层，
+  必须逐点 `elementFromPoint` 验证落在目标元素上。
+
+#### 文案修正
+
+- `vault.hint.shortTitle`：`Shown instead of title` → `Shown Instead of Title`
+  （是短语，应 Title Case；`of` 作为短介词保持小写）
+- `tools/check-case.js` 补两条判据：
+  - 「名词主语 + 助动词」也算句子（原来只认代词主语，
+    漏掉 `Cards will show the full venue name again.`）
+  - 白名单补 `of/in/on/at/by/to/for/from/with` 等标准 Title Case 里小写的短介词
+
+---
+
 ## [0.1.26] - 2026-09-25
 
 ### 画框完全不能用：`touch-action: none` 吃掉了整个 pointer 链

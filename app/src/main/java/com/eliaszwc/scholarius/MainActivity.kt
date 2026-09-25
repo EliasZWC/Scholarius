@@ -611,6 +611,22 @@ class MainActivity : AppCompatActivity() {
             JS_BRIDGE_NAME,
         )
 
+        /*
+          WebView 远程调试（Chrome DevTools Protocol）。
+
+          ⚠️ 为什么必须显式打开：
+             不开这个开关时，WebView 只在**部分** debug 构建下才暴露
+             `@webview_devtools_remote_<pid>` socket，行为不可靠。
+             显式打开后，`adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>`
+             就能连上 —— VS Code 的 Edge DevTools 插件、Chrome 的
+             `chrome://inspect`、以及 tools/emu_js.py 都依赖它。
+
+          ⚠️ 只在 debug 构建开：release 包暴露调试端口是安全漏洞
+             （可读 localStorage 里的令牌）。BuildConfig.DEBUG 在
+             release 构建里恒为 false，所以这里不需要额外判断。
+        */
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true

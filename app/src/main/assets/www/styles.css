@@ -1916,19 +1916,29 @@ body {
      用户实测：「无法删除框，无法拖拽建立新框，基本这个功能没用」——
      **连拖拽都建不了框**，说明 pointer 事件根本没到达监听器。
 
-     根因：Android WebView 上给元素加 `touch-action: none` 之后，
-     部分版本会**同时不再派发 pointerdown/pointermove** ——
-     不只是阻止滚动，是把整条 pointer 链都吞了。
-     而桌面浏览器（Playwright 用的 Chromium）没有这个行为，
-     所以本地测全绿、真机全废。这是最典型的"桌面能跑手机不能"。
+     根因（⚠️ 2026-09-25 真机实测**推翻**了下面的旧结论）：
+     问题从来不是 `touch-action: none` 本身，而是 **`.anno-block`
+     抢走了 pointerdown**。当时以为"none 吞了整条链"，
+     所以改用 `manipulation` + JS preventDefault —— 那是**误诊**。
 
-     ✅ 正确做法：touch-action 用 `manipulation`（只禁双击缩放，
-        不禁滚动），真正的"别滚动"由 **JS 在 pointerdown 里
-        preventDefault()** 来做 —— 那是我们自己的代码，
-        不会被 WebView 的 touch-action 实现差异影响。
+     ══ 真机事件序列（tools/emu_touch.py --record drag ...）══
+     manipulation 下的实际结果：
+       pointerdown   -> DIV.anno-layer.is-drawing
+       pointermove   -> DIV.anno-layer.is-drawing
+       pointercancel                    ← 浏览器掐断
+       anno:up | cancelled=true         ← 框画不出来
 
-     ⚠️ `manipulation` 而不是 `auto`：
-        为了顺手干掉双击放大（300ms 内的两次轻点）。
+     原因：`manipulation` == `pan-x pan-y pinch-zoom` ——
+     它**明确允许浏览器接管平移**。而 .anno-layer 的祖先是
+     `.reader-body`（overflow-y: auto，可滚动），
+     所以浏览器把手势判成"滚动页面"，于是取消 pointer 链。
+
+     ✅ 正解就是 `touch-action: none` ——
+        把这个元素上的平移/缩放**全部**收回给自己。
+        父级 .reader-body 仍可滚动：在层以外的地方照常滑（层只覆盖页图）。
+        代价是画框时不能滚页面，而这正是我们要的（拖拽=画框，不是滚动）。
+
+     ⚠️ 不要再改回 manipulation —— 那会让拖拽永远被指针取消。
 */
 .anno-layer {
     pointer-events: none;
@@ -1938,7 +1948,7 @@ body {
 /* 只有"画矩形"的模式才接管手势 */
 .reader.is-annotating .anno-layer.is-drawing {
     pointer-events: auto;
-    touch-action: manipulation;
+    touch-action: none;
 }
 
 /*
@@ -1958,11 +1968,38 @@ body {
 }
 
 /*
-  ⚠️ 编辑模式下「文本」选项时的文字块要能点，所以它们自己接手势；
-     而承载它们的浮层是 `pointer-events: none` ——
-     子元素可以单独打开，不受父级 none 的影响（CSS 规范如此）。
+  ⚠️ 文字块只在「文本」选项下接手势 —— **画矩形模式下绝对不可以**。
+
+  ══ 为什么（2026-09-25 真机实测，三版才找到的真因）══
+  文字块 `.anno-block` 是 `.anno-layer` 的**子元素**，且 z-index 2 > 层 1，
+  所以 `elementFromPoint` 命中的是**块**而不是层。一页上有几十个文字块
+  （正文块几乎铺满页面），用户拖拽时起点**大概率落在某个块上**。
+
+  此时如果块是 `pointer-events: auto`：
+    1. 浏览器认为事件落在一个可滚动元素上 → 进入滚动手势；
+    2. 层上的 `touch-action: manipulation` **不允许平移**；
+    3. 于是 `pointermove` 之后浏览器直接发 **`pointercancel`** 掐断整条链；
+    4. `endGesture(ev, true)` → 什么框都画不出来。
+
+  真机事件序列（tools/emu_touch.py --record drag 80 150 320 400）：
+    pointerdown   ( 80,150) -> DIV.anno-block.anno-block-body
+    pointermove   ( 93,164) -> DIV.anno-block.anno-block-body
+    pointercancel (  0,  0)                        ← 链被掐断
+
+  结论：矩形模式下必须让块**彻底透明**，事件直达层。
+  这与 mountAnnotateLayer 里的注释一致（"矩形模式下它们不接手势"）——
+  之前是**注释写对了、CSS 写错了**。
+
+  ⚠️⚠️ 必须写成**两条互斥规则**，不能只写 `.is-text-mode` 那条。
+      `pointer-events` 的初始值就是 `auto`，所以"不写" ≠ "none"。
+      只写 is-text-mode 那条的话，非文本模式下块仍取默认 auto，
+      照样吞事件（实测踩过）。
 */
 .reader.is-annotating .anno-block {
+    pointer-events: none;
+}
+
+.reader.is-annotating.is-text-mode .anno-block {
     pointer-events: auto;
 }
 

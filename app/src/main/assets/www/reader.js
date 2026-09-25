@@ -1496,6 +1496,14 @@
      *    分散写会漏掉某一处（比如进编辑模式时忘了刷新提示语）。
      */
     function refreshAnnotateMode() {
+        /*
+          ⚠️ 必须先同步 `is-text-mode` 类，**再**挂浮层。
+             因为挂浮层时要读这个类来决定文字块接不接手势
+             （CSS `.reader.is-annotating.is-text-mode .anno-block`）。
+             顺序反了的话，进编辑模式的第一帧块仍是 auto，
+             用户这时拖拽就会被 pointercancel 掐断。
+        */
+        syncModeClass();
         if (annotating) {
             /*
               ⚠️ **进编辑模式时不要预设任何"画框"模式**，
@@ -1508,6 +1516,22 @@
             mountAnnotateLayer();
         }
         syncEditBar();
+    }
+
+    /**
+     * 把当前 annotateMode 同步到 `.reader` 的类上。
+     *
+     * ⚠️ 目前只有「文本模式」这一个类 —— 它决定文字块
+     *    `.anno-block` 接不接手势（见 styles.css 的详细说明）。
+     *
+     * ⚠️ 单独抽出来是因为它有两个调用时机：
+     *    1. refreshAnnotateMode()（进/出编辑模式、切选项）
+     *    2. syncEditBar()（语言切换等重绘）
+     *    两处都要在**挂浮层之前**生效。
+     */
+    function syncModeClass() {
+        if (!root) return;
+        root.classList.toggle('is-text-mode', annotating && annotateMode === 'text');
     }
 
     /**
@@ -1569,6 +1593,16 @@
      */
     function syncEditBar() {
         if (!editBarEl) return;
+
+        /*
+          ⚠️ 把当前模式同步到 .reader 的类上 ——
+             CSS 需要它来决定**文字块接不接手势**（见 styles.css）。
+
+             只有「文本」模式才给块 `pointer-events: auto`。
+             画矩形模式下块必须彻底透明，否则拖拽起点碰到文字块会被
+             浏览器判成滚动手势，直接发 pointercancel 掐断（真机实测）。
+        */
+        syncModeClass();
 
         var tabs = editBarEl.querySelectorAll('.reader-edit-tab');
         for (var i = 0; i < tabs.length; i++) {
