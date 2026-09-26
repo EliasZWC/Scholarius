@@ -4,6 +4,88 @@
 
 ---
 
+## [0.1.34] - 2026-09-27
+
+### 修复阅读视图的标题层级，以及「点了区域改不了类型」
+
+用户真机反馈（五条，本版修掉前三条 + 第四条的一半）：
+
+> ①「当清空后，我选中了一段文本作为标题时，再清空则提示我有389个区域」
+> ②「点击以选中的区域，无法修改」
+> ③「切换到阅读视图，选中的文本并没有变成标题样式」
+> ④「选中我认为应该是长按开始选，这样安卓会震动一下提示长按操作被触发了」
+> ⑤「缩放确实是问题，但目前看来不是最致命的」
+
+#### 问题 ②：点已标过的区域改不了类型
+
+真因是**点不到**，不是功能没写 —— `makeTextBlockEl` 里早就绑好了
+`click → openTextTypePicker`，连"长按会补发 click"都处理了，
+`openTextTypePicker` 整个函数也完整可跑。
+只是 `.anno-block { pointer-events: none }`（为了不让块吃掉划选手势）
+让那个 click **永远送不到**。
+
+界面还因此**在骗用户**：标完一段会提示
+「点一下文字区域即可重新归类」，而这句话做不到。
+
+修法：在文字层的 `pointerup` 里做**几何反查**（`blockAtPoint`），
+`pointer-events` 保持 `none`，划选完全不受影响。
+分流靠位移：>8px 算拖拽（划选），否则算轻点（改类型）。
+
+#### 问题 ③：阅读视图里正文被放大成标题
+
+三个独立缺陷叠在一起：
+
+| # | 症状 | 真因 |
+|---|---|---|
+| ❶ | 满屏一级标题 | 拼行修复后 `estimateBodySize` 众数落到 9.0（真实正文 10.0）→ 普通正文行"比正文大 1pt"被判成标题；`looksLikeProse` 又拦不住**被截断的长行**（无句末标点、无逗号、首字母大写） |
+| ❷ | `1019 1.4·1020` 成标题 | BLEU 表格的科学计数法碎片：`TABLE_NUMBER` 要数字前是词边界，而 `1020` 紧跟 `·` 后数不到；却又符合 `HEADING_NUM_PREFIX` |
+| ❸ | 标了 A 段，变成 B 段 | `buildRegions` 用"累计块内行数"**估算**行号并覆盖原生值，与 mark 的原生行号偏 **2** |
+
+补的判据：
+
+- `looksLikeProse` 加**词数 > 8 即视为正文**（标题极少超 8 词；
+  只在空格 ≥ 4 时启用 —— 中日韩不分词）
+- `looksLikeNumericDataRow`：**数字字符占比 ≥ 0.30** 判为数据行
+  （数值行实测 0.38~0.55，真标题 ≤ 0.12）
+- `PdfText.Block` 新增 `line`（= 块在全文块序列里的下标，与 `globalLine`
+  **同一套编号**），`buildRegions` 直接用它，不再估算
+
+#### 问题 ④：长按开始选，并有震动反馈
+
+按下后按住 450ms → `navigator.vibrate(12)`（Android 官方建议的点击反馈
+区间 10~20ms）→ 之后拖动才进入划选。
+好处：震动是**系统级的确认信号**，用户一看就懂"现在可以划线了"；
+同时天然排除误触 —— 想滚页面的人不会按住不放。
+
+#### 效果对照（Transformer 论文，11 页）
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 阅读视图区域数 | 25 | **17** |
+| 标题数 | 24 | **16** |
+| 其中"长正文被当标题" | **9** | **0** |
+| 块数（提取层拼行） | 624 | 331 |
+| 块文本中位长度 | 13 字符 | 93 字符 |
+
+修复后阅读视图结构：
+
+```
+H2  1 Introduction
+H3    3.1 Encoder and Decoder Stacks
+H2  3 Scaled Dot-Product Attention Multi-Head Attention
+H4    3.2.2 Multi-Head Attention
+H3    3.3 Position-wise Feed-Forward Networks
+H3    3.5 Positional Encoding
+H2  5 Training
+H3    5.1 Training Data and Batching / 5.3 Optimizer / 5.4 Regularization
+H2  6 Results
+H4    5.6.2 Model Variations
+H2  7 Conclusion
+H2  9 References
+```
+
+---
+
 ## [0.1.33] - 2026-09-26
 
 ### 修复划选文字后「落笔跑到别的页 / 整个页面消失」
