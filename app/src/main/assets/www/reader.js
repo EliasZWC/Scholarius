@@ -5941,21 +5941,95 @@
         for (var i = 0; i < blocks.length; i++) {
             var b0 = blocks[i];
             if (!b0 || !b0.text) { rowAt.push(null); continue; }
+
             /*
-              ⚠️ 行数按 `\n` 个数 + 1 估。
-                 段落块内部的行数就是换行符个数 + 1，
-                 与原生 mergeParagraphs 的产物一致（段落用 \n 连接）。
+              ══ ⚠️⚠️ 优先用**原生给的行号**（2026-09-27 修用户问题 3）══
+
+              用户原话：「切换到阅读视图，选中的文本并没有变成标题样式」
+
+              ══ 真因 ══
+
+              这里原来**无条件**用"累计块长度"估算起始行：
+
+                  var n = b0.text.split('\n').length;
+                  rowAt.push({ from: row, to: row + n - 1 });
+                  b0.line = row;        // ← 覆盖掉原生给的行号
+                  row += n;
+
+              而 `mark.from / mark.to` 来自**原生 `getPdfPageLines` 的
+              行下标**（划选时由文字层的 `data-gf/data-gt` 给出，
+              见 paintHighlight 里 `gFirst/gLast` 的说明）。
+
+              两个编号空间**本来就不等**：
+                · 原生行号：一个视觉行 = 一行（我修好拼行之后）
+                · 估算行号：一个**块** = `text.split('\n').length` 行
+              块是**段落级**的（mergeParagraphs 把一整段合成一块），
+              所以"块内行数"通常远大于 1，累计值一路超出。
+
+              ══ 实测偏差（Transformer 论文，tools/_q3_offset.py）══
+
+                用户点的块（原始视图 line=29）在阅读视图里是：
+                  index 27  「Recurrent models typically factor computation …」 ← 想标的
+                  index 29  「states ht,as a function of the previous …」      ← 实际被标的
+
+                整段偏了 **2**。而且 `mark-hit` 日志显示
+                `mark heading:29-29 -> block#29 span 29-29` ——
+                **命中成功但命中错了块**，所以连"完整覆盖才认"的保护也拦不住
+                （span 与 mark 恰好都是 29-29，天衣无缝地对错位）。
+
+              ⚠️ 为什么以前没暴露：拼行修复**之前**，块极小（中位 13 字符，
+                 几乎一块一行），估算值恰好接近原生行号；
+                 拼行后块变成段落级（中位 93 字符），偏差立刻放大。
+                 这是一个**被我上一轮修复激活的潜伏 bug**。
+
+              ══ ✅ 修法 ══
+
+              块对象上**本来就带**原生行号（`MainActivity.pdfBlocksFor`
+              输出的 `line` 字段，来自 Kotlin 的 `Block.line`）。
+              直接用它，mark 与块就**共享同一套编号**，不需要任何估算。
+
+              ⚠️ 估算只作为**兜底**（原生没给 `line` 时）——
+                 保留它是因为"目录靠字体识别"那条路用的是
+                 `textLines[block.line]`，而某些老文档的 blocks
+                 可能没有该字段。兜底时行为与旧版一致，不会更糟。
             */
-            var n = b0.text.split('\n').length;
-            rowAt.push({ from: row, to: row + n - 1 });
-            /*
-              ⚠️ 把估算出来的**起始行号写回块本身**。
-                 编辑模式（原始视图）要用它把"点中的文字块"
-                 映射成 TextMark 的 from/to —— 那里拿不到
-                 buildRegions 的局部变量，只能靠这个字段。
-            */
-            b0.line = row;
-            row += n;
+            var nativeLine = (typeof b0.line === 'number' && b0.line >= 0)
+                ? b0.line : -1;
+            if (nativeLine >= 0) {
+                /*
+                  ══ ⚠️⚠️ 区间宽度必须是 **1**，不是 `text.split('\n').length` ══
+                     （2026-09-27 修，我第一版这里写错了）
+
+                  为什么是 1：
+                    `globalLine` 的编号单位是**块**，不是块内的排版行 ——
+                    见 Kotlin 侧 globalLine 的说明：
+                      "按块计数 … 把这个序号作为 globalLine"
+                    也就是 **一个块 = 一个行号**。
+
+                  ⚠️ 我第一版写 `to = nativeLine + n0 - 1`（n0 = 块内 \n 个数 + 1），
+                     那是把"段落内部的排版行数"也算进去了。
+                     后果：span 变得很宽（例如 31..37），
+                     而 mark 通常是 `from === to`（用户点/划的就是那一块），
+                     于是 `m.from > span.from` 永远不满足 →
+                     **完整覆盖判据永不成立 → 标注又丢了**。
+                     实测症状：切成阅读视图后，标成标题的那段没变。
+
+                  ✅ 正确：块的 span 就是**它自己那一个行号** —— `[n, n]`。
+                     因为一个块 ↔ 一个 globalLine，是 1:1 的。
+                */
+                rowAt.push({ from: nativeLine, to: nativeLine });
+            } else {
+                var n = b0.text.split('\n').length;
+                rowAt.push({ from: row, to: row + n - 1 });
+                /*
+                  ⚠️ 兜底路径**仍要写回** `b0.line`：
+                     原始视图（编辑模式）要靠它把"点中的块"映射成
+                     TextMark 的 from/to —— 那里拿不到 buildRegions 的局部变量。
+                     原生没给行号时，这是唯一的编号来源。
+                */
+                b0.line = row;
+                row += n;
+            }
         }
 
         /** 查某个块被用户标成了什么；没标过返回 null */

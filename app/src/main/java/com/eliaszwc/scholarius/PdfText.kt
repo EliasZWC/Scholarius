@@ -306,7 +306,26 @@ object PdfText {
         val x0: Float = 0f,
         val y0: Float = 0f,
         val x1: Float = 0f,
-        val y1: Float = 0f
+        val y1: Float = 0f,
+        /**
+         * 本块在**全文块序列**里的下标（0 起）。
+         *
+         * ══ ⚠️⚠️ 用途（2026-09-27）══
+         *
+         * 前端阅读视图要把用户标注（`TextMark.from/to`）套到块上。
+         * 那些行号来自 `getPdfPageLines` 的 `globalLine`，
+         * 而 `globalLine` **就是本下标**（见 PdfText 里 globalLine 的说明：
+         * `indexedBlocksOfPage` 返回的 `first` = `outBlocks` 下标）。
+         *
+         * ⚠️ 所以两端必须共享同一编号。之前前端靠"累计块内行数"估算，
+         *    实测偏 2 行 → 「标了 A，阅读视图里变成 B 是标题」。
+         *
+         * ⚠️ 默认 -1 表示"未计算"（前端会退化成估算，行为与旧版一致）。
+         *
+         * ⚠️ 必须放在**最后**（带默认值）—— 上面的位置参数调用
+         *    （`Block("formula", t, 0, page, x0, y0, x1, y1)`）才不会被挤位。
+         */
+        val line: Int = -1
     )
 
     /** 提取结果：正文 + 行元数据 + PDF 自带大纲 */
@@ -1461,7 +1480,27 @@ object PdfText {
                          **合并后的完整文本**（例如公式要看整段
                          有没有普通词，而不是某一行）。
                     */
-                    outBlocks.add(classifyBlock(meta, blockText, bodySize))
+                    /*
+                      ⚠️⚠️ `line` = 本块在 `outBlocks` 里的**下标**
+                         （2026-09-27 新增，修用户问题 3）。
+
+                          前端阅读视图要把"用户标注（mark.from/to）"
+                          套到块上，而 mark 的行号来自
+                          `getPdfPageLines` 的 `globalLine` ——
+                          那个值就是 `indexedBlocksOfPage` 返回的
+                          `outBlocks` 下标（见上面 globalLine 的长说明）。
+
+                          ⚠️ 所以两端必须是**同一个编号**：
+                             这里写 outBlocks.size（= 即将 push 的下标），
+                             与 `pageBlocks[hit].first` 天然一致。
+
+                          ⚠️ 之前前端用"累计块内行数"**估算**行号，
+                             实测偏 2（Transformer 论文，见前端注释），
+                             导致"标了 A 却变成 B"。
+                             有了这个字段就不必再估。
+                    */
+                    outBlocks.add(classifyBlock(meta, blockText, bodySize)
+                        .copy(line = outBlocks.size))
                 }
                 para.setLength(0)
                 paraMeta = null
@@ -1804,6 +1843,16 @@ object PdfText {
         }
 
         /*
+          ⚠️ 数值数据行（科学计数法的表格碎片）→ 段落，**绝不**当标题。
+             见 [looksLikeNumericDataRow]：实测 `1019 1.4·1020` 这类
+             躲过了 lookLikeTableRow，却被 HEADING_NUM_PREFIX 收成一级标题。
+             同样放在标题判据**之前**。
+        */
+        if (looksLikeNumericDataRow(t)) {
+            return Block("paragraph", t, 0, meta.page, meta.x0, meta.y0, meta.x1, meta.y1)
+        }
+
+        /*
           ⚠️ 封顶长度。
 
              `2022 saw the release of…` 这类**以年份开头的正文段落**
@@ -1984,8 +2033,61 @@ object PdfText {
         val first = t[0]
         if (first.isLowerCase() && t.contains(' ')) return true
 
+        /*
+          ══ ⚠️⚠️ 词数判据（2026-09-27 新增，修"阅读视图满屏一级标题"）══
+
+          真因（实测诊断，见 classifyBlock 里那段临时日志）：
+
+              len=75 size=10.0 body=9.0 font=...NimbusRomNo9L-Regu
+              txt=The dominant sequence transduction models are based on comp
+
+          这是一句**正文**，字号也确实比"估出来的正文"大 1pt
+          （正文估计值偏到了 9.0，而实际正文是 10.0），
+          于是 `isHeadingByStyle` 为真。
+
+          而上面三条 prose 判据**一条都没拦住**：
+            · 行尾是 `comp` —— 是**被截断的长行**，没有句末标点
+            · 不含逗号（被截断处没到逗号）
+            · 首字母是大写 `T`
+
+          为什么"取一小段长度"会这样：PDF 的一行本来就可能中途断词，
+          提取出来的一行常常**既不以标点结尾、也不含逗号**。
+          所以按标点判"像不像句子"天然漏。
+
+          ✅ 词数才是稳的判据：**标题极少超过 8 个词**。
+             `The dominant sequence transduction models are based on comp`
+             有 9 个词 → 判为正文；
+             `1 Introduction`、`3 Model Architecture`、`Abstract`、
+             `Multi-Head Attention` 全都在 8 词以内 → 仍可作标题。
+
+          ⚠️ 阈值取 8（不是 6）：
+             实测有 `Scaled Dot-Product Attention`（4 词）、
+             `Why Self-Attention`（3 词）这类真标题；
+             而 8 词以上的英文标题极罕见。
+             取 6 会稍紧，取 10 会漏掉本次这些 9 词的正文行。
+
+          ⚠️ 只对**拉丁字母**分词计数 —— 中日韩没有空格，
+             `t.split(' ')` 会把整句当 1 个词，导致中文正文永远不是 prose。
+             所以先判断"这段文本里空格够不够多"，
+             没有足够空格（非拉丁排版）时**跳过这条判据**，保持原行为。
+        */
+        val spaces = t.count { it == ' ' }
+        if (spaces >= 4) {
+            val words = t.split(' ').filter { it.isNotBlank() }.size
+            if (words > PROSE_MAX_WORDS) return true
+        }
+
         return false
     }
+
+    /**
+     * "像正文"的词数阈值（见 [looksLikeProse]）。
+     *
+     * ⚠️ 8 是从真实标题里量出来的上限：`Scaled Dot-Product Attention`
+     *    4 词、`Why Self-Attention` 3 词，都不受影响；
+     *    而正文行普遍 9 词以上。
+     */
+    private const val PROSE_MAX_WORDS = 8
 
     /** 句末/从句标点。标题极少以这些结尾 */
     private val PROSE_END = charArrayOf('.', '?', '!', ';', '。', '？', '！', '；')
@@ -2081,6 +2183,62 @@ object PdfText {
         // 数值 token 至少 2 个（含 % 也算）
         return TABLE_NUMBER.findAll(t).take(2).count() >= 2
     }
+
+    /**
+     * 判据：这一行像**表格/数值数据行**（与 [looksLikeTableRow] 互补）。
+     *
+     * ══ ⚠️ 为什么还要一条（2026-09-27 实测）══
+     *
+     * 拼行修复之后，阅读视图冒出三个**纯数字**的"一级标题"：
+     *
+     *     1019 1.4·1020
+     *     1019 1.2·1020
+     *     1020 1.1·1021
+     *
+     * 它们是论文里 BLEU 表格的**行片段**（`1.4·10^19` 这类科学计数法
+     * 被提取成 `1.4·1020`）。它们躲过了 [looksLikeTableRow]，因为：
+     *   · `TABLE_NUMBER = -?\d+(?:\.\d+)?%?` 要求数字**前面是词边界**，
+     *     而 `1020` 紧跟在 `·` 后面 —— `·` 是字母类字符，
+     *     于是 `\d+` 在 `·1020` 里**匹配不到**那个 `1020`；
+     *   · 只剩 `1019` 一个数值 token → `< 2` → 判为"不是表格行"。
+     *
+     * 而 `HEADING_NUM_PREFIX = ^§?\s*\d+(?:\.\d+)*\s+\S` 里的
+     * `\d+` 也能匹配 `1019`，后面跟空格再跟 `1.4·1020` 的 `1` ——
+     * 于是它**符合"编号 + 标题"**形态，被判成一级标题。
+     *
+     * ══ ✅ 判据：数字占比 ══
+     *
+     * 真标题（`3 Model Architecture`、`5.1 Training Data and Batching`）
+     * 里数字极少，字母占绝大多数。
+     * 而这类数值行里**数字字符占了很大比例**。
+     * 用"数字字符 / 非空字符"这个比值，两条都覆盖，
+     * 且不依赖具体分隔符（`·` `,` `.` `×10` 都能应付）。
+     *
+     * ⚠️ 阈值取 0.30：实测这些数值行是 0.38~0.55，
+     *    而真标题最高的是 `3.2.2 Multi-Head Attention` ≈ 0.12
+     *    （编号占 5/23）。中间留了足够余量。
+     * ⚠️ 只在**总长度 >= 8** 时启用 —— 太短的行（`2024`、
+     *    单独一行的 `9`）本来就走不到这里（前面有页码判据），
+     *    且比值在短串上噪声大。
+     */
+    private fun looksLikeNumericDataRow(t: String): Boolean {
+        if (t.length < 8) return false
+        var digits = 0
+        var nonSpace = 0
+        for (c in t) {
+            if (c == ' ') continue
+            nonSpace++
+            if (c.isDigit()) digits++
+        }
+        if (nonSpace == 0) return false
+        return digits.toFloat() / nonSpace.toFloat() >= NUMERIC_ROW_RATIO
+    }
+
+    /**
+     * 数值行的"数字字符占比"阈值（见 [looksLikeNumericDataRow]）。
+     * 实测数值行 0.38~0.55，真标题 ≤0.12。
+     */
+    private const val NUMERIC_ROW_RATIO = 0.30f
 
     /**
      * 判据：这一块是不是公式。

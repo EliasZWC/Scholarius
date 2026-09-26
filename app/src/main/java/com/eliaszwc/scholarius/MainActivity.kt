@@ -1587,6 +1587,13 @@ class MainActivity : AppCompatActivity() {
             sb.append(",\"level\":").append(b.level)
             sb.append(",\"page\":").append(b.page)
             /*
+              ⚠️ 全文块下标（2026-09-27，修用户问题 3）。
+                 阅读视图用它把用户标注（mark.from/to）套到正确的块上。
+                 与 `getPdfPageLines` 的 `globalLine` 是**同一套编号**
+                 （见 PdfText.Block.line 的长说明）。
+            */
+            sb.append(",\"line\":").append(b.line)
+            /*
               ⚠️ 包围盒（v0.1.17）。坐标是归一化的 0..1，小数位很多，
                  直接 toString 会长得离谱（`0.123456789`）。
                  **保留 4 位小数** —— 1600px 宽的页面上 1e-4 ≈ 0.16px，
