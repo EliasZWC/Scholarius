@@ -408,6 +408,69 @@ object PdfText {
         private var prevBlank = true
 
         /*
+          ══ ⚠️⚠️⚠️ 按 y 坐标把片段拼回**真正的视觉行**（2026-09-26）══
+
+          踩过的坑（用户真机反馈的四个问题的**共同根因**）：
+            ① 「清空后提示有 389 个区域」—— 其实用户只标了 1 条
+            ② 「点已选中的区域无法修改」
+            ③ 「切阅读视图，选中的文字没变成标题样式」
+
+          实测（tools/_rawlines.py，Transformer 论文第 2 页）：
+              629 条「行」 → 实际只有 **50 个不同的 y0** → 509 条是碎片
+              前 14 条全是 y0=0.1035 / s=10.00，x0 从 0.1765 递增到 0.7811
+              —— 那是**同一行的 14 个词**，分别被当成了 14 “行”
+
+          ⚠️ 原因：`PDFTextStripper.writeString` 的回调粒度是
+             **PDF 内容流里的一个文本片段**，而不是视觉行。
+             这份论文每个词都是独立片段，于是它回调了 629 次。
+
+          ⚠️ 为什么危害很大：下游全部按「行」工作 ——
+             `startsNewBlock` 会**每个词**判一次“是不是新块”，
+             于是摘要正文被切成 222 个 heading 碎片（实测
+             `#8「complex」` `#19「decoder」` `#21「attention」`
+             `#27「task,」` 都成了标题）。
+             最终 624 个块里 421 个不到 20 字，碎片率 **67.5%**。
+
+          ✅ 做法：**在源头拼行** ——
+             同一个 y0（容差 = 行高的一半）的片段累加成一条 `Line`，
+             y0 跳变时才真正吐出。
+             这样下游收到的就是真正的视觉行，所有判据自动正确，
+             不必去 `mergeParagraphs` 里打补丁。
+
+          ⚠️ y 容差用**行高的一半**而不是固定值：
+             不同 PDF 行距差异很大；且浮点往返会有微小抖动。
+             取上一片段的 (y1-y0)*0.5 作容差，自适应。
+
+          ⚠️ 必须在**换页**时强制吐出（页码变了就不是同一行）。
+             否则跨页拼接会把两页的内容粘成一行。
+
+          ⚠️ 空行不参与拼接 —— 它是段落边界，直接透传（并在拼接前
+             先吐出已累积的内容，否则空行会被吞掉）。
+        */
+        private val rowText = StringBuilder()
+        private var rowMeta: Line? = null
+
+        /** 把已累积的一行吐出。 */
+        private fun flushRow() {
+            val txt = rowText.toString()
+            val meta = rowMeta
+            rowText.setLength(0)
+            rowMeta = null
+            if (txt.isEmpty() || meta == null) return
+            /*
+              ⚠️ 用 `copy(text = txt)` 保留字体/字号/包围盒，
+                 但文本换成拼接后的完整行。
+            */
+            raw.add(meta.copy(text = txt))
+        }
+
+        /** 本行片段与上一片段的 y0 是否属于同一视觉行 */
+        private fun sameRow(prevY0: Float, prevH: Float, y0: Float): Boolean {
+            val tol = if (prevH > 0f) prevH * 0.5f else 0.004f
+            return Math.abs(y0 - prevY0) <= tol
+        }
+
+        /*
           ⚠️ 签名必须与父类**逐字一致**，包括 `throws IOException`。
 
              父类是：
@@ -435,8 +498,13 @@ object PdfText {
                  因为 mergeParagraphs() 用空行当段落边界 ——
                  如果这里把空行丢掉，段落就永远合并不了，
                  整篇会连成一块（正是 v0.1.3 的"无法阅读"）。
+
+              ⚠️ 且在加空行**之前**先 `flushRow()` ——
+                 否则"行尾 + 空行"会被搞成"空行 + 行尾"，
+                 段落边界整体错一位。
             */
             if (trimmed.isEmpty()) {
+                flushRow()
                 raw.add(Line("", "", 0f, pageNo, false))
                 prevBlank = true
                 return
@@ -543,27 +611,76 @@ object PdfText {
                 ny1 = (by1 / ph).coerceIn(0f, 1f)
             }
 
-            raw.add(
-                Line(
-                    text = line,
+            /*
+              ══ ⚠️⚠️⚠️ 拼行：同 y 的片段合成一条真正的视觉行 ══
+                 （详细理由见本类顶部 `rowText` 的大段说明）
+            */
+            val prev = rowMeta
+            val sameLine = prev != null &&
+                prev.page == pageNo &&
+                sameRow(prev.y0, prev.y1 - prev.y0, ny0)
+
+            if (!sameLine) {
+                /* y 跳变（或换页）→ 先把上一行吐出，再开始新行 */
+                flushRow()
+            }
+
+            if (rowMeta == null) {
+                /* 新行的第一个片段 → 记它的版面属性（字体/字号/包围盒起点） */
+                rowMeta = Line(
+                    text = "",
                     font = fontName,
                     size = fontSize,
                     page = pageNo,
-                    /*
-                      ⚠️ paragraphStart 这里恒为 false —— 真正的段落判定
-                         在 mergeParagraphs() 里做（它要看上下文：
-                         上一行是否句末、本行是否标题）。
-                         这里没有上下文，硬猜只会给出错的标记。
-                    */
                     paragraphStart = false,
                     x0 = nx0,
                     y0 = ny0,
                     x1 = nx1,
                     y1 = ny1
                 )
-            )
+                rowText.append(trimmed)
+            } else {
+                /*
+                  ⚠️ 拼接同一个视觉行的后续片段：
+                     ① 补空格（两个部分之间要分开，否则 `Recurrentmodels`）
+                     ② 包围盒**并上**这一段（x1 要延伸到最右）
+                  ⚠️ 不补空格的例外：上一片段以 `-` 结尾（断词续行）或
+                     本片段以 `,` `.` 等标点开头 —— 但 PDF 的标点是独立
+                     片段（实测 `time,` `states.`），不要额外补空格，
+                     因为它们本身就带着标点。
+                     所以规则简化为：**两侧都是"词字符"时才补空格**。
+                */
+                val lastCh = if (rowText.isNotEmpty()) rowText[rowText.length - 1] else ' '
+                val firstCh = trimmed[0]
+                val needSpace = isWordChar(lastCh) && isWordChar(firstCh) &&
+                    lastCh != '-' && lastCh != '\u2010'
+                if (needSpace) rowText.append(' ')
+                rowText.append(trimmed)
+
+                rowMeta = rowMeta!!.copy(
+                    x0 = minOf(rowMeta!!.x0, nx0),
+                    y0 = minOf(rowMeta!!.y0, ny0),
+                    x1 = maxOf(rowMeta!!.x1, nx1),
+                    y1 = maxOf(rowMeta!!.y1, ny1)
+                )
+            }
             prevBlank = false
         }
+
+        /**
+         * 收尾：遍历结束后把最后一行吐出。
+         *
+         * ⚠️ 必须显式调用 —— `writeString` 只在**有内容**时被回调，
+         *    最后一个视觉行会一直留在 `rowText` 里，不吐就丢了末尾。
+         */
+        fun finish() {
+            flushRow()
+        }
+    }
+
+    /** 是不是"词字符"（用来决定拼接时补不补空格） */
+    private fun isWordChar(c: Char): Boolean {
+        return c.isLetterOrDigit() || c == '\u2019' || c == '\''
     }
 
     /**
@@ -722,6 +839,11 @@ object PdfText {
 
                 val buffer = java.io.StringWriter()
                 collector.writeText(document, buffer)
+                /*
+                  ⚠️ 必须调 finish() —— 最后一个视觉行还留在累积缓冲里，
+                     不吐就会丢掉末尾内容（见 LineCollector.finish 的说明）。
+                */
+                collector.finish()
 
                 val lines = collector.raw
                 if (lines.isEmpty()) return null
@@ -798,6 +920,11 @@ object PdfText {
 
                 val buffer = java.io.StringWriter()
                 collector.writeText(document, buffer)
+                /*
+                  ⚠️ 必须调 finish() —— 同 extractHead 处的理由：
+                     最后一个视觉行还留在累积缓冲里，不吐就丢。
+                */
+                collector.finish()
 
                 /*
                   ⚠️ 过滤掉退化行（无文字 / 零尺寸盒子）。

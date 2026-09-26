@@ -34,6 +34,15 @@ Thumbs.db
 # 真机验证的临时产物（截图/录屏）—— 每次都覆盖，不进库
 tools/_repro/
 
+# 一次性诊断脚本（排查完即弃）——
+#   tools/_*.py 是"当时为了抓某个具体现象"写的小脚本，
+#   它们的价值全在**当次会话**里，事后读代码本身即可，
+#   留在库里只会让 tools/ 变成一堆看不懂的碎片。
+#   ⚠️ 真正要长期保留的验证脚本**不带下划线前缀**
+#      （verify_*.py / check_*.py / extract_baseline.py 等）。
+tools/_*.py
+tools/_baseline/
+
 # Python（tools/ 下的辅助脚本）
 __pycache__/
 *.pyc

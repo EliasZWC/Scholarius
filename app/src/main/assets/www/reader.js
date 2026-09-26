@@ -1211,6 +1211,65 @@
         };
     }
 
+    /*
+      ══ 划选：长按门槛（2026-09-26 用户要求）══
+
+      用户原话：
+        「选中我认为应该是长按开始选，这样安卓会震动一下提示长按操作
+          被触发了，这是一个很好的信号」
+
+      ⚠️ 时长取 450ms：
+         · Android 系统长按阈值（`ViewConfiguration.getLongPressTimeout()`）
+           默认 **400ms**，450ms 略长一点，与系统手感一致；
+         · 太短（< 300ms）会和"轻点"混淆；
+         · 太长（> 600ms）用户会以为没反应。
+
+      ⚠️ 震动 12ms：Android 官方建议点击类反馈 10~20ms ——
+         够感知，又不会"唬人一跳"。
+
+      ⚠️ 为什么这个信号有价值：
+         文字层的行只有 8px 高，用户不知道该拖还是该点。
+         长按震动是**系统级的确认反馈**，一看就懂"现在可以划线了"；
+         同时它天然排除了误触 —— 想滚页面的人不会按住不放。
+    */
+    var LONG_PRESS_MS = 450;
+    var LONG_PRESS_VIBRATE_MS = 12;
+
+    /** 长按定时器（松手 / 移动 / 取消都必须清掉） */
+    var longPressTimer = null;
+
+    /** 本次手势是否已长按就绪 */
+    var longPressedOk = false;
+
+    /*
+      ══ ⚠️⚠️ 区分「轻点」与「拖拽」 ══
+        （2026-09-27 修用户问题 2：「点击以选中的区域，无法修改」）
+
+      为什么要区分：
+        轻点一个**已标过的块** = 想改它的类型（重新归类）
+        拖拽 = 想划选一段文字
+
+      两者都落在**文字层**上（`.anno-block` 是 `pointer-events: none`，
+      事件永远不会落到块自己身上 —— 详见 blockAtPoint 的长说明），
+      所以只能靠"有没有移动过"来分流。
+
+      ⚠️ 阈值取 8px：手指按下时的自然抖动约 2~4px，
+         而真正的划选至少会拖出几十像素。取 8 既不误判抖动，
+         也不至于把"选一两个词"的短距划选吞掉。
+
+      ⚠️ 用**起点到当前位置的最大位移**判断，不是逐帧位移 ——
+         逐帧在慢速拖动时每帧只动 1~2px，会一直低于阈值，
+         于是整段划选被误判成轻点（踩过这个思路）。
+    */
+    var TAP_SLOP_PX = 8;
+
+    /** 本次手势是否已超过轻点阈值（即"这是一次拖拽"） */
+    var gestureMoved = false;
+
+    /** 手势起点（css px），用于算位移 */
+    var gestureStartX = 0;
+    var gestureStartY = 0;
+
     /**
      * 在文字层上接管**选字** —— 用 JS 自己维护选区。
      *
@@ -1669,10 +1728,94 @@
                 var s = global.getSelection();
                 if (s) s.removeAllRanges();
             } catch (e) { /* 忽略 */ }
+
+            /*
+              ══ ⚠️⚠️ 长按才进入划选（2026-09-26 用户要求）══
+
+              用户原话：
+                「选中我认为应该是长按开始选，这样安卓会震动一下
+                  提示长按操作被触发了，这是一个很好的信号」
+
+              ⚠️ 为什么这个信号有价值：
+                文字层的行只有 8px 高，用户不知道该拖还是该点。
+                长按震动是**系统级的确认识别**，用户一看就懂
+                “现在可以划线了”。同时它天然排除了误触 ——
+                想滚页面的人不会按住不放。
+
+              ⚠️ 震动用 `navigator.vibrate`（WebView 支持）。
+                 长度取 12ms：够感知，又不至于“唬人一跳”
+                 （Android 官方建议点击反馈 10~20ms）。
+
+              ⚠️ 定时器必须在 `pointerup` / `pointercancel` / `pointermove`
+                 里清掉 —— 否则用户快速点一下就划一下（没按住）时，
+                 定时器仍然会到点触发，给一个莫名其妙的震动，
+                 并把他的一次**正常轻点**变成“进入了划选”。
+            */
+            if (longPressTimer) global.clearTimeout(longPressTimer);
+            longPressedOk = false;
+            /*
+              ⚠️ 记下起点并重置"是否移动过"（见 TAP_SLOP_PX 的说明）——
+                 这两个量决定松手时是"轻点改类型"还是"拖拽划选"。
+            */
+            gestureMoved = false;
+            gestureStartX = ev.clientX;
+            gestureStartY = ev.clientY;
+            longPressTimer = global.setTimeout(function () {
+                longPressTimer = null;
+                longPressedOk = true;
+                /*
+                  ⚠️ 震动失败不影响功能（桌面浏览器 / 用户关了触感反馈）——
+                     不要 try/catch 包住整个回调，只包这一句。
+                */
+                try {
+                    if (global.navigator && global.navigator.vibrate) {
+                        global.navigator.vibrate(LONG_PRESS_VIBRATE_MS);
+                    }
+                } catch (e) { /* 忽略 */ }
+                trace('reader:sel', 'long press -> select armed');
+            }, LONG_PRESS_MS);
         });
 
         layer.addEventListener('pointermove', function (ev) {
             if (!startPt) return;
+
+            /*
+              ⚠️ 手指动了就取消"长按待定" —— 用户是想拖（滚动/划选），
+                 不是想长按。阈值用一个很小的值（2px），
+                 因为长按的语义就是"基本不动"。
+            */
+            if (longPressTimer) {
+                global.clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+
+            /*
+              ⚠️ 位移判定必须放在 "armed" 门槛**之前** ——
+                 否则没长按就 return，gestureMoved 永远是 false，
+                 松手时会把一次拖拽误判成轻点（然后去开类型弹层）。
+                 "有没有移动"是关于**手势本身**的事实，
+                 与"这一下要不要划选"是两个独立的问题。
+            */
+            var mvx = ev.clientX - gestureStartX;
+            var mvy = ev.clientY - gestureStartY;
+            if ((mvx * mvx + mvy * mvy) > (TAP_SLOP_PX * TAP_SLOP_PX)) {
+                gestureMoved = true;
+            }
+
+            /*
+              ⚠️⚠️ 没长按就不划选（本次手势的硬门槛）
+
+                 这是与旧行为的根本区别：旧版一按下就 `startPt = pt`，
+                 随便拖一下就开始选字；现在必须 **先长按（有震动）**
+                 才能划选。
+
+                 ⚠️ 但有例外：`layer.__gesture === 'select'` 已经是
+                     横向拖（由 bindTextLayerPan 判定）—— 那时允许
+                     直接选，因为横向拖拽本身已是明确的选字意图，
+                     再要求长按会让人以为"拖不动"。
+            */
+            var armed = longPressedOk || layer.__gesture === 'select';
+            if (!armed) return;
 
             /*
               ⚠️ 先看"本次手势归谁"（由 bindTextLayerPan 判定并写在层上）。
@@ -1704,6 +1847,16 @@
         });
 
         var finish = function () {
+            /*
+              ⚠️ 松手/取消时**必须清掉长按定时器**（见 pointerdown 的说明）——
+                 不清的话，快速轻点一下会留下一个待触发的定时器，
+                 到点时给出一次莫名其妙的震动，而用户已松手。
+            */
+            if (longPressTimer) {
+                global.clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+            longPressedOk = false;
             if (startPt) {
                 /*
                   ⚠️ 松手后**不要清高亮** —— 用户还要看着它确认选对了没有。
@@ -1753,6 +1906,60 @@
                     var s = global.getSelection();
                     text = s ? String(s) : '';
                 } catch (e) { text = ''; }
+
+                /*
+                  ══ ⚠️⚠️ 先分流「轻点」与「拖拽」══
+                    （2026-09-27 修用户问题 2：「点击以选中的区域，无法修改」）
+
+                  用户原话：「点击以选中的区域，无法修改」
+
+                  真因不在选字流程里，而在**块点不到**：
+                    `makeTextBlockEl` 早就绑好了 click →
+                    `openTextTypePicker(el, block, page)`，
+                    连"长按补发 click"都处理了；`reader.editMark`
+                    的弹层文案也在。功能是完整的 ——
+                    但 `.anno-block { pointer-events: none }`
+                    让那个 click **永远送不到**（styles.css 的说明）。
+
+                  ✅ 所以在这个 handler 里做**几何反查**：
+                     没移动过（`!gestureMoved`）+ 点在某个块里
+                     → 直接调同一个 `openTextTypePicker`。
+                     `pointer-events` 保持 `none`，划选不受影响。
+
+                  ⚠️ 必须先判轻点再判划选 ——
+                     轻点时 `currentSelection` 是 null（没拖过，没画高亮），
+                     若顺序反了就会掉进 else 分支只做 notifySelection(null)，
+                     什么弹层都不出。
+                */
+                if (!gestureMoved) {
+                    /*
+                      ⚠️ 页码必须用 **pageAtPoint**（几何反查），
+                         不能用 currentSelectionPage() —— 后者靠
+                         `.is-selected` 找，而轻点没有高亮，它恒返回 1。
+                         见 pageAtPoint 的说明。
+                    */
+                    var tapPage = pageAtPoint(gestureStartX, gestureStartY);
+                    var hit = blockAtPoint(gestureStartX, gestureStartY, tapPage);
+                    if (hit) {
+                        /*
+                          ⚠️ 长按（区间起点）会补发 click，浏览器也会
+                             给一个 pointerup —— 这一下不该当"重新归类"。
+                             判据与 makeTextBlockEl 里一致。
+                        */
+                        var ui3 = global.ScholariusUI;
+                        var wasLong = ui3 &&
+                            typeof ui3.justLongPressed === 'function' &&
+                            ui3.justLongPressed();
+                        if (!wasLong) {
+                            trace('reader:sel', 'tap on block line='
+                                  + hit.block.line + ' page=' + tapPage
+                                  + ' -> reclassify');
+                            openTextTypePicker(hit.el, hit.block, hit.page);
+                            startPt = null;
+                            return;
+                        }
+                    }
+                }
 
                 if (currentSelection) {
                     openSelectionTypePicker();
@@ -3253,6 +3460,144 @@
         }
         return { type: 'body', level: 0 };
     }
+
+    /**
+     * ══ ⚠️⚠️ 按坐标找「点到了哪个文字块」—— 重新归类的唯一入口 ══
+     *   （2026-09-27 修用户问题 2：「点击以选中的区域，无法修改」）
+     *
+     * ══ 为什么不能靠 DOM 事件 ══
+     *
+     *   `makeTextBlockEl` 里**早就写好了** click 处理器：
+     *       el.addEventListener('click', ... openTextTypePicker(el, block, page))
+     *   而且连"长按会补发 click"都处理了。功能是完整的 ——
+     *   **只是那个 click 永远送不到**。
+     *
+     *   因为 styles.css 里 `.anno-block { pointer-events: none }`
+     *   （那是为了不让块吃掉划选手势，见 styles.css:2391 的长说明）。
+     *   实测（tools/_why_unhittable.py）：在块的 5 个取样点
+     *   （中心/左/上/下/右）`elementFromPoint` **无一例外**返回
+     *   `DIV.pdf-slot`，从来没有返回块自己。
+     *
+     *   → 用户看到的「点了没反应」，和 z-index 那两次事故同一类：
+     *     元素在、display 正常、handler 也绑了，**就是点不到**。
+     *
+     * ══ 为什么不能简单把 pointer-events 改成 auto ══
+     *
+     *   styles.css:2423 已经记过一次：文本模式下设 auto，块（z-index 2）
+     *   盖住文字层（z-index 1）→ **划选手势被吃掉**。
+     *   我这次复验了一遍（tools/_pe_ab.py），结论仍然成立，而且更糟：
+     *
+     *       现状 none ：命中 SPAN.pdf-text-line        高亮=1  sheet=1  ✅
+     *       改成 auto ：命中 DIV.anno-box-formula     高亮=1  sheet=0  ❌
+     *
+     *   注意 auto 时命中的是 **`anno-box-formula`**（公式框，z-index 2 的
+     *   兄弟元素），表单直接开不出来。所以"翻 pointer-events"这条路是死的。
+     *
+     * ══ ✅ 正确做法：几何命中，在**文字层**里判 ══
+     *
+     *   文字层本来就是事件的落点（它 `pointer-events: auto`），
+     *   所以只要在它的 pointerup 里问一句"这一下点在哪个块里"即可。
+     *   块自己不需要接事件 —— 两边的职责都保住了：
+     *     · 划选：仍然直达文字层（不被块吃掉）
+     *     · 重新归类：几何反查，不依赖 DOM 命中
+     *
+     * ⚠️ 坐标比较必须**在同一坐标系**里：
+     *     块的 `x0/y0/x1/y1` 是相对页面的归一化值（0..1），
+     *     而指针给的是视口坐标（css px）。
+     *     所以用**块的 DOM 元素**（`.anno-block[data-block-line]`）
+     *     的 `getBoundingClientRect()` 来比 —— 它是已经渲染好的
+     *     真实屏幕矩形，不用自己做换算（换算是本项目最大的坑源）。
+     *
+     * ⚠️ 命中多个块时取**面积最小**的那个 ——
+     *     与挂载时的排序规则（styles.css / mountTextBlocksOn：
+     *     大盒在下、小盒在上）一致：小盒是更精确的那一层。
+     *     实测一篇论文里段盒会包住它的每个行盒。
+     *
+     * @param {number} cx  视口 x（css px）
+     * @param {number} cy  视口 y（css px）
+     * @param {number} page 当前页（**1 起**，与 slot.dataset.page 一致）
+     * @return {Object|null} { el, block, page } —— 找不到返回 null
+     */
+    function blockAtPoint(cx, cy, page) {
+        if (!lastBlocks || !lastBlocks.length) return null;
+
+        /*
+          ⚠️ 只在**当前页**里找 —— 多页时同一 y 会命中别的页的块。
+        */
+        var slots = contentEl.querySelectorAll('.pdf-slot');
+        var slot = null;
+        for (var s = 0; s < slots.length; s++) {
+            if (parseInt(slots[s].dataset.page, 10) === page) {
+                slot = slots[s];
+                break;
+            }
+        }
+        if (!slot) return null;
+
+        var els = slot.querySelectorAll('.anno-block');
+        var best = null;
+        var bestArea = Infinity;
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            var r = el.getBoundingClientRect();
+            if (!(r.width > 0) || !(r.height > 0)) continue;
+            /*
+              ⚠️ 用 `<=` / `>=`（含边界）—— 用户点在块的边缘上
+                 也应算命中。手指有 ~4px 误差，边界算进来更宽容。
+            */
+            if (cx < r.left || cx > r.right) continue;
+            if (cy < r.top || cy > r.bottom) continue;
+
+            var area = r.width * r.height;
+            if (area < bestArea) {
+                bestArea = area;
+                var ln = parseInt(el.getAttribute('data-block-line'), 10);
+                var blk = null;
+                if (!isNaN(ln) && ln >= 0) {
+                    for (var b = 0; b < lastBlocks.length; b++) {
+                        if (lastBlocks[b] && lastBlocks[b].line === ln) {
+                            blk = lastBlocks[b];
+                            break;
+                        }
+                    }
+                }
+                if (blk) best = { el: el, block: blk, page: page };
+            }
+        }
+        return best;
+    }
+
+    /**
+     * ══ 从**坐标**反查它落在哪一页（1 起）══
+     *   （2026-09-27 新增，配 blockAtPoint 用）
+     *
+     * ⚠️ 不能用 `currentSelectionPage()` ——
+     *    那个函数靠"哪个层有 `.is-selected`"来找，
+     *    而**轻点是没有高亮的**（没拖过），于是它恒返回兜底的 1。
+     *    用户在第 5 页轻点一个块时，就会去第 1 页找块 → 找不到
+     *    → 「点了还是没反应」。
+     *
+     * ✅ 直接用几何包含判断：哪个 slot 的矩形含这个点，就是哪一页。
+     *    与 blockAtPoint 用同一套 `getBoundingClientRect` 的口径。
+     */
+    function pageAtPoint(cx, cy) {
+        if (!contentEl) return 1;
+        var slots = contentEl.querySelectorAll('.pdf-slot');
+        for (var i = 0; i < slots.length; i++) {
+            var r = slots[i].getBoundingClientRect();
+            if (cx < r.left || cx > r.right) continue;
+            if (cy < r.top || cy > r.bottom) continue;
+            var p = parseInt(slots[i].dataset.page, 10);
+            if (p > 0) return p;
+        }
+        /*
+          ⚠️ 兜底返回 1（而不是 0）—— 全项目的页码都是 **1 起**
+             （见 currentSelectionPage 的说明与 lastBlocks[].page 的注释）。
+        */
+        return 1;
+    }
+
+
 
     /**
      * 「建立区域」浮动按钮（v0.1.32）。

@@ -159,7 +159,14 @@ for rnd in range(1, 4):
             if (rr.width < 5) continue;
             hits.push({ l: rr.left, r: rr.right, t: ls[j].textContent });
         }
-        if (hits.length < 3) return 'null';
+        /*
+          ⚠️ 改提取层后（2026-09-26），**一行就是一个 span**（宽 260~340px），
+             不再是"一行几十个词、每词一个 span"。
+             所以这里从 `hits.length < 3` 放宽到 `< 1` ——
+             旧条件会把所有行都筛掉，导致"没有更多可用行"，
+             那是脚本假设过期，不是产品有问题。
+        */
+        if (hits.length < 1) return 'null';
         var lo = 1e9, hi = -1e9;
         for (var k = 0; k < hits.length; k++) {
             if (hits[k].l < lo) lo = hits[k].l;
