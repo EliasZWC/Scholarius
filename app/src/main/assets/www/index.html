@@ -833,23 +833,6 @@
         </div>
 
         <!--
-          「建立区域」浮动按钮（v0.1.32）
-
-          ⚠️ 为什么用浮动按钮而不是常驻底栏：
-             它只在**原始视图里选中了文字**时才该出现。
-             放底栏会挤掉「内容 / 设置」两项（用户明确要过这两项），
-             而且 99% 的时间它是无用的。
-
-          ⚠️ 位置：贴底、水平居中。`bottom` 要给底栏留出高度
-             （见 CSS 的 --reader-bottom-h），否则会被底栏压住 ——
-             这正是我踩过的坑（诊断浮层贴 bottom:0 盖住所有底部弹层）。
-        -->
-        <button class="sel-fab" type="button" id="reader-sel-fab" hidden>
-            <span class="sel-fab-icon" id="reader-sel-fab-icon"></span>
-            <span class="sel-fab-label" id="reader-sel-fab-label"></span>
-        </button>
-
-        <!--
           .reader-stack：自下往上堆叠的两个块 —— 设置面板在上、选项栏在下。
 
           ⚠️ 用 flex + justify-content: flex-end 而不是 absolute + bottom。

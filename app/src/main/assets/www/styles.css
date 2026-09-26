@@ -1343,73 +1343,6 @@ body {
 }
 
 /*
-  ══ 选中文字后的「建立区域」浮动按钮（v0.1.32）══
-
-  ⚠️ 只在原始视图里选中了文字才出现（`hidden` 属性控制）。
-     常驻会挤掉底栏的「内容 / 设置」两项，而且大部分时间没用。
-
-  ⚠️⚠️ 定位用 `bottom` 时必须**避开底栏**。
-     底栏高 `calc(64px + var(--safe-bottom))`，且菜单收起时是
-     `translateY(100%)` 滑出屏幕的 —— 但按钮在它之上，
-     所以固定按"菜单展开时的底栏高度"留位，两种状态都不会被压住。
-     实测踩过：诊断浮层贴 `bottom: 0` + 高 z-index 盖住了所有底部弹层。
-
-  ⚠️ z-index 定 6：要盖过页图（1）与标注层（2~3），
-     但**必须低于**顶栏（z=2 的容器 + 弹层 11）和更新/确认弹层（100）——
-     那些是用户主动触发的，不能被这个按钮挡住。
-*/
-.sel-fab {
-    position: absolute;
-    left: 50%;
-    bottom: calc(64px + var(--safe-bottom) + 12px);
-    transform: translateX(-50%);
-    z-index: 6;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    height: 44px;
-    padding: 0 18px;
-    border: none;
-    border-radius: 22px;
-    background: var(--accent, #2f6fed);
-    color: #fff;
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
-    cursor: pointer;
-    /* 浮出动画：从下方 8px 处淡入，避免"噗"地出现 */
-    animation: selFabIn 180ms cubic-bezier(0.2, 0, 0, 1);
-}
-.sel-fab[hidden] {
-    display: none;
-}
-.sel-fab:active {
-    transform: translateX(-50%) scale(0.96);
-}
-.sel-fab-icon {
-    display: inline-flex;
-    width: 20px;
-    height: 20px;
-}
-.sel-fab-icon svg {
-    width: 20px;
-    height: 20px;
-    fill: currentColor;
-}
-
-@keyframes selFabIn {
-    from {
-        opacity: 0;
-        transform: translateX(-50%) translateY(8px);
-    }
-    to {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
-    }
-}
-
-/*
   ⚠️ 设置面板展开时**不需要**给选项栏写上移。
      面板与选项栏是 .reader-stack 里紧邻的两个 flex 子元素，
      自下往上排：面板在上、选项栏在下，面板一展开就把选项栏往上顶。
@@ -2205,12 +2138,17 @@ body:has(.reader.is-raw.is-annotating.is-drawing) {
 }
 
 /*
-  ══ 什么时候文字层接手势 ══
+  ══ 什么时候文字层接手势 ══（2026-09-26 用户纠正后改）
 
-  ① 非编辑模式（阅读式浏览原始版面）→ 接，用户可以随手选字复制
-  ② 编辑模式里的「文本」选项         → 接（那正是"选中文字"的意图）
+  ✅ **只有编辑模式 + 选了「文本」选项**（`is-text-mode`）才接。
+     这才是「文本」选项的职责 —— 用户原话：
+       「本身点击选项才应该有选中功能，选中文本应该点击文本选项才行」
+       「选一个区域，这样文本选项的功能不就空置了吗？」
 
-  ⚠️ 画框模式（formula/table/figure）**绝不接** ——
+  ❌ 非编辑模式**不接** —— 第一版为了"随手选字复制"让它常接，
+     结果编辑栏的「文本」选项变得毫无作用（用户当场指出）。
+
+  ❌ 画框模式（formula/table/figure）**不接** ——
      否则拖拽起点落在文字上会被它吃掉，画不出框。
 
   ══ ⚠️⚠️ `touch-action` 要改**整条祖先链**（2026-09-25 真机实测）══
@@ -2226,7 +2164,6 @@ body:has(.reader.is-raw.is-annotating.is-drawing) {
         .pdf-text-layer   none    ← 改了
         .pdf-slot         auto
         .pdf-scroll       auto
-        .pdf-slot         auto
         .reader-content   auto
         .reader-body      auto    ← ⚠️ overflow-y: auto（真能滚）
         body              none
@@ -2236,15 +2173,7 @@ body:has(.reader.is-raw.is-annotating.is-drawing) {
      根本不启动选字手势。这与画框那个 bug **完全同源**。
 
      ✅ 所以下面把整条链一起收回（`none`）。
-        代价是**选字时不能滚页面** —— 而这正是要的
-        （拖拽=选字，不是滚动；滚动仍可在链以外的地方做，
-         见下面"能滚的地方"那条说明）。
 */
-.reader:not(.is-annotating) .reader-body,
-.reader:not(.is-annotating) .reader-content,
-.reader:not(.is-annotating) .pdf-scroll,
-.reader:not(.is-annotating) .pdf-slot,
-.reader:not(.is-annotating) .pdf-text-layer,
 .reader.is-annotating.is-text-mode .reader-body,
 .reader.is-annotating.is-text-mode .reader-content,
 .reader.is-annotating.is-text-mode .pdf-scroll,
@@ -2253,7 +2182,7 @@ body:has(.reader.is-raw.is-annotating.is-drawing) {
     touch-action: none;
 }
 
-.reader:not(.is-annotating) .pdf-text-layer,
+/* 只有 text 模式接手势 —— 见上面的说明 */
 .reader.is-annotating.is-text-mode .pdf-text-layer {
     pointer-events: auto;
 }
@@ -2261,7 +2190,6 @@ body:has(.reader.is-raw.is-annotating.is-drawing) {
 /*
   ⚠️ 祖先链最后一段：body 在 .reader 之外，只能用 :has() 限定。
 */
-body:has(.reader:not(.is-annotating) .pdf-text-layer),
 body:has(.reader.is-annotating.is-text-mode .pdf-text-layer) {
     touch-action: none;
 }
@@ -2455,13 +2383,35 @@ body:has(.reader.is-annotating.is-text-mode .pdf-text-layer) {
       `pointer-events` 的初始值就是 `auto`，所以"不写" ≠ "none"。
       只写 is-text-mode 那条的话，非文本模式下块仍取默认 auto，
       照样吞事件（实测踩过）。
+
+  ══ ⚠️⚠️ 2026-09-26 修正：文本模式下块也**不接** ══
+
+     用户纠正：「本身点击选项才应该有选中功能，选中文本应该点击文本
+               选项才行」「选一个区域，这样文本选项的功能不就空置了吗？」
+
+     → 「文本」选项的职责是**划选一段文字**，不是"点一个块"。
+        所以文本模式下该接手势的是**文字层**，不是 `.anno-block`。
+
+     ⚠️ 之前的写法是 `.is-text-mode .anno-block { pointer-events: auto }`，
+        结果块（z-index 2）盖在文字层（z-index 1）之上，**把划选手势吃掉了** ——
+        用户点「文本」后拖拽毫无反应，只能点到块。
+
+     ✅ 现在：`.anno-block` 在**所有**编辑模式下都是 `none`，
+        事件直达底下的文字层（文本模式）或浮层（画框模式）。
 */
 .reader.is-annotating .anno-block {
     pointer-events: none;
 }
 
+/*
+  ⚠️ 文本模式下要**显式**再把块压到文字层之下 ——
+     只写 `pointer-events: none` 的话块仍会**遮挡**文字层的视觉高亮
+     （块的边框/标签会画在选中色块之上）。
+     `z-index: 0` 让块退到文字层（z-index 1）下面。
+*/
 .reader.is-annotating.is-text-mode .anno-block {
-    pointer-events: auto;
+    pointer-events: none;
+    z-index: 0;
 }
 
 /*

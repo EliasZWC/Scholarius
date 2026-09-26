@@ -236,7 +236,6 @@
             'reader.annotateTextTip': 'Tap a text region to reclassify it.',
             'reader.pickTextType': 'Reclassify As',
             'reader.annotateNoLine': 'This Region Has No Line Data.',
-            'reader.makeRegion': 'Make Region',
             'reader.annotatePickTip': 'Pick An Option Below To Start.',
 
             // 标注类型（全是短语 → 首字母大写）
@@ -261,6 +260,7 @@
 
             // 区间选择（长按起块，再点终点）
             'reader.rangeArmed': 'Range Start Set. Tap The End Region.',
+            'reader.selectTextTip': 'Drag Across The Text To Select A Range.',
             'reader.editMark': 'Edit',
 
             // 清空（按类型整体清除）
@@ -564,7 +564,6 @@
             'reader.annotateTextTip': '点一下文字区域即可重新归类。',
             'reader.pickTextType': '改为哪一类',
             'reader.annotateNoLine': '该区域没有行号数据，无法标注。',
-            'reader.makeRegion': '建立区域',
             'reader.annotatePickTip': '选一个下方选项开始。',
 
             // 标注类型
@@ -589,6 +588,7 @@
 
             // 区间选择（长按起块，再点终点）
             'reader.rangeArmed': '起点已设，请点终点区域。',
+            'reader.selectTextTip': '在文字上横向拖动，划选一段文字。',
             'reader.editMark': '编辑',
 
             // 清空（按类型整体清除）

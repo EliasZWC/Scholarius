@@ -121,9 +121,6 @@
     var detailBtn = null;
     var viewToggleBtn = null;
     var annotateBtn = null;
-    var selFabEl = null;
-    var selFabLabelEl = null;
-    var selFabIconEl = null;
     var bottomEl = null;
     var tocBtn = null;
     var settingsBtn = null;
@@ -269,9 +266,6 @@
         detailBtn = document.getElementById('reader-detail');
         viewToggleBtn = document.getElementById('reader-view-toggle');
         annotateBtn = document.getElementById('reader-annotate');
-        selFabEl = document.getElementById('reader-sel-fab');
-        selFabLabelEl = document.getElementById('reader-sel-fab-label');
-        selFabIconEl = document.getElementById('reader-sel-fab-icon');
         bottomEl = document.getElementById('reader-bottom');
         tocBtn = document.getElementById('reader-toc-btn');
         settingsBtn = document.getElementById('reader-settings-btn');
@@ -1290,16 +1284,36 @@
         var finish = function () {
             if (startPt) {
                 /*
-                  ⚠️ 松手后**不要清高亮** —— 用户还要看着它决定
-                     "要不要建区域"。清掉就变成"一闪而过"了。
-                     只把选择结果通知出去（让外面的按钮浮现）。
+                  ⚠️ 松手后**不要清高亮** —— 用户还要看着它确认选对了没有。
+                     清掉就变成"一闪而过"了。
+
+                  ══ ⚠️⚠️ 选中后**直接浮出类型选项**（2026-09-26 用户纠正）══
+
+                  用户的流程要求：
+                    「进编辑模式 → 点「文本」→ 才能选字」
+                    「选中后直接浮出类型选项」
+
+                  所以这里不再"浮出一个按钮让用户再点一次" ——
+                  那是我第一版的做法，用户指出它让编辑栏的「文本」选项
+                  变得毫无作用（"选一个区域，这样文本选项的功能不就空置了吗？"）。
+
+                  ✅ 正确顺序：
+                     点「文本」选项（开启选字）→ 划选 → 松手 → 类型直接出来
+                  ⚠️ 选完类型后**流程结束**，不自动退出编辑模式 ——
+                     用户往往要连着标好几段（标标题、再标摘要）。
+                     退出由用户点「文本」取消或点「完成」。
                 */
                 var text = '';
                 try {
                     var s = global.getSelection();
                     text = s ? String(s) : '';
                 } catch (e) { text = ''; }
-                notifySelection(text || null);
+
+                if (text && currentSelection) {
+                    openSelectionTypePicker();
+                } else {
+                    notifySelection(null);
+                }
             }
             startPt = null;
         };
@@ -2303,6 +2317,32 @@
              那正是现在这个 bug 的形态。
         */
         root.classList.toggle('is-drawing', annotating && isDrawingMode());
+
+        /*
+          ⚠️ 离开「文本」模式时要把划选状态一起清掉（2026-09-26）。
+
+             理由：高亮是「文本」模式的**专属视觉** —— 它是"待转化为
+             区域的一段文字"。切到画框模式或退出编辑模式后，
+             用户看到一段蓝底文字却做不了任何事，只会困惑。
+
+             ⚠️ 放在 syncModeClass 里而不是各调用点 ——
+                本函数是 `is-text-mode` 类的**唯一写入者**（见上面的说明），
+                状态清理跟着状态写入走才不会漏。
+        */
+        if (!isTextMode()) {
+            clearTextSelection();
+            clearRawSelectionHighlight();
+        } else {
+            /*
+              ⚠️ 进入「文本」模式给一句提示（用户 2026-09-26 的流程要求）——
+                 否则用户点了「文本」后不知道接下来该干什么：
+                 屏幕上看不出任何变化（文字层是透明的）。
+
+                 ⚠️ 复用 showAnnoTip（它自带几秒后自动消失）——
+                    常驻的提示条会一直挡着页面内容。
+            */
+            showAnnoTip('reader.selectTextTip');
+        }
     }
 
     /**
@@ -2784,42 +2824,55 @@
      *    · 编辑模式下文字层不接手势（`pointer-events: none`），
      *      这条路径自然不生效，两者不冲突。
      */
+    /**
+     * 「选中文字 → 建立区域」的接线（v0.1.32，2026-09-26 根据用户纠正重做）。
+     *
+     * ══ 正确流程（用户明确给出）══
+     *
+     *   进编辑模式 → 点「文本」选项 → 划选一段文字 → 松手
+     *   → **类型选项直接浮出** → 选中类型即落笔
+     *
+     * 用户原话：
+     *   「本身点击选项才应该有选中功能，选中文本应该点击文本选项才行」
+     *   「选一个区域，这样文本选项的功能不就空置了吗？」
+     *   「选中后直接浮出类型选项」
+     *
+     * ══ ⚠️⚠️ 我第一版做错了什么 ══
+     *
+     * 我做成了：非编辑模式也能选字 → 浮出一个「+ Make Region」按钮 →
+     * 点按钮才出类型。两个问题：
+     *   ① 编辑栏的「文本」选项变得**毫无作用**（它本来是选字的开关）；
+     *   ② 多一个多余步骤（选完还要再点一次按钮）。
+     *
+     * ✅ 现在：选字能力**只属于「文本」选项**，且选中后直接出类型。
+     *    那个浮动按钮**已删除**。
+     *
+     * ⚠️ 「选字能力只属于文本选项」靠 **CSS** 实现（`pointer-events` 只在
+     *    `.reader.is-annotating.is-text-mode .pdf-text-layer` 上为 `auto`），
+     *    这里不做 JS 判断 —— 一个状态由两处管会出现不同步（本项目吃过亏）。
+     */
     function mountSelectionFab() {
-        if (!selFabEl) return;
-
-        if (selFabIconEl && global.ScholariusUI && global.ScholariusUI.icon) {
-            selFabIconEl.innerHTML = global.ScholariusUI.icon('add');
-        }
-        if (selFabLabelEl) {
-            selFabLabelEl.textContent = t('reader.makeRegion');
-        }
-
         /*
-          ⚠️ 按钮自己**不能**带走高亮 —— 它浮在文字层之上，
-             点它时文字层收不到 pointerdown，高亮自然留着。
-             （这也是为什么按钮要放在文字层**外面**：
-               放层内会先触发 bindTextLayerSelect 的 pointerdown 而清掉选区。）
+          ⚠️ 保留这个函数名与 `onTextSelection` 接线，因为
+             `bindTextLayerSelect` 的 finish 里还会调 `notifySelection`
+             （选中为空时用它收尾）。但**不再有任何浮动按钮**。
         */
-        selFabEl.addEventListener('click', function () {
-            if (!currentSelection) {
-                hideSelectionFab();
-                return;
-            }
-            openSelectionTypePicker();
-        });
-
         onTextSelection = function (text, sel) {
             if (text && sel) {
                 currentSelection = sel;
-                selFabEl.hidden = false;
             } else {
-                hideSelectionFab();
+                currentSelection = null;
             }
         };
     }
 
-    function hideSelectionFab() {
-        if (selFabEl) selFabEl.hidden = true;
+    /**
+     * 清掉当前的划选状态（高亮 + 记录的行区间）。
+     *
+     * ⚠️ 名字从 `hideSelectionFab` 改过来（2026-09-26）——
+     *    那个浮动按钮已删，这个函数现在只清状态、不涉及任何按钮。
+     */
+    function clearTextSelection() {
         currentSelection = null;
     }
 
@@ -2909,6 +2962,22 @@
         var rowCount = gTo - gFrom + 1;
         var fakeText = new Array(rowCount + 1).join('x\n').replace(/\n$/, '');
         var fakeBlock = { line: gFrom, text: fakeText, kind: 'paragraph' };
+
+        /*
+          ⚠️⚠️ 必须清掉 `rangeAnchor`（2026-09-26）
+
+             它是**逐块点选**那条路径的"区间起点"（长按某块 → 再点另一块）。
+             我们这里是划选，区间**已经确定**（gFrom..gTo），
+             不需要它参与。
+
+             ⚠️ 不清的后果：`applyTextType` 里
+                `hasRange = (toLineOverride != null && rangeAnchor && ...)` ——
+                如果上一次逐块操作留了个锚点，这里会按**锚点**算 from，
+                落笔位置就完全错了（标到用户没选的地方）。
+
+             实测踩过同类：`rangeAnchor` 残留导致"清空后重新标注落错位置"。
+        */
+        rangeAnchor = null;
 
         /*
           ⚠️ 复用编辑模式那套 `.anno-typesheet` 外壳 ——
@@ -3382,7 +3451,7 @@
              ⚠️ 高亮也要清：它现在代表"选中的待标注内容"，
                 标注完了就不再是"待标注"，留着会让人以为还悬着。
         */
-        hideSelectionFab();
+        clearTextSelection();
         clearRawSelectionHighlight();
 
         trace('reader:annotate', 'text ' + type +
@@ -4452,7 +4521,7 @@
              收掉比留一个坏按钮好。
         */
         if (view !== 'raw') {
-            hideSelectionFab();
+            clearTextSelection();
         } else {
             clearRawSelectionHighlight();
         }
