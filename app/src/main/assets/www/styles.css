@@ -1505,6 +1505,34 @@ body:has(.reader.is-raw.is-annotating.is-drawing) {
     padding-top: var(--reader-top-h);
 }
 
+/*
+  ══ ⚠️⚠️ 底部同样要补偿（2026-09-26 补）══
+
+  用户原话：「原来编辑模式下 pdf 顶部底部都不被唤起菜单所遮盖，
+             现在遮盖住了」
+
+  实测（tools/_edges.py，滚到最底）：
+      底栏顶边 y = 827
+      最低的块 bottom = 890     ← ⚠️ 被压住 63px
+      padding-bottom = 0px      ← 没有补偿
+
+  顶部有 `padding-top`（113px），底部却没有 → 页尾最后一块够不到，
+  与顶部那个 bug 完全对称，只是之前只修了顶部。
+
+  ⚠️ 高度要算**编辑栏 + 底栏**，不能只算底栏 ——
+     编辑模式下底栏位置被 `.reader-editbar` 取代（见
+     `.reader.is-annotating .reader-bottom { display: none }`），
+     但 `.reader-stack` 整体仍然占位。用 `--reader-top-h` 那套变量里的
+     底栏高度（64px 内容 + 安全区）。
+
+  ⚠️ 为什么不用 `scroll-padding-bottom`：那只影响 `scrollIntoView`
+     与锚点跳转，**不改滚动范围** —— 用户手动滚到底时最后一块仍然
+     沉在底栏下面。必须用 padding（属于滚动内容的一部分）。
+*/
+.reader.is-annotating .reader-body {
+    padding-bottom: calc(64px + var(--safe-bottom) + 12px);
+}
+
 .reader-content {
     /*
     ⚠️ 顶部内边距 = 状态栏高度 + 一点呼吸空间。
@@ -2404,14 +2432,27 @@ body:has(.reader.is-annotating.is-text-mode .pdf-text-layer) {
 }
 
 /*
-  ⚠️ 文本模式下要**显式**再把块压到文字层之下 ——
-     只写 `pointer-events: none` 的话块仍会**遮挡**文字层的视觉高亮
-     （块的边框/标签会画在选中色块之上）。
-     `z-index: 0` 让块退到文字层（z-index 1）下面。
+  ⚠️⚠️ 文本模式下块**仍然要看得见**（2026-09-26 修回）
+
+  我上一版把这里写成了 `z-index: 0`，想把块退到文字层之下 ——
+  结果是**用户看不到自己标过的区域了**：
+
+      用户原话：「重新进入文献，之前标记的都没有了」
+
+  实测确认数据都还在（`anno-box` 3 个、可见块 81 个、
+  `abstract`/`author` 标注正确加载），但 `.anno-block` 被压到
+  文字层（z-index 1）之下 → 视觉上消失。
+
+  ⚠️ 我误判了：以为"块会遮挡文字高亮"是个问题，
+     其实块默认是 `background: transparent; border: transparent`，
+     只有标过的（`:not(.anno-block-body)`）才有淡底 + 左侧色条 ——
+     让它显示出来正是用户要的"看得出哪些标过"。
+
+  ✅ 所以只保留 `pointer-events: none`（让划选手势直达文字层），
+     **不动 z-index**。
 */
 .reader.is-annotating.is-text-mode .anno-block {
     pointer-events: none;
-    z-index: 0;
 }
 
 /*
