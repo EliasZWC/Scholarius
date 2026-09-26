@@ -861,6 +861,13 @@
         */
         layer.setAttribute('aria-hidden', 'true');
 
+        /*
+          ⚠️ 行号配对用的**游标**（见下面 textToBlockLine 的说明）。
+              挂在对象里而不是普通变量 —— 因为它在闭包里要被
+              textToBlockLine 读写（JS 没有传引用）。
+        */
+        var glCursor = { v: 0 };
+
         var frag = document.createDocumentFragment();
         /*
           ⚠️⚠️ 每个词要知道自己属于**哪一行**（2026-09-25 新增）
@@ -925,6 +932,71 @@
                  （切视图、懒加载重排），属性跟着 DOM 走最可靠。
             */
             span.dataset.row = String(rowIdx);
+            /*
+              ⚠️⚠️ 行号在**这里**统一补上（2026-09-26 第五次修正 —— 最终方案）
+
+                 前四次尝试全部失败，根因各不相同，记在这里别再回头：
+
+                  ① `页首块行号 + 页内视觉行号`
+                     ❌ `data-row` 是视觉行、`block.line` 是文本行，两套编号。
+                  ② 前端 y 坐标反查
+                     ❌ 段落块的包围盒是段落级，只能定位到段落（偏到段首）。
+                  ③ 前端用词去 `block.text` 里搜
+                     ❌ PDF 提取的块文本与页面上的词对不上
+                        （实测 `sequences.` `Aligning` 在任何块里都没有）。
+                  ④ 原生算好行号发给前端
+                     ❌ **原生不知道前端最终用哪个数组**：
+                        Kotlin 的 `outBlocks` 是**去重前**的，
+                        而前端用的 `lastBlocks` 是 `dropContainedBlocks`
+                        **去重后**的（实测：原生说第 2 页首块下标是 100，
+                        前端却认为第 2 页从 53 开始）。下标必然错位。
+
+                 ✅ 正解：**在前端、用最终的 `lastBlocks` 数组来配对。**
+                     此刻手上有：
+                       · `L`（含 `L.t`）—— 本页 PDF 的排版行原文
+                       · `lastBlocks` —— **最终**的块数组（page / line / text）
+                     两者都按阅读顺序，用 `glCursor` 双游标贪心配对即可。
+                     得到的 `block.line` 与 `textMarks` 用的是**同一个数组
+                     的下标**，天然一致。
+
+                 ⚠️⚠️ 一条排版行可能跨**多个块** —— 所以记的是
+                     `gFrom` / `gTo`（覆盖的块区间），不是单个行号。
+
+                     实测（tools/_cmp.py）：文字层第 1 行是
+                     「Recurrent models typically factor computation along
+                       the symbol positions of the input and output」
+                     而 `lastBlocks` 把它切成了**四个块**：
+                       line=53「Recurrent models」
+                       line=54「typically factor」
+                       line=55「computation along the symbol」
+                       line=56「positions of the input and output」
+
+                     所以只记一个值是不够的 —— 划选这一行时
+                     应该标注 53..56 整个区间。
+
+                 ⚠️ `L.g`（原生给的）**只作兜底** —— 实测它用的是去重前的
+                     数组，通常偏大，但比完全没有好。
+            */
+            var gl = textToBlockRange(L.t, L.y0, L.y1, page, glCursor);
+            if (gl && gl.to >= gl.from && gl.from >= 0) {
+                glCursor.v = gl.cursor;
+                span.dataset.gf = String(gl.from);
+                span.dataset.gt = String(gl.to);
+            }
+            /*
+              ⚠️⚠️ 匹配失败时**不用原生 `L.g`**（2026-09-26 第七次修正）
+
+                  原生 `L.g` 是在 Kotlin 的 `outBlocks`（**去重前**）上算的，
+                  而前端的 `block.line` 是 `lastBlocks`（**去重后**）的下标 ——
+                  两者量级不同。实测同一个位置：原生给 **218**，前端是 **58**。
+
+                  用它当兜底会把标注落到完全无关的一页去
+                  （实测 `to=218` 打到了第 5 页），比"不标"糟糕得多。
+
+                  ✅ 宁可不写 `gf`/`gt` —— 上层 `openSelectionTypePicker`
+                     会用 `rowsToGlobalFrom`（y 反查）兜底，
+                     那个至少落在**同页**，只会偏到段落而不是偏到别的页。
+            */
             span.style.left = (L.x0 * 100) + '%';
             span.style.top = (L.y0 * 100) + '%';
             span.style.width = (w * 100) + '%';
@@ -955,6 +1027,188 @@
         slot.appendChild(layer);
         bindTextLayerPan(layer);
         bindTextLayerSelect(layer);
+    }
+
+    /**
+     * 把一条 PDF 排版行的原文，配到 `lastBlocks` 里的**块行号区间**。
+     *
+     * ══ 为什么必须在这一层做（第五次修正的结论）══
+     *
+     * `textMarks` 的 `from/to` 用的是 `block.line`，
+     * 而 `block.line` 由 `buildRegions` 在**去重之后**的数组上现算：
+     *
+     *     var row = 0;
+     *     for (每个块) { b.line = row; row += b.text.split('\n').length; }
+     *
+     * 关键在于"**去重之后**" —— `dropContainedBlocks` 会丢掉一批块，
+     * 下标整体前移。所以任何**在去重之前**算出来的行号（比如原生
+     * `PdfText` 在 `outBlocks` 上算的）都会偏大。
+     * 实测：原生说第 2 页首块下标 100，前端实际是 53。
+     *
+     * ✅ 只有这里同时具备"最终的 `lastBlocks`"和"PDF 排版行原文"，
+     *    所以配对必须在这一层做。
+     *
+     * ══ ⚠️⚠️ 返回的是**区间**，不是一个值 ══
+     *
+     * 实测（tools/_cmp.py）：`lastBlocks` 把**一条视觉行**切成了多个块 ——
+     *
+     *     文字层第 1 行：
+     *       「Recurrent models typically factor computation along
+     *         the symbol positions of the input and output」
+     *     lastBlocks 里却是四块：
+     *       line=53「Recurrent models」
+     *       line=54「typically factor」
+     *       line=55「computation along the symbol」
+     *       line=56「positions of the input and output」
+     *
+     * 只记一个行号的话，用户划这一行只会标中其中一块（实测标到 53，
+     * 而用户看到的是整行）。所以返回 `from..to`，让上层标整个区间。
+     *
+     * ══ 配对算法：把排版行按**空格切成词**，逐词推进游标 ══
+     *
+     * 块文本也是"词用空格连起来"的（合并产物），所以：
+     *   ① 把排版行切成词；
+     *   ② 维护一个游标（页内块索引），从当前块开始；
+     *   ③ 每个词在**当前块**里找；找不到就前进到下一块再找；
+     *   ④ 记录第一个命中块与最后一个命中块 → 即 `from..to`。
+     *
+     * ⚠️ 游标**只前进**：PDF 的行序与块序一致，允许后退会串行。
+     *
+     * ⚠️ 词的匹配用 `indexOf` 递进游标（块内可能有重复词），
+     *    这样同一块里出现两次「the」也能按顺序对上。
+     *
+     * ══ ⚠️⚠️ 用 **y 范围**兜住"跑到别处去"（第六次修正，最终方案）══
+     *
+     * 前五版全部在"游标该前进多少"上翻车（详见函数里的编号注释）：
+     * 无论给"每词一块""整行 3 块""只移动一次"，都会在**常用词**
+     * （the / of / in / and）上失控 —— 它们在**每个**块里都有，
+     * 于是贪心总会把游标往前拽，实测 `to` 漂到 216（页中段）。
+     *
+     * ✅ 正解：**用 y 做硬约束。**
+     *
+     * `lastBlocks[].y0/y1` 与排版行的 `y0/y1` 是同一套归一化坐标，
+     * 所以"这一行属于哪些块"在几何上是确定的：
+     *
+     *     `block.y1 >= row.y0 - eps` 且 `block.y0 <= row.y1 + eps`
+     *
+     * 也就是**纵向有重叠**。先把候选块筛成"纵向相交的块"，
+     * 再在这些块里做文字配对 —— 候选集通常只有 1~4 个，
+     * 贪心再多也跑不出这个范围。
+     *
+     * ⚠️ 这一步不是"用 y 定位"（第二轮试过，失败）——
+     *    失败的是"只靠 y 选一个块"，段落块会把整段都算进来。
+     *    这里是"**用 y 限定搜索范围**，再在范围内用文字精确配对"，
+     *    两者互补：y 保证不跑偏，文字保证落对块。
+     *
+     * ⚠️ 候选集为空（坐标缺失）时**退回全页块**，再走原来的贪心。
+     *
+     * @param {String} text 排版行原文
+     * @param {Number} rowY0 该行归一化 y0（0..1）
+     * @param {Number} rowY1 该行归一化 y1（0..1）
+     * @param {Number} page 1 起
+     * @param {Object} cursor 游标 `{v:Number}`，`v` 是**页内块索引**
+     * @return {Object|null} `{from, to, cursor}`
+     */
+    function textToBlockRange(text, rowY0, rowY1, page, cursor) {
+        if (!lastBlocks || !lastBlocks.length) return null;
+        var target = (text || '').trim();
+        if (!target) return null;
+
+        /* 本页的块（保持 `lastBlocks` 里的原始顺序） */
+        var pageBlocks = [];
+        for (var i = 0; i < lastBlocks.length; i++) {
+            var b = lastBlocks[i];
+            if (!b || b.page !== page) continue;
+            if (b.line == null || !b.text) continue;
+            pageBlocks.push(b);
+        }
+        if (!pageBlocks.length) return null;
+
+        /* ── 用 y 范围筛出"纵向与本行相交"的块 ── */
+        var cands = [];
+        if (rowY0 != null && rowY1 != null && rowY1 >= rowY0) {
+            /*
+              ⚠️ eps 取行高的一半：块的 y 来自 PDF 行盒子，行的 y 也是，
+                 两者理论重合，但浮点往返会有 1e-6 级抖动。
+                 取行高一半（约 0.004）足够吸收，又不会吞掉邻行。
+            */
+            var eps = Math.max((rowY1 - rowY0) * 0.5, 0.002);
+            for (var c = 0; c < pageBlocks.length; c++) {
+                var pb = pageBlocks[c];
+                if (pb.y1 <= pb.y0) continue;          /* 无有效盒子 */
+                if (pb.y1 < rowY0 - eps) continue;     /* 块在本行上方 */
+                if (pb.y0 > rowY1 + eps) continue;     /* 块在本行下方 */
+                cands.push(c);
+            }
+        }
+
+        /*
+          ⚠️⚠️ 候选集为空 → **直接返回 null，不要退回全页搜索**
+             （2026-09-26 第七次修正 —— 这是 `to=218` 的根因）
+
+          曾经写成"坐标缺失 → 退回全页"，听起来是合理的兜底，
+          实际非常危险：全页搜索时**常用词**（the / of / in）
+          会在几十个块里命中，实测把 `to` 拖到第 5 页（218）。
+
+          实测日志（tools/_cands.py 与 logcat 的 reader:sel）：
+              row 2..2  gf=57  gt=218   ← 同一行里一个词配到 57、另一个配到 218
+
+          ✅ 候选集为空只可能是"这一行的 y 在块列表里找不到对应"
+             （坐标缺失 / 该页块还没构建）—— 此时**宁可不标**
+             （返回 null，上层会退化成原生 `g` 或 y 反查），
+             也不要让词跑到别的页去。
+        */
+        if (!cands.length) return null;
+
+        var at = cursor && typeof cursor.v === 'number' ? cursor.v : 0;
+        if (at < 0) at = 0;
+        if (at >= pageBlocks.length) at = pageBlocks.length - 1;
+        if (cands.indexOf(at) < 0) at = cands[0];
+
+        var words = target.split(/\s+/);
+        var minIdx = -1;
+        var maxIdx = -1;
+
+        for (var k = 0; k < words.length; k++) {
+            var word = words[k];
+            if (!word) continue;
+
+            /*
+              ⚠️ 搜索范围 = **候选集**（纵向相交的块，通常 1~4 个）。
+                 因为范围已被 y 钉死，不需要任何"允不允许前进"
+                 的游标规则 —— 那正是前六版翻车的地方。
+            */
+            var hit = -1;
+            for (var q = 0; q < cands.length; q++) {
+                if (pageBlocks[cands[q]].text.indexOf(word) >= 0) {
+                    hit = cands[q];
+                    break;
+                }
+            }
+            if (hit < 0) continue;                 /* 跳过找不到的词 */
+
+            /*
+              ⚠️⚠️ 取候选集里的 **min / max**，不是"最后命中的那个"。
+
+                  踩过：写成 `if (firstHit<0) firstHit=hit; lastHit=hit;`
+                  于是同一行里「states」(块 57) 之后遇到「as」(块 58)，
+                  `lastHit` 被改成 58，再遇到「a」(块 57) 又改回 57……
+                  最终值取决于**遍历顺序**，不稳定。
+
+                  ✅ 直接记下候选集位置的最小/最大值，与词序无关。
+                  这样"一行跨 57~58"必定得到 `57..58`。
+            */
+            if (minIdx < 0 || hit < minIdx) minIdx = hit;
+            if (maxIdx < 0 || hit > maxIdx) maxIdx = hit;
+            at = hit;
+        }
+
+        if (minIdx < 0) return null;
+        return {
+            from: pageBlocks[minIdx].line,
+            to: pageBlocks[maxIdx].line,
+            cursor: at
+        };
     }
 
     /**
@@ -1226,11 +1480,179 @@
         }
 
         /*
-          ⚠️ 记下选区归属的**页面内行号区间**（供「建立区域」用）。
-             用 dataset.row（mountTextLayer 里按 y 聚类算出来的），
-             不是 DOM 索引 —— 同一行的多个词共享一个 row 值。
+          ⚠️⚠️ 记下选区的**首尾 y 坐标**（归一化 0..1），而不是行号（2026-09-26 改）。
+
+             原来记的是 `{rowFrom, rowTo}`（页内行号），上层再用
+             `base + rowFrom` 换算全局行号 —— 实测那是错的（见
+             rowsToGlobalFrom 的函数头：块数 ≠ 行数）。
+
+             ✅ 改记 y 坐标：`style.top` 就是词相对页面的 y，
+                与 `lastBlocks[].y0/y1` **同一套坐标系**，
+                上层直接用它反查块即可，无需任何索引假设。
+
+             ⚠️⚠️ **必须除以 100**（2026-09-26 真机抓到的单位错）
+                 `style.top` 是**百分比字符串**（"10.3489%"），
+                 `parseFloat` 得到 **10.3489**；而块的 `y0` 是
+                 **归一化 0..1**（0.1035）。两者相差 100 倍。
+
+                 不除的后果：`rowY=10.3489` 对任何块都不在
+                 `[y0-TOL, y1+TOL]` 内 → `rowsToGlobalFrom` 恒返回 null
+                 → 永远弹「annotateNoLine」、类型选项永远不出现。
+                 实测症状正是用户报的：
+                 「选中和建立区域完全没有关系」。
+
+             ⚠️ 用 `rFirst` / `rLast` 两行的 y，而不是起点/终点词的 y ——
+                用户从一行的中间拖到下一行的中间时，起止 y 会落在这两行
+                内部，而块是按**行盒子**给的，取**行的 y** 最稳。
         */
-        currentSelection = { rowFrom: rFirst, rowTo: rLast };
+        var yFirst = null;
+        var yLast = null;
+        var wFirst = byRow[rFirst];
+        var wLast = byRow[rLast];
+        if (wFirst && wFirst.length) {
+            yFirst = parseFloat(wFirst[0].style.top);
+        }
+        if (wLast && wLast.length) {
+            yLast = parseFloat(wLast[0].style.top);
+        }
+        /* 百分比 → 归一化（见上面 ⚠️） */
+        if (!isNaN(yFirst)) yFirst = yFirst / 100;
+        else yFirst = null;
+        if (!isNaN(yLast)) yLast = yLast / 100;
+        else yLast = null;
+
+        /*
+          ⚠️⚠️ 同时记下**选中行的词序列**（2026-09-26 新增，用于文字匹配）
+
+             为什么还需要文字（而不是只用 y 坐标）：
+             坐标反查看起来更"物理"，但实测**段落块的包围盒是段落级的** ——
+             Kotlin 的 `mergeParagraphs` 会把同一段的多个排版行合并成一个块，
+             而 `mergeBox` 取的是**整段的外接矩形**（`y0` = 段首行的顶）。
+             于是"用 y 反查块"会把段落中间的行也匹配到段首的那个块，
+             落笔位置就偏到段首去了。
+
+             实测（tools/verify_select.py 第 2 轮）：
+                 用户划  y≈0.117 的 「sequences. Aligning the positions to …」
+                 落笔到 `line 57` = 「sequence of hidden states」
+             —— 正是段首块，差了一行。
+
+             ✅ 文字匹配没有这个问题：`block.text` 与
+                `textLines[block.line]` 是**同一份字符串**
+                （`buildRegions` 里 `block.line` 就是按
+                 `text.split('\n')` 的下标累加出来的），
+                所以"选中行的词"一定能在**正确那一行**里逐字找到。
+
+             ⚠️ 存成**词数组**而不是拼接好的句子：
+                拼接时用空格会把真正的标点/换行差异抹掉，
+                而 PDF 的词边界本来就不带标点空格信息
+                （实测「time,」是一个词、「sequences.」是一个词）。
+                逐词匹配比整句匹配稳。
+        */
+        var wordsFirst = [];
+        var wordsLast = [];
+        if (wFirst) {
+            for (var wf = 0; wf < wFirst.length; wf++) {
+                var tf = wFirst[wf].textContent;
+                if (tf) wordsFirst.push(tf);
+            }
+        }
+        if (wLast) {
+            for (var wl = 0; wl < wLast.length; wl++) {
+                var tl = wLast[wl].textContent;
+                if (tl) wordsLast.push(tl);
+            }
+        }
+
+        /*
+          ⚠️⚠️ 优先用原生给的**全文行号**（2026-09-26 最终方案）
+
+              见 Kotlin `Line.globalLine` 的长注释：前端事后换算
+              （行号索引 / y 反查 / 文字搜索）三种全部不可靠。
+
+              ✅ 原生在产出文字层时就带上 `g` —— 它就是
+                 `textLines` 的下标，与 `textMarks` **同一套编号**，
+                 不需要任何换算。
+
+              同一视觉行的所有词共享同一个 `g`，所以取行内第一个即可。
+        */
+        /*
+          ⚠️⚠️ 一条排版行可能跨**多个块** —— 所以对每一端都取
+             行内词的 **min(gf) .. max(gt)**。
+
+             实测（tools/_cmp.py）：文字层第 1 行是
+               「Recurrent models typically factor computation along
+                 the symbol positions of the input and output」
+             而 `lastBlocks` 把它切成了四个块：
+               line=53「Recurrent models」
+               line=54「typically factor」
+               line=55「computation along the symbol」
+               line=56「positions of the input and output」
+             用户划这一行时应该标 53..56 整个区间。
+
+          ⚠️ min 与 max 必须用**两个独立变量** —— 第一批写成
+             `if (v > gFirst) gFirst = v` 混在一个变量里，
+             于是 min 被 max 覆盖，结果只剩 56（踩过）。
+        */
+        var gFirst = null;
+        var gLast = null;
+
+        function scanRow(words, setMin, setMax) {
+            if (!words) return;
+            for (var i2 = 0; i2 < words.length; i2++) {
+                var lo = parseInt(words[i2].dataset.gf, 10);
+                var hi = parseInt(words[i2].dataset.gt, 10);
+                if (lo >= 0 && (setMin.v == null || lo < setMin.v)) {
+                    setMin.v = lo;
+                }
+                if (hi >= 0 && (setMax.v == null || hi > setMax.v)) {
+                    setMax.v = hi;
+                }
+            }
+        }
+
+        var minFirst = { v: null };
+        var maxFirst = { v: null };
+        var minLast = { v: null };
+        var maxLast = { v: null };
+        scanRow(wFirst, minFirst, maxFirst);
+        scanRow(wLast, minLast, maxLast);
+
+        /*
+          ⚠️ 起点行取 min、终点行取 max —— 反向拖拽时上层会自己交换，
+             这里只要保证"每一端的区间"是完整的。
+        */
+        gFirst = (minFirst.v != null) ? minFirst.v : maxFirst.v;
+        gLast = (maxLast.v != null) ? maxLast.v : minLast.v;
+
+        trace('reader:sel', 'row ' + rFirst + '..' + rLast
+              + ' gf=' + gFirst + ' gt=' + gLast
+              + ' y=' + yFirst + '..' + yLast
+              + ' wordsFirst=' + wordsFirst.length
+              + ' wordsLast=' + wordsLast.length);
+
+        /*
+          ⚠️ 页码在此刻就记下 —— 由**本层自己的 slot** 决定，
+             不要等到落笔时再用 `currentSelectionPage()` 反查
+             （那是"找哪个层有 .is-selected"，而划选刚结束时
+              高亮可能已被别的逻辑清掉，查不到）。
+        */
+        var selSlot = layer.closest('.pdf-slot');
+        var selPage = 0;
+        if (selSlot && selSlot.dataset.page != null) {
+            selPage = parseInt(selSlot.dataset.page, 10) || 0;
+        }
+
+        currentSelection = {
+            rowFrom: rFirst,
+            rowTo: rLast,
+            yFrom: yFirst,
+            yTo: yLast,
+            wordsFrom: wordsFirst,
+            wordsTo: wordsLast,
+            gFrom: gFirst,
+            gTo: gLast,
+            page: selPage
+        };
     }
 
     layer.addEventListener('pointerdown', function (ev) {
@@ -1303,13 +1725,36 @@
                      用户往往要连着标好几段（标标题、再标摘要）。
                      退出由用户点「文本」取消或点「完成」。
                 */
+                /*
+                  ══ ⚠️⚠️ 判据必须用 `currentSelection`，**不能**用 `getSelection()` ══
+                     （2026-09-26 真机抓到的最后一个根因）
+
+                  旧代码是：
+                      var text = String(getSelection());
+                      if (text && currentSelection) openSelectionTypePicker();
+
+                  真机实测：`touch-action: none` 之下浏览器**不维护选区** ——
+                  高亮明明画出来了（`高亮词=11`），但
+                  `String(getSelection()).length === 0`。
+
+                  于是这个 if **永远为假** → 走 else → 什么都不发生。
+                  用户看到的就是：「选中的地方一点其他区域就没了，
+                  看起来选中和建立区域完全没有关系」
+                  —— 高亮是"选中"、弹层是"建立区域"，两者真的没接上。
+
+                  ✅ 判据改成自己维护的 `currentSelection`
+                     （它就是高亮的来源，与视觉状态天然一致）。
+                     `getSelection()` 只用来取**文本内容**（给「复制」和
+                     类型弹层用），取不到也不影响流程 —— 因为标注用的是
+                     `currentSelection.yFrom/yTo` 反查行号，不依赖文本。
+                */
                 var text = '';
                 try {
                     var s = global.getSelection();
                     text = s ? String(s) : '';
                 } catch (e) { text = ''; }
 
-                if (text && currentSelection) {
+                if (currentSelection) {
                     openSelectionTypePicker();
                 } else {
                     notifySelection(null);
@@ -1892,8 +2337,13 @@
         if (!next) {
             // 退出前先存。失败就提示，但不阻止退出
             // （用户可能就想先出去，不想被卡住）
+            //
+            // ⚠️ 用 toast 而**不是** showError —— 后者会清空整个内容区
+            //    （它是为"整页级失败"写的）。存盘失败是局部问题，
+            //    不该让用户看到 PDF 整页消失（见 openSelectionTypePicker
+            //    里的长注释，那是同一个坑）。
             if (!saveAnnotations()) {
-                showError('saveFailed');
+                showAnnoTip('saveFailed');
             }
         }
 
@@ -2894,62 +3344,269 @@
     }
 
     /**
-     * 把「选中的页内行区间」变成一条 textMark。
+     * 把「选中的页内行」映射成**全局文本行号**。
      *
-     * ══ ⚠️⚠️ 行号体系必须换算，不能直接用（2026-09-25）══
+     * ══ ⚠️⚠️ 为什么不能用「页首行号 + 页内行号」（2026-09-26 推倒重做）══
      *
-     * `textMarks` 的 `from/to` 是**全局行号**（`textLines` 的下标，
-     * 那是整篇论文按 `\n` 切分的行）。
-     * 而文字层里的 `data-row` 是**页内行号**（该页按 y 聚类出来的行）。
+     * 第一版写的是 `base + rowFrom`（`base` = 该页最小块行号）。
+     * 实测**错得很彻底**：用户划了正文，落笔却到了第 0 行（文章最开头），
+     * 用户原话「似乎跳到了最开头」。
      *
-     * 换算：全局行号 = 该页第一行在全文中的行号 + 页内行号。
+     * 根因是**两套行号的定义不同，而我在拿一套的索引当另一套用**：
      *
-     * ⚠️ 页首行号从哪来：`textLines` 里数"这一页有多少行"再累加。
-     *    没有逐页行数表可用，所以用**行号区间反查**：
-     *    在 `lastBlocks` 里找 y 坐标落在该页的块，取最小行号。
+     *   · `data-row` 是**页内视觉行** —— `mountTextLayer` 按 y 坐标
+     *     把词聚成行（同一视觉行 → 同一 row）。实测第 1 页 0..49 行。
+     *   · `block.line` 是**文本行号** —— `buildRegions` 按
+     *     `block.text.split('\n').length` 累加出来的。
+     *     实测第 1 页 53 个块，而**多个块共享同一个视觉行**：
      *
-     * ⚠️ 这个换算天然是**近似**的（PDF 的行与"按 \n 切分的行"
-     *    不一定一一对应 —— 双栏论文里左右栏的行会交错）。
-     *    所以宁可**保守**：算不准就不建区域，而不是建一个错的 ——
+     *         #7 y0=0.4644 y1=0.4719 「transduction models are ba」
+     *         #8 y0=0.4644 y1=0.4719 「complex」
+     *         #9 y0=0.4644 y1=0.4719 「recurrent or」
+     *
+     *     同一视觉行被切成 3 个块（PDF 提取的天然碎片），
+     *     所以「块数 ≠ 行数」，`base + rowFrom` 必然错位。
+     *
+     * ══ ✅ 正解：用 **y 坐标**对齐，不用行号索引 ══
+     *
+     * 两边本来就在同一套坐标系里（归一化 0..1、左上原点）：
+     *   · 选中的词 → `style.top`（就是它相对页面的 y 占比）
+     *   · 块       → `y0` / `y1`
+     *
+     * 所以拿选中行的 y，去找**纵向覆盖它**的块，取该块的 `line`。
+     * 这样不依赖"块数 = 行数"这个错误前提。
+     *
+     * ⚠️ 覆盖不到任何块时**返回 null**，让上层拒绝建标注 ——
      *    「留空可接受，错值不可接受」（本项目一贯判据）。
+     *    宁可让用户看到"这里标不了"，也不要标到第 0 行。
+     *
+     * ══ ⚠️⚠️ `page` 是 **1 起**的 ══
+     *
+     * 实测（tools/_ycheck.py）：`getBlocks()` 返回的第一个块是
+     *     {"kind":"heading", ..., "page":1, ...}
+     * 也就是 **`block.page` 从 1 开始**。
+     *
+     * 而 `currentSelectionPage()` 早先返回的是 **0 起**
+     * （它做了 `parseInt(slot.dataset.page) - 1`），
+     * 于是 `b.page !== page` 恒成立 → **一个块都匹配不上 →
+     * 永远返回 null → 类型弹层永远出不来**。
+     * 实测症状：高亮画了 11 个词、anno-tip 弹出「annotateNoLine」，
+     * 但类型选项不出现。
+     *
+     * ✅ 现在两边统一成 **1 起** —— 与 `block.page`、
+     *    `.pdf-slot[data-page]`、Kotlin 的 `PdfText`、`getPdfPageLines`
+     *    全部一致。这也消掉了一处长期存在的"减一/加一"隐患：
+     *
+     *      调用链上唯一真正需要 0 起页码的地方是原生 `PdfText` 的
+     *      `pageLines(pdf, page)`；但它外面已经包了
+     *      `MainActivity.pdfPageLinesFor(id, page)`，
+     *      而 `mountTextLayer(slot, page, id)` 传的就是 `dataset.page`。
+     *      所以 JS 这一侧**全用 1 起**最不容易错。
+     *
+     * ══ ⚠️⚠️ 但 y 反查**不足以定位到行**（2026-09-26 第二轮实测）══
+     *
+     * 段落块的包围盒是**段落级**的（Kotlin `mergeBox` 取整段外接矩形），
+     * 一个块会纵向覆盖它内部的**所有**排版行。所以"y 落在哪个块里"
+     * 只能定位到**段落**，落笔会偏到段首。
+     *
+     * 实测：用户划第 2 个视觉行，落笔到了段首块的 `line`，差一行。
+     *
+     * ✅ 所以定位分两步，**文字优先、坐标为辅**：
+     *    ① [lineByWords] —— 拿选中行的**词序列**去逐块查找，
+     *       找到包含它的那一块，返回该块的 `line`（精确到行）
+     *    ② 文字对不上（PDF 把词切得很碎、有连字/替换字符）才退回
+     *       y 反查（至少能落到正确的段落）
      */
-    function rowsToGlobalFrom(rowFrom, page) {
+    function rowsToGlobalFrom(rowY, page) {
         if (!lastBlocks || !lastBlocks.length) return null;
-        var pageBlocks = [];
-        for (var i = 0; i < lastBlocks.length; i++) {
-            var b = lastBlocks[i];
-            if (b.page !== page) continue;
-            if (b.line == null) continue;
-            pageBlocks.push(b);
-        }
-        if (!pageBlocks.length) return null;
-        pageBlocks.sort(function (a, b) { return a.line - b.line; });
+        if (rowY == null || !(rowY >= 0)) return null;
+        if (page == null) return null;
 
         /*
-          ⚠️ 页内行号是**按 y 排的**，而 b.line 是全局行号 ——
-             两者顺序一致（PDF 自上而下），所以可以按下标对齐。
-             取该页最小行号 + 页内行号，并要求不越出该页范围。
+          ⚠️ 容差：块的 y0/y1 来自 PDF 的行盒子，与词的 `style.top`
+             是**同一套归一化坐标**，理论上严格重合。但两个数都经过
+             浮点序列化（JSON 往返 + 百分比字符串），会有 1e-6 级抖动。
+             给 0.004（约页面高度的 0.4%、A4 上约 1mm）——
+             比一个行距（实测约 0.013）小得多，不会跨行误命中。
         */
-        var base = pageBlocks[0].line;
-        var maxLine = pageBlocks[pageBlocks.length - 1].line;
-        var g = base + rowFrom;
-        if (g < base || g > maxLine) return null;
-        return g;
+        var TOL = 0.004;
+
+        var best = null;
+        var bestDy = Infinity;
+        for (var i = 0; i < lastBlocks.length; i++) {
+            var b = lastBlocks[i];
+            if (!b || b.page !== page) continue;
+            if (b.line == null) continue;
+            if (b.y1 <= b.y0) continue;          // 无有效包围盒
+
+            /* 选中的 y 落在这个块的纵向范围内？ */
+            if (rowY < b.y0 - TOL || rowY > b.y1 + TOL) continue;
+
+            /*
+              ⚠️ 多个块覆盖同一点时（上面 #7/#8/#9 那种同 y 碎片），
+                 取**纵向中心离得最近**的那个 —— 它的文字最可能是
+                 用户手指下面那一行，而不是被合并进来的邻行。
+            */
+            var mid = (b.y0 + b.y1) / 2;
+            var dy = Math.abs(rowY - mid);
+            if (dy < bestDy) {
+                bestDy = dy;
+                best = b;
+            }
+        }
+        return best ? best.line : null;
+    }
+
+    /**
+     * 用**选中的词序列**定位全局行号 —— 精确到行。
+     *
+     * ══ 为什么这条比 y 反查可靠 ══
+     *
+     * `block.text` 与 `textLines[block.line]` 是**同一份字符串**：
+     * `buildRegions` 里 `block.line` 就是按 `text.split('\n')` 的下标
+     * 累加出来的（`row += b.text.split('\n').length`），
+     * 而 `text` 又正好是 `blocks.map(b => b.text).join('\n')`。
+     *
+     * 所以"选中行的词"能在**唯一确定的那一行**里逐字找到 ——
+     * 不受段落包围盒是段落级这一问题的影响。
+     *
+     * ══ 匹配规则（从严到宽，命中即返回）══
+     *
+     *   ① 该块的文本里**按顺序包含选中行的所有词**
+     *      （在同一块内逐词 `indexOf` 递进，保证顺序与相邻）
+     *   ② 退一步：只要求**第一个词**出现（PDF 常把一行切碎成
+     *      多个块，"所有词都在同一块"反而找不到）
+     *
+     * ⚠️ `indexOf` 而不是 `includes`：要递进游标，避免
+     *    「the」在同一块里出现多次时匹配到错误位置。
+     *
+     * ⚠️ 只在**同页**的块里找 —— 跨页不会出现同一行，
+     *    而且 `block.page` 是 1 起的（见 rowsToGlobalFrom 的说明）。
+     *
+     * ⚠️ 找不到返回 null，由调用方回退到 y 反查。
+     *
+     * @param {Array<String>} words 选中行的词（按视觉顺序）
+     * @param {Number} page 1 起
+     * @return {Number|null} 全局行号
+     */
+    function lineByWords(words, page) {
+        if (!lastBlocks || !lastBlocks.length) return null;
+        if (!words || !words.length) return null;
+
+        /* 去掉空白词，并只保留有意义的（PDF 里偶发空串/单空格） */
+        var ws = [];
+        for (var i = 0; i < words.length; i++) {
+            var w = String(words[i] || '').trim();
+            if (w) ws.push(w);
+        }
+        if (!ws.length) return null;
+
+        var first = ws[0];
+        var i2;
+        var b;
+
+        /* ① 全部词按顺序都在同一块里 */
+        for (i2 = 0; i2 < lastBlocks.length; i2++) {
+            b = lastBlocks[i2];
+            if (!b || b.page !== page) continue;
+            if (b.line == null || !b.text) continue;
+            var t = b.text;
+            var cur = 0;
+            var okAll = true;
+            for (var k = 0; k < ws.length; k++) {
+                var at = t.indexOf(ws[k], cur);
+                if (at < 0) { okAll = false; break; }
+                cur = at + ws[k].length;
+            }
+            if (okAll) return b.line;
+        }
+
+        /* ② 只要求第一个词出现（且该块确实属于这一页） */
+        for (i2 = 0; i2 < lastBlocks.length; i2++) {
+            b = lastBlocks[i2];
+            if (!b || b.page !== page) continue;
+            if (b.line == null || !b.text) continue;
+            if (b.text.indexOf(first) >= 0) return b.line;
+        }
+
+        return null;
     }
 
     function openSelectionTypePicker() {
         var sel = currentSelection;
         if (!sel) return;
 
-        var page = currentSelectionPage();
-        var gFrom = rowsToGlobalFrom(sel.rowFrom, page);
-        var gTo = rowsToGlobalFrom(sel.rowTo, page);
+        /*
+          ⚠️ 页码用划选当时记下的 `sel.page`（**1 起**），
+             不要事后用 currentSelectionPage() 反查 ——
+             那个函数靠"哪个层有 .is-selected"来找，
+             而高亮可能已被别的逻辑清掉（实测踩过）。
 
-        if (gFrom == null) {
-            showError('annotateNoLine');
+             ⚠️ 兜底：老数据（没有 page 字段）才回查。
+        */
+        var page = sel.page || currentSelectionPage();
+        /*
+          ⚠️⚠️ 定位全局行号，按**可靠性从高到低**依次尝试：
+
+            ① `sel.gFrom` / `sel.gTo` —— **原生给的全文行号**（2026-09-26）
+               直接用，零换算。这是唯一精确的做法。
+
+            ② `lineByWords` —— 用选中行的词去块文本里搜。
+               仅在原生没给 `g`（-1）时兜底。
+
+            ③ `rowsToGlobalFrom` —— y 坐标反查。
+               最后兜底，只能定位到段落（会偏到段首）。
+
+            实测（tools/verify_select.py）：
+              · 只用 ③ → 第 2 轮落笔偏到段首
+              · 用 ② → `sequences.` 在任何块文本里都不存在，还是落错
+              · 用 ① → 精确命中
+        */
+        var gFrom = (sel.gFrom != null) ? sel.gFrom : null;
+        var gTo = (sel.gTo != null) ? sel.gTo : null;
+
+        if (gFrom == null) gFrom = lineByWords(sel.wordsFrom, page);
+        if (gTo == null) gTo = lineByWords(sel.wordsTo, page);
+
+        if (gFrom == null) gFrom = rowsToGlobalFrom(sel.yFrom, page);
+        if (gTo == null) gTo = rowsToGlobalFrom(sel.yTo, page);
+
+        if (gFrom == null && gTo == null) {
+            /*
+              ══ ⚠️⚠️ 这里**绝不能**调 showError()（2026-09-26 真机抓到的严重 bug）══
+
+              用户报的：「选中的地方一点其他区域就没了，
+                         看起来选中和建立区域完全没有关系」。
+
+              真因就在这一行：旧代码写的是 `showError('annotateNoLine')`，
+              而 `showError` 的实现是——
+
+                  contentEl.textContent = '';     // ← 清空整个内容区！
+                  contentEl.appendChild(hint);    // ← 换成一句提示
+
+              于是**只要有任何一次划选算不出行号，整个 PDF 视图就被擦掉**，
+              页图、文字层、标注层全部消失，用户看到的是
+              "Could Not Extract Text From This PDF."
+              —— 明明 PDF 好得很，文字也提取成功了（实测 1351 行）。
+
+             这个错误的传播面很广：`showError` 当初是为
+              「文本提取失败 / 原生桥不可用」写的，那是**整页级**的失败，
+              清空内容区是对的。但后来被复用到标注这种**局部操作**上，
+              语义就完全错了 —— 局部操作失败不该销毁整页。
+
+              ✅ 改用 `showAnnoTip`：一个非破坏性的 toast，
+                 显示"这里标不了"，页面保持原样。
+            */
+            showAnnoTip('annotateNoLine');
             return;
         }
-        if (gTo == null || gTo < gFrom) gTo = gFrom;
+        if (gFrom == null) gFrom = gTo;
+        if (gTo == null) gTo = gFrom;
+        if (gTo < gFrom) {
+            var swap = gFrom;
+            gFrom = gTo;
+            gTo = swap;
+        }
 
         /*
           ⚠️ 造一个"伪 block"喂给既有的 openTextTypePicker ——
@@ -2986,30 +3643,47 @@
         openTextTypePicker(null, fakeBlock, page);
     }
 
-    /** 当前选中的文字层属于第几页（0 起，与 lastBlocks[].page 同口径） */
+    /**
+     * 当前选中的文字层属于第几页。
+     *
+     * ══ ⚠️⚠️ 返回 **1 起**的页码（2026-09-26 修正）══
+     *
+     * 这里原来返回 **0 起**（做过 `- 1`），依据是一句注释：
+     * "`lastBlocks[].page` 是 0 起"。**那句话是错的。**
+     *
+     * 实测（tools/_ycheck.py）：
+     *     getBlocks()[0] = {"kind":"heading", ..., "page":1, ...}
+     * `block.page` **从 1 开始**，与 `.pdf-slot[data-page]`、
+     * Kotlin `PdfText.Block.page`（注释明写"从 1 开始"）、
+     * `getPdfPageLines(id, page)` 全部一致。
+     *
+     * 所以减 1 的结果是：`rowsToGlobalFrom` 里 `b.page !== page`
+     * **恒成立** → 一个块都匹配不上 → **永远返回 null** →
+     * 类型弹层永远出不来。
+     *
+     * 实测症状（正是用户报的那条）：
+     *   「选中的地方一点其他区域就没了，看起来选中和建立区域完全没有关系」
+     *   —— 高亮画了 11 个词，但弹层不出现，因为行号换算拿不到块。
+     *
+     * ✅ 现在返回 1 起，与其余各处统一。
+     */
     function currentSelectionPage() {
         var layers = document.querySelectorAll('.pdf-text-layer');
         for (var i = 0; i < layers.length; i++) {
             if (!layers[i].querySelector('.pdf-text-line.is-selected')) continue;
             var slot = layers[i].closest('.pdf-slot');
-            /*
-              ⚠️⚠️ `data-page` 是**1 起**的（`for (p = 1; p <= count; p++)`），
-                 而 `lastBlocks[].page` 与 `mountTextLayer(slot, page, id)`
-                 收的 `page` 都是 **0 起**（原生 `PdfText` 的页码）。
-                 这里必须减 1，否则差一页 —— 实测过：
-                 第 1 页选中的文字会被当成第 2 页去找块，`rowsToGlobalFrom`
-                 找不到块直接返回 null，用户看到的是"点了没反应"。
-            */
             if (slot && slot.dataset.page != null) {
-                return (parseInt(slot.dataset.page, 10) || 1) - 1;
+                var p = parseInt(slot.dataset.page, 10);
+                if (p > 0) return p;
             }
+            /* 没有 data-page 时退回 DOM 顺序（同样 1 起） */
             var all = document.querySelectorAll('.pdf-slot');
             for (var j = 0; j < all.length; j++) {
-                if (all[j] === slot) return j;
+                if (all[j] === slot) return j + 1;
             }
-            return 0;
+            return 1;
         }
-        return 0;
+        return 1;
     }
 
     /**
@@ -3374,10 +4048,14 @@
           ⚠️ 块没有行号时无法存（见 AnnotationStore.TextMark 的说明）。
              这是数据缺失而不是用户错误，所以**静默不改**并记一条日志，
              而不是弹一个用户看不懂的错误。
+
+          ⚠️⚠️ 同样**不能**用 showError（见 openSelectionTypePicker 里的长注释）——
+             它会把整个内容区清空，等于"标不上" 变成 "整页消失"。
+             用非破坏性的 toast。
         */
         if (from == null || from < 0) {
             trace('reader:annotate', 'block has no line number, skip');
-            showError('annotateNoLine');
+            showAnnoTip('annotateNoLine');
             return;
         }
 

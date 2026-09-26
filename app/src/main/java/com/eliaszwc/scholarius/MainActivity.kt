@@ -252,6 +252,9 @@ class MainActivity : AppCompatActivity() {
                t  = 文本
                x0/y0/x1/y1 = 归一化包围盒（0..1，屏幕方向）
                s  = 主字号（磅）—— 用来估行高，让文字层与位图对齐
+               g  = **全文行号**（textLines 下标；-1 表示没算出来）
+                    —— 划选后落笔时用它换算标注区间，
+                       见 PdfText.Line.globalLine 的长注释。
              其余（font / paragraphStart）叠字层用不到，省掉。
         */
         val arr = org.json.JSONArray()
@@ -263,6 +266,7 @@ class MainActivity : AppCompatActivity() {
             o.put("x1", l.x1.toDouble())
             o.put("y1", l.y1.toDouble())
             o.put("s", l.size.toDouble())
+            o.put("g", l.globalLine)
             arr.put(o)
         }
         return arr.toString()
