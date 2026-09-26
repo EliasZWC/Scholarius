@@ -31,6 +31,9 @@ captures/
 .DS_Store
 Thumbs.db
 
+# 真机验证的临时产物（截图/录屏）—— 每次都覆盖，不进库
+tools/_repro/
+
 # Python（tools/ 下的辅助脚本）
 __pycache__/
 *.pyc
