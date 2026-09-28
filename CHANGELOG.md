@@ -4,6 +4,256 @@
 
 ---
 
+## [0.1.35] - 2026-09-28
+
+### 修「第一页选不中」「标了类型阅读视图不变」「第一个框删不掉」
+
+用户真机反馈（逐字，分两轮）：
+
+> 「欸等一下，我在非第一页都能选中，但在第一页就无法选中？这是为什么？
+>   然后选中了会弹出表单，但一旦确定，我再返回阅读视图查看，没有任何改变；
+>   重新回到编辑模式，结果选中区域多个标签，且无法修改，
+>   点击、长按均没有任何反应。」
+>
+> 「你能看到屏幕吗？怎么第一个框删不掉？」
+
+这一版从这两段话里挖出 **6 个互相独立的缺陷**，全部真机复现 + 修复 + 验证。
+
+---
+
+#### 缺陷 1：第一页永远没有文字层（「第一页无法选中」）
+
+建页时第 1 页走「首屏优化」分支：
+
+```js
+if (p === 1 && seed) {
+    slot.appendChild(makePageImg(seed, p, id));
+    slot.classList.add('is-loaded');   // ← 提前打了标记
+}
+```
+
+但它**没有挂文字层**（`mountTextLayer`）。而懒加载的入口第一句是：
+
+```js
+if (el.classList.contains('is-loaded')) return;   // 第 1 页被永久跳过
+```
+
+于是第 1 页**有页图（能看）、没有文字层（选不中）**。
+
+真机铁证（`reader:mount-text` 日志只打到 `page=2` / `page=3`；
+逐页检查 `page1 img1,tl0,ln0 | page2 img1,tl1,ln50`）。
+
+修法：首屏分支把文字层一起挂上。修复后 `page1 img1,tl1,ln44`。
+
+---
+
+#### 缺陷 2：首页区判据用错标志，标题/作者/摘要全被吞进一个无名区
+
+`buildRegions` 里所有首页区判据（title / author / abstract / keyword）
+都以 `!sawBody` 为闸门。但 `sawBody` 的真正含义是
+**「章节栈开了没有」**，它在**第一个块**上就会被正文兜底置 true：
+
+```js
+if (!sawBody) { sawBody = true; stack = openRegion(out, stack, 1, null); }
+```
+
+于是走过第一块之后，首页区判据**全部失效**。
+实测输出：`#0 type=section lv=1 head=null blocks=18`
+—— 标题 + 作者 + 摘要 + 关键词全挤在这一个没有标题的区里。
+
+修法：新增独立标志 `frontDone`（「首页结束了没有」），
+只在 `frontOpen !== null || type === 'heading'` 时翻位。
+`guessKind` 的第二个参数也从 `sawBody` 改成 `frontDone`（见缺陷 3）。
+
+⚠️ **一个布尔标志只能表达一件事。** 它同时被「包含它」和「它之后」
+两处消费时，几乎一定是设计错误。
+
+---
+
+#### 缺陷 3：`guessKind` 收不到 `frontDone`，摘要行永远认不出来
+
+`guessKind` 里「这一行是不是摘要/关键词」的检查包在 `if (!sawBody)` 中，
+而它拿到的 `sawBody` 在第一个块就已 true —— **摘要检查从未执行过**。
+
+后果：`Abstract` 那一行（原生判 `heading`，判得没错）
+被当成普通章节标题 → 生成一个和 `1 Introduction` 平级的「Abstract 章节」，
+摘要正文全变成章节内容。
+
+修法：参数改成 `frontDone`，并抽出共用正则
+`FRONT_ANCHOR_ABSTRACT` / `FRONT_ANCHOR_KEYWORD` + `isFrontAnchorText()`。
+
+---
+
+#### 缺陷 4：陈旧的 `body` 覆盖标注吞掉摘要识别
+
+「清空标题」的实现是把每个命中块**显式写成 `type:'body'`**，
+以此覆盖原生判断（设计如此，见 v0.1.33 的说明）。
+但 `Abstract` 那一行原生是 `heading`，于是也被钉了一条 `body:7-7`。
+
+之后 `buildRegions` 走到这一行：
+
+```js
+var type = mark ? mark.type : guessKind(...);
+//          ^^^^^^^^^^^^^^^ 有 mark 就用 mark，guessKind 根本不执行
+```
+
+摘要识别**唯一的途径**就是 `guessKind`（原生只分 heading/body，
+分不出「摘要标题」和「章节标题」）。被覆盖成 body 之后，
+这一行**永远只能是正文**，用户怎么改都救不回来。
+
+修法（双层）：
+
+1. **写时不再覆盖**：`clearTextMarksByType` 遇到首页锚点行
+   （`isFrontAnchorText`）跳过，不写 body 覆盖。
+2. **读时自愈**：`buildRegions` 里若发现一条 `body` mark 盖在
+   首页锚点行上，就当它不存在，交回 `guessKind` 去认。
+   —— 这一条是为了**已污染的老文档**：用户升级后打开就自动修好，
+   不需要重新清空或重导 PDF。
+
+修复后阅读视图（老污染文档，未做任何手动操作）：
+
+```
+#0 rd-region-title      ← 题目区
+#1 rd-region-author     ← 作者区
+#2 rd-region-abstract   ← 摘要区 ✅
+#3..#10                 8 个正常章节
+```
+
+---
+
+#### 缺陷 5：轻点重新归类「完全没反应」（两个叠加原因）
+
+**5a. 手势起点记在了错误的位置**
+
+```js
+var pt = pointToCaret(ev.clientX, ev.clientY);
+if (!pt) return;            // ← 不落在文字行上就 return
+startPt = pt;
+...
+gestureStartX = ev.clientX;  // ← 永远执行不到
+gestureStartY = ev.clientY;
+```
+
+`pointToCaret` 的 y 容差是 `max(行高*0.5, 3)` —— **4px**，
+这个"紧容差"是**划选**需要的精度（放到 7px 会跨行）。
+但 `.anno-block` 是段落级的高盒子，文字行很稀：
+
+```
+文字行 gf=0   y 196-204
+文字行 gf=1   y 253-261     ← 中间空 49px
+.anno-block   y 214-273     ← 块盒把这段空白全包住
+```
+
+用户在块的**正中**点下去，离最近的两条文字行有 16px / 33px，
+都超出容差 → 起点没记录 → 几何反查拿着 `(0,0)` 去左上角找块。
+
+修法：起点记录提到 `if (!pt)` **之前**（这两个量与 caret 职责不同，
+不该共用一个阀门）；「轻点 → 重新归类」整段提到 `if (startPt)` **之外**
+（它本来就不依赖 caret）。
+
+⚠️ **一个为 A 场景调紧参数的函数，不能拿来当 B 场景的判据。**
+
+**5b. 弹层刚开就被同一个手势补发的 click 关掉**
+
+真实事件序列（CDP 注入真实触摸）：
+
+```
+pointerdown  (180,220) -> DIV.pdf-text-layer
+pointerup    (180,220) -> DIV.pdf-text-layer   ← 开弹层
+click        (180,220) -> DIV.anno-typebackdrop ← 浏览器补发的 click
+```
+
+backdrop 已经盖住那个点，于是这一发 click 把刚开的弹层当场关掉。
+日志显示 `openTextTypePicker ... root=true` 但 `sheet=0`。
+
+修法：backdrop 加 `SHEET_OPEN_GUARD_MS = 250` 自我点击保护
+（> 浏览器补发间隔、< 用户看清再点的反应时间，两侧都留余量）。
+
+---
+
+#### 缺陷 6：单个块的 Delete 「删不掉」
+
+屏幕上是编辑模式，一个 `Heading L1` 框压在「3.2.2 Multi-Head Attention」上。
+
+**这是缺陷 4 同源的第二个入口 —— v0.1.33 修「按类型清空」时的漏网之鱼。**
+
+框有**两层**来源：
+
+| 来源 | 说明 |
+|---|---|
+| ① 原生自动识别 | `PdfText` 判出的 `block.kind` —— 用户**看到**的那些框 |
+| ② 用户标注 | `textMarks` —— 用户**改过**的 |
+
+v0.1.33 修「清空」时已经按这个认识改了 `clearTextMarksByType`，
+但**单个块的 Delete（`clearTextMarkFor`）没跟着改**，它仍然只删 ②：
+
+```js
+if (kept.length === textMarks.length) return;   // 本来没标过 → 什么都不做
+```
+
+用户看到的那条 `Heading L1` 是**原生识别**出来的（`block.kind === 'heading'`），
+`textMarks` 里根本没有它。于是点 Delete 的后果是：
+弹层照常关闭、框**一点变化都没有**、**没有任何提示**。
+
+真机实测（`line=95`，`text = "3.2.2 Multi-Head Attention"`，`kind = heading`）：
+
+```
+block.line = 95   block.kind = 'heading'   marksCovering95 = []   ← 无用户标注
+pointerdown/touchstart/pointerup/click → 全部落在 BUTTON.btn.btn-danger 上
+结果：sheet 关闭，但 blk95 仍是 anno-block-heading anno-block-heading-lv1
+      且没有任何 reader:annotate 日志（在 return 处提前退出）
+```
+
+修法：`clearTextMarkFor` 与「清空」**同源** —— 走 `effectiveTypeAt`，
+若原生判定不是 `body` 就写一条 `body` 覆盖把它压住
+（**不能**直接改 `block.kind` —— 那是提取层产物，重进页面就重算）。
+首页锚点（`Abstract` / `Keywords`）例外，复用同一个 `isFrontAnchorText()`；
+改完立刻 `restoreReadingContent()`，否则切回阅读视图看不到变化。
+
+**顺带修掉两点：**
+
+其一，**no-op 判据写窄了（我自己第一版又踩了）**：
+第一版写成 `if (!existing && effective === 'body')` —— 「没有标注 **且**
+有效类型是 body」。但第一次 Delete 会留下一条 `body` 覆盖，
+于是 `existing` 变真值 → 第二次 Delete 跳过 noop 守卫 → 走完整路径 →
+`changed = true` → **不弹提示** → 「点了没反应也没提示」的症状又回来了。
+✅ 正确：`if (effectiveTypeAt(...) === 'body') return false;` —— 一个条件就够。
+
+其二，**局部操作不能静默返回**：原来「没什么可删」时直接 `return`，
+调用方也不说话就关弹层，用户无法区分「删了但看不出来」和「根本没删」。
+✅ 现在返回值表示「是否真的改动了数据」，`false` 时弹一句
+「本来就是正文，无需删除。」（`showAnnoTip`，非破坏性 toast）。
+
+---
+
+### 关于「选中区域多个标签」（非缺陷，已向用户说明）
+
+- **编辑视图**按**块**显示 —— 一个块一个框一个标签。
+  这篇论文的摘要被 `PdfText` 切成十几块，用户拖选 3 行就得到 3 个框。
+- **阅读视图**按**区域**归并 —— 同类型的块合并成**一个** `rd-region-abstract`。
+
+两个视图粒度不同是设计如此。要一次覆盖整段摘要（十几块），
+用**长按设起点 → 点终点**的区间选择。
+
+---
+
+### 验证（真机）
+
+| 项 | 修复前 | 修复后 |
+|---|---|---|
+| 第 1 页文字层 | `tl0, ln0` | `tl1, ln44` |
+| 第 1 页拖选 | 完全无响应 | `sel=1, sheet=1, cur=Title` |
+| 页 1 块内空白轻点 | `startX=0`，无弹层 | `startX=180`，`sheet=1` |
+| 首页三区 | 全并入 `head=null` 无名区（18 块） | `title` / `author` / `abstract` 三个独立区 |
+| 老污染文档 | 只有 body | 打开即自愈，摘要区出现 |
+| 点 `Heading L1` → Delete | 无变化、无提示 | `clear text @95-95 native=heading`，标签变 `Body` |
+| 再点 Delete | — | `noop (already body)` + 弹「Already Body Text.」 |
+| 切回阅读视图 | — | 「3.2.2 Multi-Head Attention」不再是章节标题 |
+
+文案校验（`node tools/check-case.js`）与 i18n 校验（`tools/check_i18n.py`）通过。
+
+---
+
 ## [0.1.34] - 2026-09-27
 
 ### 修复阅读视图的标题层级，以及「点了区域改不了类型」

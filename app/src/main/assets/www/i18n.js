@@ -262,6 +262,7 @@
             'reader.rangeArmed': 'Range Start Set. Tap The End Region.',
             'reader.selectTextTip': 'Drag Across The Text To Select A Range.',
             'reader.editMark': 'Edit',
+            'reader.deleteNoMark': 'Already Body Text.',
 
             // 清空（按类型整体清除）
             'reader.clear': 'Clear',
@@ -590,6 +591,7 @@
             'reader.rangeArmed': '起点已设，请点终点区域。',
             'reader.selectTextTip': '在文字上横向拖动，划选一段文字。',
             'reader.editMark': '编辑',
+            'reader.deleteNoMark': '本来就是正文，无需删除。',
 
             // 清空（按类型整体清除）
             'reader.clear': '清空',

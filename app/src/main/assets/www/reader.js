@@ -764,6 +764,26 @@
             if (p === 1 && seed) {
                 slot.appendChild(makePageImg(seed, p, id));
                 slot.classList.add('is-loaded');
+                /*
+                  ══ ⚠️⚠️ 首屏这一页**必须**同时挂文字层 ══
+                     （2026-09-27 修用户问题「第一页无法选中」）
+
+                  踩的坑：这里为了首屏尽快显示，直接塞了页图并打上
+                  `is-loaded`，但**漏了 `mountTextLayer`**。
+                  而 `startPdfLazyLoad` 的 `loadOne` 第一句就是：
+
+                      if (!el || el.classList.contains('is-loaded')) return;
+
+                  于是第 1 页被永久跳过 —— 有页图（能看），
+                  没有文字层（选不中）。用户原话：
+
+                      「我在非第一页都能选中，但在第一页就无法选中」
+
+                  ✅ 凡是在这里"提前 ready"的页，都要把文字层一起挂上。
+                     否则就要在 loadOne 里改成"按需补挂"，
+                     那会让 1 个概念散在 2 处（本项目吃过这种亏）。
+                */
+                mountTextLayer(slot, p, id);
             }
             list.appendChild(slot);
             pdfPageEls.push(slot);
@@ -1271,6 +1291,21 @@
     var gestureStartY = 0;
 
     /**
+     * 弹层刚打开后的"自我点击保护"窗口（ms）。
+     *
+     * ⚠️ 打开弹层的那个手势，浏览器会在 `pointerup` 之后
+     *    在**同一点**补发一个 `click`。若弹层（含全屏 backdrop）
+     *    在这期间已挂上，那一发 click 会落在 backdrop 上，
+     *    把刚开的弹层当场关掉 —— 用户看到的是"点了没反应"。
+     *    实测序列见 openTextTypePicker 里 backdrop 监听的注释。
+     *
+     * ⚠️ 250ms 的取舍：要 > 浏览器补发 click 的间隔（通常 <50ms），
+     *    又要 < 用户"看清弹层再点背景关掉"的最短反应（实测 >600ms）。
+     *    250ms 落在两者中间，两侧都留了余量。
+     */
+    var SHEET_OPEN_GUARD_MS = 250;
+
+    /**
      * 在文字层上接管**选字** —— 用 JS 自己维护选区。
      *
      * ══ ⚠️⚠️ 为什么不能让浏览器自己选（2026-09-25 真机实测）══
@@ -1716,6 +1751,29 @@
 
     layer.addEventListener('pointerdown', function (ev) {
         var pt = pointToCaret(ev.clientX, ev.clientY);
+
+        /*
+          ══ ⚠️⚠️ 手势起点必须**无条件**记录（2026-09-28 修 B4）══
+
+          原来 `gestureStartX/Y` 写在 `if (!pt) return;` **之后** ——
+          于是"点在没有文字行的位置上"时两个量保持 0，
+          `finish` 里用它们做几何反查，等于去左上角找块，永远找不到。
+
+          实测（reader:fin 日志）：点在块内空白处时
+              `finish moved=false startX=0 startY=0 hasStartPt=false`
+          —— 轻点逻辑明明已提到 `if (startPt)` 外面，却因为这
+          两个零值而命中不到块。
+
+          ⚠️ 这两个量与 `startPt`（caret）职责不同，不能共用一个阀门：
+             · `gestureStartX/Y` → 给"轻点反查块"和"位移判断"用，
+                 任何一次按下都必须有值；
+             · `startPt`（caret）→ 给"划选"用，只在确实落在文字行上时才有。
+          所以起点记录提到 `if (!pt)` 之前。
+        */
+        gestureMoved = false;
+        gestureStartX = ev.clientX;
+        gestureStartY = ev.clientY;
+
         if (!pt) return;
         startPt = pt;
             /*
@@ -1754,12 +1812,11 @@
             if (longPressTimer) global.clearTimeout(longPressTimer);
             longPressedOk = false;
             /*
-              ⚠️ 记下起点并重置"是否移动过"（见 TAP_SLOP_PX 的说明）——
-                 这两个量决定松手时是"轻点改类型"还是"拖拽划选"。
+              ⚠️ `gestureMoved` / `gestureStartX` / `gestureStartY`
+                 已在函数开头（`if (!pt)` 之前）设好，这里**不要重复设** ——
+                 重复设本身无害，但会让人误以为"起点是在这里定的"，
+                 下次再有人把 `if (!pt) return;` 挪到前面就又踩回旧坑。
             */
-            gestureMoved = false;
-            gestureStartX = ev.clientX;
-            gestureStartY = ev.clientY;
             longPressTimer = global.setTimeout(function () {
                 longPressTimer = null;
                 longPressedOk = true;
@@ -1857,6 +1914,90 @@
                 longPressTimer = null;
             }
             longPressedOk = false;
+
+            /*
+              ══ ⚠️⚠️ 「轻点 → 重新归类」必须**先于** `if (startPt)` 判断 ══
+                 （2026-09-28 修用户问题 B4：「点击、长按均没有任何反应」）
+
+              ══ 为什么原来会完全不响应 ══
+
+              这段逻辑原本嵌在 `if (startPt) { ... }` 里面。
+              而 `startPt` 是在 pointerdown 里这样来的：
+
+                  var pt = pointToCaret(ev.clientX, ev.clientY);
+                  if (!pt) return;          // ← 没落在文字行上就 return
+                  startPt = pt;
+
+              `pointToCaret` 的 y 容差是 `max(行高*0.5, 3)` = **4px**
+              （这个"紧容差"是**划选**要的精度，见它的注释：
+                容差放到 7px 会跨行、把一行选成七行）。
+
+              但 **`.anno-block` 是段落级的、很高的盒子**，而文字行很稀。
+              实测（Transformer 论文，第 1 页）：
+
+                  文字行 gf=0   y 196-204
+                  文字行 gf=1   y 253-261      ← 中间空了 49px！
+                  .anno-block   y 214-273      ← 块盒把这段空白全包住
+
+              用户在 y=220 点下去时：
+                · 视觉上明明点在块的**正中**（用户眼里的"这个地方"）
+                · 但离最近的两条文字行分别有 16px / 33px 远
+                · 两者都超过 4px 容差 → `pointToCaret` 返回 null
+                · → `startPt` 保持 null → `finish` 里那个 `if` 整段跳过
+                · → **什么弹层都不出，什么提示都没有**（用户原话：
+                  「点击、长按均没有任何反应」）
+
+              ⚠️ 这正是本项目反复吃过的那类坑（见 README/记忆里的
+                 `elementFromPoint` 那条）：
+                 **"元素在不在"和"这一点能不能命中"是两件事。**
+                 这里更隐蔽 —— 块盒明明盖住了那个点，
+                 但负责判断的却是"最近的文字行"，两把尺子不一样。
+
+              ══ ✅ 修法 ══
+
+              把"轻点 → 用几何反查块 → 开类型弹层"整段**提到
+              `if (startPt)` 外面**。它本来就不依赖 `startPt`：
+                · 判据是 `!gestureMoved`（本次手势没位移 = 轻点）
+                · 定位是 `blockAtPoint(x, y, pageAtPoint(x, y))`
+                  （纯几何，与文字行容差无关）
+              这样点在块的任何位置（含文字行之间的空白）都能命中。
+
+              ⚠️ 顺序要求：必须在 `if (startPt)` **之前**。
+                 否则轻点空白处时 `startPt` 为 null，仍然进不去。
+                 也必须在 `if (currentSelection)` 之前 —— 轻点时
+                 `currentSelection` 是 null（没拖过、没画高亮），
+                 落到那个 else 只会做 `notifySelection(null)`，
+                 依然什么都不弹。
+            */
+            if (!gestureMoved) {
+                /*
+                  ⚠️ 长按（区间起点）会补发 pointerup，浏览器也会给一个 ——
+                     这一下不该当"重新归类"。判据与 makeTextBlockEl 里一致。
+                */
+                var uiTap = global.ScholariusUI;
+                var tapWasLong = uiTap &&
+                    typeof uiTap.justLongPressed === 'function' &&
+                    uiTap.justLongPressed();
+                if (!tapWasLong) {
+                    /*
+                      ⚠️ 页码必须用 **pageAtPoint**（几何反查），
+                         不能用 currentSelectionPage() —— 后者靠
+                         `.is-selected` 找，而轻点没有高亮，它恒返回 1。
+                         见 pageAtPoint 的说明。
+                    */
+                    var tapPage = pageAtPoint(gestureStartX, gestureStartY);
+                    var tapHit = blockAtPoint(gestureStartX, gestureStartY, tapPage);
+                    if (tapHit) {
+                        trace('reader:sel', 'tap on block line='
+                              + tapHit.block.line + ' page=' + tapPage
+                              + ' -> reclassify');
+                        openTextTypePicker(tapHit.el, tapHit.block, tapHit.page);
+                        startPt = null;
+                        return;
+                    }
+                }
+            }
+
             if (startPt) {
                 /*
                   ⚠️ 松手后**不要清高亮** —— 用户还要看着它确认选对了没有。
@@ -1931,36 +2072,10 @@
                      若顺序反了就会掉进 else 分支只做 notifySelection(null)，
                      什么弹层都不出。
                 */
-                if (!gestureMoved) {
-                    /*
-                      ⚠️ 页码必须用 **pageAtPoint**（几何反查），
-                         不能用 currentSelectionPage() —— 后者靠
-                         `.is-selected` 找，而轻点没有高亮，它恒返回 1。
-                         见 pageAtPoint 的说明。
-                    */
-                    var tapPage = pageAtPoint(gestureStartX, gestureStartY);
-                    var hit = blockAtPoint(gestureStartX, gestureStartY, tapPage);
-                    if (hit) {
-                        /*
-                          ⚠️ 长按（区间起点）会补发 click，浏览器也会
-                             给一个 pointerup —— 这一下不该当"重新归类"。
-                             判据与 makeTextBlockEl 里一致。
-                        */
-                        var ui3 = global.ScholariusUI;
-                        var wasLong = ui3 &&
-                            typeof ui3.justLongPressed === 'function' &&
-                            ui3.justLongPressed();
-                        if (!wasLong) {
-                            trace('reader:sel', 'tap on block line='
-                                  + hit.block.line + ' page=' + tapPage
-                                  + ' -> reclassify');
-                            openTextTypePicker(hit.el, hit.block, hit.page);
-                            startPt = null;
-                            return;
-                        }
-                    }
-                }
-
+                /*
+                  ⚠️ 轻点的分支**已提到上面**（见 `if (!gestureMoved)` 的说明）——
+                     这里只剩"拖拽划选"这一条路。
+                */
                 if (currentSelection) {
                     openSelectionTypePicker();
                 } else {
@@ -4126,7 +4241,27 @@
                  不是删除 PDF 里的内容 —— 文字还在，只是不再被标识为某个类型。
                  所以提示语不能写"删除"这种吓人的词（见 confirmText）。
             */
-            clearTextMarkFor(block);
+            /*
+              ⚠️⚠️ 必须有反馈，**不能静默**（2026-09-28 用户报"删不掉"）
+
+              用户原话：「怎么第一个框删不掉？」
+
+              旧实现里 `clearTextMarkFor` 在"本来就没标过"时直接 return，
+              而 call 方什么都不说就关弹层 —— 用户点了按钮、
+              弹层消失了、**框一点没变、也没有任何提示**，
+              完全无法判断是"删了但看不出来"还是"根本没删"。
+
+              ✅ 现在返回值表示"是否真的改动了数据"：
+                 · true  → 什么都不弹（用户已经看到框的标签变了，够了）
+                 · false → 弹一句"这块本来就是正文"的说明
+
+              ⚠️ 用 `showAnnoTip`（非破坏性 toast），**绝不能**用
+                 `showError` —— 它会清空整个内容区（见 §0.-0.65 的事故）。
+            */
+            var changed = clearTextMarkFor(block);
+            if (changed === false) {
+                showAnnoTip('reader.deleteNoMark');
+            }
             rangeAnchor = null;
             closeTextTypePicker();
         });
@@ -4150,7 +4285,43 @@
              用户关掉弹层多半是想**看清页面再决定终点**，
              不是想放弃区间。真正要清的是「取消」按钮。
         */
-        backdrop.addEventListener('click', closeTextTypePicker);
+        /*
+          ══ ⚠️⚠️ 必须忽略"打开这次弹层的同一个手势"补发的 click ══
+             （2026-09-28 修 B4 的后半段）
+
+          真机实测的事件序列（用 CDP 注入真实触摸）：
+
+              pointerdown  (180,220) -> DIV.pdf-text-layer
+              pointerup    (180,220) -> DIV.pdf-text-layer   ← finish 在这里开弹层
+              click        (180,220) -> DIV.anno-typebackdrop ← 浏览器补发的 click
+
+          弹层是在 `pointerup` 里开的，而浏览器紧接着在同一点补发
+          `click`。此时 backdrop 已经盖住那个点，于是这一下被
+          backdrop 的 click 监听接住 → **刚开出来就被自己关掉**。
+
+          症状：日志里 `reader:sheet | openTextTypePicker ... root=true`
+          明明执行了，但 `document.querySelectorAll('.anno-typesheet')`
+          是 0 —— 用户看到的就是「点了没反应」。
+
+          ⚠️ 为什么之前没人发现：`makeTextBlockEl` 里那条 `click → 改`
+             路径是**直接**绑在块上的，它的 click 监听**早于** backdrop
+             存在，所以从不自撞。而语义归类的 tap 路径是"在 pointerup
+             里造弹层"，弹层比 click 先出现 —— 这才撞上。
+             两个入口行为不一致，用户只在 tap 时看到"没反应"。
+
+          ✅ 修法：记下弹层创建的时刻，backdrop 的 click 在
+             `SHEET_OPEN_GUARD_MS`（250ms）内一律忽略。
+             250ms 远小于用户"看清再点背景"的反应时间（通常 >600ms），
+             不会误吞真实意图；又足够覆盖浏览器补发 click 的时序。
+        */
+        var openedAt = Date.now();
+        backdrop.addEventListener('click', function () {
+            if (Date.now() - openedAt < SHEET_OPEN_GUARD_MS) {
+                trace('reader:sheet', 'backdrop click ignored (same gesture)');
+                return;
+            }
+            closeTextTypePicker();
+        });
 
         if (root) {
             root.appendChild(backdrop);
@@ -4486,26 +4657,137 @@
      *
      * ⚠️ 是"删掉用户标的类型"，**不是**删除 PDF 里的文字 ——
      *    文字还在，只是不再被强制归到某个类型。
+     *
+     * ══ ⚠️⚠️ 必须同时处理**两层**来源，否则"删不掉"（2026-09-28 用户报）══
+     *
+     * 用户原话：
+     *   「怎么第一个框删不掉？」
+     *
+     * ══ 真因 ══
+     *
+     * 框有**两层**来源（见 §0.12 与 clearTextMarksByType 的长注释）：
+     *   ① 原生自动识别（`block.kind`）→ 用户**看到**的那些框
+     *   ② 用户标注（`textMarks`）      → 用户**改过**的
+     *
+     * 旧实现**只删 ②**：
+     *
+     *     if (kept.length === textMarks.length) return;   // 本来没标过 → 什么都不做
+     *
+     * 而用户在界面上看到的是 ① —— 一篇刚导入的论文 `textMarks` 是空的，
+     * 屏幕上却写着「Heading L1」。点 Delete 的后果是：
+     *     · 弹层照常关掉（handler 跑了）
+     *     · 块**一点变化都没有**
+     *     · **没有任何提示**
+     * → 用户看到的就是"删不掉"，而且完全不知道为什么。
+     *
+     * 实测（真机，编辑器模式，line=95）：
+     *     block.kind = 'heading'   text = "3.2.2 Multi-Head Attention"
+     *     marksCovering95 = []     ← 没有用户标注
+     *     点 Delete 后：click 确实到了按钱上、弹层关闭、块**仍然**是
+     *                   `anno-block-heading anno-block-heading-lv1`
+     *     没有任何 `reader:annotate` 日志（因为它在 `return` 处提前退出）
+     *
+     * ══ ✅ 修法：与 [clearTextMarksByType] 完全同源 ══
+     *
+     * 「删除」在语义上就是「把这一块变回**正文**」。
+     * 所以要退到 `body`，做法是**写一条 body 覆盖**去压住原生判断：
+     *   · 不能真去改 `block.kind` —— 那是提取层产物，
+     *     重进页面就重新算一遍，改动留不下来（实测确认）；
+     *   · 写覆盖则可保存、可撤销（用户再标成别的类型即可）。
+     *
+     * ⚠️ 「有效类型已经是 body」时**不要再写覆盖**（否则白占存储，
+     *    而且会让"没有标注"和"有一条 body 覆盖"混为一谈）。
+     *
+     * ⚠️ 首页锚点例外：`Abstract` / `Keywords` 那两行不写覆盖 ——
+     *    理由与 `clearTextMarksByType` 里那段一致（见那里的长注释）：
+     *    它们是**结构锚点**，压成 body 会让摘要区永远建不出来。
+     *    判据复用同一个 `isFrontAnchorText()`，保证两条路径不会走岔。
      */
     function clearTextMarkFor(block) {
         if (!block || block.line == null) return;
 
         var from = block.line;
-        var to = from + block.text.split('\n').length - 1;
+        var to = from + String(block.text || '').split('\n').length - 1;
+
+        /*
+          ⚠️ 只取"有效类型"就够（它内部同时看用户标注与原生判定，
+             见 effectiveTypeAt 的注释）。**不需要**单独调 markAtLine ——
+             我第一版多取了一个 `existing`，结果 noop 判据写成
+             "没有标注 且 有效类型是 body"，比正确条件窄，
+             导致重复点 Delete 时静默无提示（见下面的长注释）。
+        */
+        var effective = effectiveTypeAt(block.line, block);
+
+        /*
+          ══ ⚠️⚠️ no-op 判据用**有效类型**，不能只看"有没有标注" ══
+             （2026-09-28，我第一版这里写错了一次）
+
+          第一版写的是 `if (!existing && effective === 'body')` ——
+          "没有标注 **且** 有效类型是 body"才认为无事可做。
+
+          问题：用户点过一次 Delete 之后，那一块会留下一条
+          `body` 覆盖（`existing` 变成真值）。他再点一次 Delete 时：
+            · `existing` 有值 → noop 守卫被跳过
+            · ① 丢掉旧的 body 覆盖 → ② 重新写一条一模一样的
+            · 结果状态没变，但 `changed` 返回 true → **不弹提示**
+
+          于是"点了没反应、也没提示"这个症状**又回来了**（只是数据没坏）。
+
+          实测（真机，line=95 第二次点 Delete）：
+              reader:annotate | clear text @95-95 native=heading
+              ← 走的是完整路径，不是 noop；toast 未出现
+
+          ✅ 正确判据：**有效类型（含覆盖）已经是 body 就无事可做** ——
+             不管那条 body 是"用户手标的正文"还是"上次 Delete 的残留"，
+             对用户来说都已经是"没有特殊标记"了。
+             `effectiveTypeAt` 本来就同时看标注与原生（见它的注释），
+             一个条件就够，不需要 `existing`。
+        */
+        if (effective === 'body') {
+            trace('reader:annotate', 'clear text @' + from + '-' + to +
+                  ' noop (already body)');
+            return false;
+        }
+
+        // ① 丢掉与该区间重叠的**用户标注**
         var kept = [];
         for (var i = 0; i < textMarks.length; i++) {
             var m = textMarks[i];
             var overlaps = !(m.to < from || m.from > to);
+            /*
+              ⚠️ body 覆盖也要一并丢掉 —— 见上面 noop 判据的说明：
+                 我们只走到这里说明"有效类型不是 body"，
+                 所以旧的 body 覆盖（若有）已经是过时的，必须清掉。
+            */
             if (!overlaps) kept.push(m);
         }
-        if (kept.length === textMarks.length) {
-            // 本来就没标过 —— 不用改动，也不必标脏
-            return;
+
+        // ② 若**原生**判定不是 body，则补一条 body 覆盖把它压住
+        var nativeType = (function () {
+            var nm = nativeMark(block);
+            return nm ? nm.type : 'body';
+        })();
+
+        if (nativeType !== 'body' && !isFrontAnchorText(block.text)) {
+            kept.push({ from: from, to: to, type: 'body', level: 0 });
         }
+
         textMarks = kept;
         annotateDirty = true;
         refreshTextBlockStyles();
-        trace('reader:annotate', 'clear text @' + from + '-' + to);
+        /*
+          ⚠️ 必须**立刻重画阅读视图**，与 clearTextMarksByType 同理 ——
+             `refreshTextBlockStyles` 只刷新编辑模式页图上的
+             `.anno-block`，**碰不到阅读视图的正文 DOM**
+             （那里的 `h2/p` 是上次 renderBlocks 时定死的）。
+             少了这一步，用户切回阅读视图会看到"删了没反应"。
+        */
+        if (!annotating) {
+            restoreReadingContent();
+        }
+        trace('reader:annotate', 'clear text @' + from + '-' + to +
+              ' native=' + nativeType);
+        return true;
     }
 
     /**
@@ -4613,6 +4895,59 @@
                  还白占存储。只有"原生判错了"的才需要覆盖。
             */
             if (eff === 'body') continue;
+
+            /*
+              ══ ⚠️⚠️ 「摘要 / 关键词」这类**结构锚点**不能覆盖成 body ══
+                 （2026-09-28 修用户问题 B：标了摘要但阅读视图不变）
+
+              ══ 真因 ══
+
+              用户点过一次"清空"，这一步就把**每一个**
+              `effectiveTypeAt` 非 body 的块写成 `type:'body'`。
+              而 `Abstract` 这一行原生被判成 `heading`
+              （字号大、独立成行 —— 原生判得没错），
+              于是也被钉了一条 `body:7-7`。
+
+              之后 `buildRegions` 走到这一行时：
+
+                  var type = mark ? mark.type : guessKind(...)
+                                 ^^^^^^^^^^^^^^
+                  有 mark（body:7-7）→ **guessKind 根本不执行**
+                  → 永远产不出 'abstract'
+                  → 摘要区再也建不出来
+
+              实测（reader:fb 日志）：
+                  j=5 line=7 kind=heading mark=body type=body txt="Abstract"
+
+              ⚠️ 为什么"清空标题"不该动摘要：
+                 用户点的是「清空**标题**」，他心里的对象是那些
+                 "1 Introduction / 2 Background" 章节标题。
+                 `Abstract` / `Keywords` 在他眼里是**摘要区 / 关键词区**，
+                 不是章节标题 —— 他自己在编辑模式里看到的就是
+                 `Abstract` 那个标签（applyBlockStyle 显示的是
+                 `blockTagText`，而摘要行会显示"摘要"）。
+                 把它一起钉成正文，等于**清了他没要求清的东西**，
+                 而且**不可逆**（他再去标也压不过这条覆盖——
+                  不，其实能压过，见下条 ⚠️）……
+
+              ⚠️ 真正致命的是"不可逆"这一点：
+                 覆盖标注会**吞掉 guessKind**，而 guessKind 是
+                 摘要/关键词**唯一**的识别途径（原生只给 heading/body，
+                 分不出"摘要标题"和"章节标题"）。
+                 所以一旦被覆盖成 body，这一行就**永远**只能是正文了 ——
+                 用户怎么改都救不回来（除非手动把它标成别的类型）。
+
+              ✅ 判据：用与 guessKind **同一套**正则判断"这行是不是
+                 摘要/关键词锚点"。是 → **不写覆盖**，让它留白，
+                 下次渲染时 guessKind 仍能把它认出来。
+                 这与 guessKind 里"摘要检查先于 kind==='heading'"的
+                 既有设计意图完全一致（那条注释明写：
+                 "Abstract 这一行属于首页的摘要区，而不是一个正文章节"）。
+
+              ⚠️ 不要顺手把"标题也一起跳过"——那会让"清空标题"失效
+                 （用户的原始诉求）。范围严格限制在 home 锚点两词。
+            */
+            if (isFrontAnchorText(b.text)) continue;
 
             kept.push({
                 from: b.line,
@@ -6047,8 +6382,7 @@
                 */
                 trace('reader:mark-hit', 'mark ' + m.type + ':' + m.from + '-' + m.to +
                       ' -> block#' + idx + ' span ' + span.from + '-' + span.to);
-                return m;
-            }
+                return m;            }
             return null;
         }
 
@@ -6067,6 +6401,55 @@
         */
         var sawTitle = false;
         var authorPending = false;
+        /*
+          ══ ⚠️⚠️ 首页是否**真的**结束了（2026-09-28 修用户问题）══
+
+          用户原话：
+            「选中了会弹出表单，但一旦确定，我再返回阅读视图查看，
+              没有任何改变」
+
+          ══ 真因 ══
+
+          上面所有首页区判据（title / author / abstract / keyword）
+          都拿 `!sawBody` 当闸门。但 `sawBody` 在**第一个正文块**上
+          就被置 true 了，而"第一个正文块"完全可能还在首页区里：
+
+              page 1: line 0   真实是**题目**
+              page 2: line 29  真实是**摘要**
+
+          这篇文档更极端：`textMarks` 里有 228 条 `type:'body'`
+          覆盖标注（上一轮"清空标题"留下的，设计如此 ——
+          clearTextMarksByType 就是靠"显式标成 body"压住原生判断）。
+          于是 line 0 拿到 `mark=body:0-0` → `type='body'` →
+          `!sawBody` 成立 → 走正文兜底
+          `openRegion(out, stack, 1, null)` 并置 `sawBody = true`。
+
+          **从那一刻起，首页区判据全部失效** —— 用户后来标的
+          「摘要」（line 29-31）虽然 `type` 算对了（trace 可见
+          `type=abstract`），却因为 `!sawBody` 为假而**进不了前区分支**，
+          被当成普通正文 `appendToStack` 吞进那个 `head=null` 的无名区。
+
+          实测（reader:region-el）：
+            #0 type=section lv=1 head=null blocks=18
+               ← 标题+作者+摘要+关键词全挤在这一个无名区里
+
+          ══ ✅ 修法 ══
+
+          把"首页结束"这个语义**单独拿出来**（`frontDone`），
+          它只在**真的进入正文**时才翻 true：
+            · 遇到章节标题（type === 'heading'）；
+            · 或遇到一个**位于首页区之后**的正文块。
+
+          而 `sawBody` 继续只管"章节栈有没有开"（它决定要不要补
+          那个 head=null 的兜底区），两件事不再混用。
+
+          ⚠️ 为什么必须分开而不是直接把 `!sawBody` 删掉：
+              `sawBody` 同时被 openRegion 的兜底逻辑使用
+              （"正文第一块若还没开章节区，补一个无标题一级区"）。
+             直接删会让那个兜底失效 —— 有的 PDF 直接从正文开始、
+              没有任何标题，那些内容会挂在顶层无法归类。
+        */
+        var frontDone = false;
         /** 调试计数：标注命中/未命中的块数（见下方 markHit++） */
         var markHit = 0;
         var markMiss = 0;
@@ -6082,7 +6465,42 @@
             if (!blk || !blk.text) continue;
 
             var mark = markFor(j);
-            var type = mark ? mark.type : guessKind(blk, sawBody);
+            /*
+              ══ ⚠️⚠️ 自愈：忽略"钉在首页锚点上的 body 覆盖" ══
+                 （2026-09-28 修用户问题 B；兼容**已污染**的旧文档）
+
+              上面 `clearTextMarksByType` 已经不再往摘要/关键词行写
+              body 覆盖了（见那里的长注释）。但**用户已有的文档里
+              已经写进去了** —— 那些 `body:7-7` 这样的标注会一直
+              压着 guessKind，摘要区永远建不出来。
+
+              只修"以后不再写"是不够的：用户升级后打开老文档，
+              症状必须自动消失，不能要求他"重新清一遍"或重导 PDF。
+
+              ✅ 所以读的时候也判一次：如果这条 mark 是 `body`、
+                 且它盖住的那一行**本来就是首页锚点**（Abstract /
+                 Keywords），就当它不存在，交回 guessKind 去认。
+
+              ⚠️ 为什么"body 钉在锚点上"可以无条件忽略：
+                 ① 用户不可能真心想把「Abstract」这一行标成正文 ——
+                    他的选项里"正文"是用来把**误判的标题**降级的，
+                    而摘要行在界面上显示的是"摘要"标签，不是标题；
+                 ② 就算他真想标成正文，忽略后 guessKind 会给它
+                    `'abstract'`（因为行首是 Abstract）—— 结果仍是"摘要"，
+                    与"钉成正文"相比只是**更符合文档结构**；
+                 ③ 这条判据只对"行首是 Abstract/Keywords"的行生效，
+                    范围极小，不会波及其它块。
+
+              ⚠️ 只忽略 `body`，**不能**忽略其它类型的标注 ——
+                 用户把某行标成 "heading/abstract/..." 是他的真实意图，
+                 必须尊重（那正是"用户标注优先"的核心）。
+            */
+            if (mark && mark.type === 'body' && isFrontAnchorText(blk.text)) {
+                trace('reader:mark-skip', 'ignore body override on front anchor' +
+                      ' line=' + blk.line + ' j=' + j);
+                mark = null;
+            }
+            var type = mark ? mark.type : guessKind(blk, frontDone);
             /*
               ⚠️ 调试：统计"有标注但没生效"的块数。
                  用户报「阅读视图没按标注重排」时，
@@ -6159,7 +6577,7 @@
                  用户标的可能是 abstract / keyword 等任何类型，
                  只要他表过态，就不该被位置判据改写。
             */
-            if (!mark && !sawBody && !sawTitle &&
+            if (!mark && !frontDone && !sawTitle &&
                 type !== 'abstract' && type !== 'keyword') {
                 type = 'title';
             }
@@ -6183,15 +6601,15 @@
                     **摘要/关键词之前**整段，靠"遇到 abstract/keyword
                     就关窗"来收口。
             */
-            if (!mark && !sawBody && authorPending && type === 'body') {
+            if (!mark && !frontDone && authorPending && type === 'body') {
                 type = 'author';
             }
 
             /*
               ══ 首页区：标题 / 作者 / 摘要 / 关键词 ══
             */
-            if (!sawBody && (type === 'title' || type === 'author' ||
-                             type === 'abstract' || type === 'keyword')) {
+            if (!frontDone && (type === 'title' || type === 'author' ||
+                              type === 'abstract' || type === 'keyword')) {
                 pushFrontRegion(out, type, blk);
                 /*
                   ⚠️ 记住"当前停在哪个首页区"。
@@ -6222,7 +6640,7 @@
               ⚠️ 首页区还没结束时的**正文块**（摘要正文、关键词列表）
                  要并进刚开的那个首页区，不能去开章节。
             */
-            if (!sawBody && frontOpen && type === 'body') {
+            if (!frontDone && frontOpen && type === 'body') {
                 pushFrontRegion(out, frontOpen, blk);
                 continue;
             }
@@ -6234,6 +6652,41 @@
             if (type === 'heading') {
                 frontOpen = null;
                 authorPending = false;
+            }
+
+            /*
+              ══ ⚠️⚠️ 走到这里 = 可以认定首页区结束了（2026-09-28）══
+
+              能落到这一点，说明它没被任何前区分支接住：
+                · 不是 title/author/abstract/keyword
+                · 也不是"并进敞开首页区"的正文
+                · 也不是章节标题（那个分支在上面且 continue 了）
+
+              ⚠️ 但**不能无条件翻位** —— 这是本修复的关键，
+                 我第一版就踩了这个坑（实测仍输出
+                 `#0 head=null blocks=18`，等于没修）。
+
+              反例（本文档的真实数据）：
+                首页第一块 line=0 真实是**题目**，
+                但它带着一条陈旧的 `body:0-0` 覆盖标注
+                （"清空标题"留下的）→ `type='body'`、`mark` 存在
+                → 前区判据因 `!mark` 全部跳过 → 落到这里。
+                若在这里就翻 `frontDone`，**第一块自己**就把首页关掉了，
+                后面 line=29 的 abstract 又进不来 —— 症状与修复前一样。
+
+              ✅ 只在**两种确凿信号**下翻位：
+                 ① 已经开过某个首页区（`frontOpen !== null`），
+                    之后的正文块 = 首页区之后的正文 → 首页结束；
+                 ② 出现过章节标题（上面的分支已把 frontOpen 清成 null，
+                    这里补一句翻位）。
+
+              ⚠️ 为什么不把 ② 合并进上面那个 `if`：
+                 上面那个 if 里还要负责 `authorPending = false` 等，
+                 语义不同。这里用一句话表达"标题出现 ⇒ 首页结束"，
+                 读代码的人一眼能看到这两个条件是并列的。
+            */
+            if (frontOpen !== null || type === 'heading') {
+                frontDone = true;
             }
 
             /*
@@ -6400,13 +6853,60 @@
      * 实测症状：先判 heading 的话，摘要会变成一个
      * 与 "1 Introduction" 平级的章节区，用户看到的是
      * 一个"Abstract"章节 + 一段内容，而不是一个"摘要区"。
+     *
+     * ══ ⚠️⚠️ 第二个参数是 `frontDone`，**不是 `sawBody`**（2026-09-28 修）══
+     *
+     * 原来传的是 `sawBody`，而 `sawBody` 在**第一个块**上就被
+     * 正文兜底 `openRegion(lv=1, null)` 置 true 了
+     * （见 buildRegions 里"正文的第一块若还没开章节区"那段）。
+     *
+     * 后果：**摘要检查永远不生效** —— j=5 那一行 `"Abstract"`
+     * 明明是行首且是纯标题词，却因为 `sawBody` 已 true
+     * 而跳过了摘要判据 → 落成 `heading` → 摘要变成一个章节区。
+     *
+     * 实测（reader:fb 日志）：修复前**没有** `PRE j=5 type=abstract`
+     * 这一条，只有 `FLIP j=18 line=20 type=heading`；
+     * 修复后 j=5 正确判出 `abstract`。
+     *
+     * ⚠️ `frontDone` 与 `sawBody` 的区别见它在 buildRegions 里的定义：
+     *    `sawBody`   = "章节栈开了没有"（决定要不要补兜底区）
+     *    `frontDone` = "首页区结束了没有"（决定还能不能认标题/摘要）
+     *    这是**两件事**，之前混用导致了本 bug。
      */
-    function guessKind(blk, sawBody) {
-        if (!sawBody) {
+    /**
+     * 这一行的文本是不是**首页结构锚点**（摘要 / 关键词）。
+     *
+     * ══ ⚠️⚠️ 唯一来源：`guessKind` 与"清空"必须共用它 ══
+     *   （2026-09-28 抽出）
+     *
+     * 为什么必须共用：
+     *   `guessKind` 靠这两条正则把「Abstract」这一行认成摘要；
+     *   而 `clearTextMarksByType` 决定"哪些块不该写 body 覆盖"时，
+     *   判据必须**完全一致** —— 否则会出现
+     *   「guessKind 能认出来、但清空却把它钉死了」的矛盾，
+     *   也就是本次用户报的 bug（标了摘要、阅读视图不变）。
+     *
+     * ⚠️ 正则的细节（为什么不用 `\b`、为什么显式列分隔符）
+     *    见下面 guessKind 里那段长注释，这里只做搬运、不改语义。
+     *    若将来要放宽/收紧，改这里一处即可，两个调用点同步生效。
+     */
+    var FRONT_ANCHOR_ABSTRACT = /^(abstract|摘要)(\s|$|[:：—–-])/i;
+    var FRONT_ANCHOR_KEYWORD =
+        /^(keywords?|index terms|关键词)(\s|$|[:：—–-])/i;
+
+    /** 这一行是不是摘要/关键词锚点（见上） */
+    function isFrontAnchorText(text) {
+        if (text == null) return false;
+        var txt = String(text).trim();
+        return FRONT_ANCHOR_ABSTRACT.test(txt) ||
+               FRONT_ANCHOR_KEYWORD.test(txt);
+    }
+
+    function guessKind(blk, frontDone) {
+        if (!frontDone) {
             var txt = blk.text.trim();
             /*
-              ⚠️ 摘要 / 关键词的提示词。中英文都列 ——
-                 两种写法在真实论文里都常见。
+              ⚠️ 摘要 / 关键词的提示词。中英文都列 ——                 两种写法在真实论文里都常见。
 
               ⚠️ 用 `^`（行首）而不是 `contains` ——
                  正文里引用别人的摘要也会出现 "abstract"，
@@ -6428,8 +6928,8 @@
                  且不会把 "Abstracting away..." 这类词误判
                  （它后面是字母，不在分隔符集合里）。
             */
-            if (/^(abstract|摘要)(\s|$|[:：—–-])/i.test(txt)) return 'abstract';
-            if (/^(keywords?|index terms|关键词)(\s|$|[:：—–-])/i.test(txt)) return 'keyword';
+            if (FRONT_ANCHOR_ABSTRACT.test(txt)) return 'abstract';
+            if (FRONT_ANCHOR_KEYWORD.test(txt)) return 'keyword';
         }
 
         if (blk.kind === 'heading') return 'heading';
