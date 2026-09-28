@@ -4768,8 +4768,27 @@
             return nm ? nm.type : 'body';
         })();
 
+        /*
+          ⚠️ 单块 Delete **保留**锚点跳过（与「清空某一类」一致），
+             但这个例外不能滥用：用户如果想删「Abstract」这一行的框，
+             他会改用「清空全部」—— 那条路径不跳（见 clearTextMarksByType）。
+
+             实测用户诉求正是"清空全部"（「我清除了所有区域」），
+             所以**不能**把这条跳过也去掉 —— 那会让"清空标题"误伤摘要。
+        */
         if (nativeType !== 'body' && !isFrontAnchorText(block.text)) {
-            kept.push({ from: from, to: to, type: 'body', level: 0 });
+            kept.push({
+                from: from,
+                to: to,
+                type: 'body',
+                level: 0,
+                /*
+                  ⚠️ 同样带 `byUser` —— 见 clearTextMarksByType 里的说明。
+                     不带的话 buildRegions 会把它当"陈旧残留"忽略掉，
+                     于是"删了没反应"。这条是**用户刚点的**，必须生效。
+                */
+                byUser: true
+            });
         }
 
         textMarks = kept;
@@ -4868,7 +4887,55 @@
                  `!type` 表示清空全部 —— 那时丢掉所有非 body 标注。
             */
             if (m.type === 'body') {
-                kept.push(m);
+                /*
+                  ══ ⚠️⚠️ 顺手把**陈旧的** body 覆盖升级成 `byUser` ══
+                     （2026-09-28 第三个补丁；不补这条，"清空"就是空操作）
+
+                  ══ 症状 ══
+
+                  用户在这个版本上点「清空全部」+ 确认，界面**毫无变化**，
+                  日志是 `clear by type (all) affected=0`。
+
+                  ══ 真因 ══
+
+                  数据里已经有 28 条 body 覆盖（v0.1.33/34 写的，**没有**
+                  `byUser` 字段）。于是：
+                    · 第 1 步：`type === 'body'` → 全部原样保留
+                    · 第 2 步：`effectiveTypeAt` 对每块都返回 'body'
+                      → `if (eff === 'body') continue` → **一条也不写**
+                    · `removed === 0` → `affected=0`，什么都不做
+
+                  单看每一步都"对"（幂等、不重复写），
+                  合起来就是**"点了清空，用户要的东西没发生"**：
+                  那些无 `byUser` 的陈旧覆盖在 `buildRegions` 里会被
+                  **忽略**（见那里的自愈逻辑），所以 `Abstract` 照样
+                  渲染成摘要区。**数据说"全是 body"，渲染说"有摘要区"。**
+
+                  ══ ✅ 修法 ══
+
+                  既然用户这一次明确按了「清空」，就把那些**陈旧的**
+                  body 覆盖**就地升级**为 `byUser: true` —— 让它们
+                  从"可能被忽略的残留"变成"用户明确要求的正文"。
+                  升级本身也算 `removed++`，这样：
+                    · `affected` 不再是 0（用户能看到"确实做了事"）
+                    · 渲染侧从此尊重这些覆盖（不再自愈忽略）
+
+                  ⚠️ 只升级 `!m.byUser` 的。已经是 `byUser` 的**不动** ——
+                     否则每次清空都 `removed++`，`affected` 永远不为 0，
+                     确认文案又会变成"每次都能清 N 个"的假信息。
+                */
+                if (!m.byUser) {
+                    kept.push({
+                        from: m.from,
+                        to: m.to,
+                        type: 'body',
+                        level: m.level || 0,
+                        byUser: true
+                    });
+                    removed++;
+                } else {
+                    kept.push(m);
+                }
                 continue;
             }
             if (!type || m.type === type) {
@@ -4946,14 +5013,64 @@
 
               ⚠️ 不要顺手把"标题也一起跳过"——那会让"清空标题"失效
                  （用户的原始诉求）。范围严格限制在 home 锚点两词。
+
+              ══ ⚠️⚠️ 只在「清空某一类」时跳过，**清空全部时不跳** ══
+                 （2026-09-28 用户第二次报：清空所有后阅读视图没变）
+
+              我的第一版把这里写成了**无条件跳过**，后果是：
+              用户点「清空全部」（`type === null`）时，`Abstract` 那行
+              也被跳过 → 它保留着一个 `Heading L1` 框 **清不掉**。
+
+              实测（真机）：
+                  清空前：304 body + 27 heading-lv1
+                  清空后：330 body + **1 heading-lv1**   ← 剩的就是 L7 "Abstract"
+                  日志：clear by type (all) affected=26   ← 应当是 27
+                  未被任何标注覆盖的 heading：L7 "Abstract"
+
+              用户原话：「我清除了所有区域之后，阅读视图没变？」
+              —— 因为那个是 heading 的 `Abstract` 还在，摘要区照旧。
+
+              ⚠️ 两种语义**必须分开**：
+
+                · `type === 'heading'`（清空**标题**）
+                  → 跳过锚点。用户的诉求是「把这些判错的**章节标题**
+                    降级」，`Abstract` / `Keywords` 在他眼里是
+                    **摘要区 / 关键词区**，不是章节标题 ——
+                    清了他没要求清的东西，而且不可逆（见上面的说明）。
+
+                · `type === null`（清空**全部**）
+                  → **不跳过**。用户说"全部"，就是要全部。
+                    留着 `Abstract` 反而让"清空"变成"清了 26/27"，
+                    这是**说一套做一套**，比多清一个更让用户困惑。
+
+              判据：`isFrontAnchorText(...) && type` ——
+              有具体类型才跳过；`type` 为 null（全部）时不跳。
             */
-            if (isFrontAnchorText(b.text)) continue;
+            if (type && isFrontAnchorText(b.text)) continue;
 
             kept.push({
                 from: b.line,
                 to: b.line + b.text.split('\n').length - 1,
                 type: 'body',
-                level: 0
+                level: 0,
+                /*
+                  ══ ⚠️⚠️ `byUser: true` —— 区分"用户主动要求"与"陈旧残留" ══
+                     （2026-09-28，配套 buildRegions 里那段自愈逻辑）
+
+                  这是本项目第一次给 mark 加语义标记，理由必须写清：
+
+                  `buildRegions` 读到"锚点行上的 body 覆盖"时，
+                  要判断它该不该生效 —— 而**同一个形态有两种相反语义**：
+                    · v0.1.33 的「清空标题」误伤锚点 → 陈旧，应忽略
+                    · v0.1.35 的「清空全部」明确要求 → 必须生效
+
+                  靠字段区分，而不是靠猜文本。
+
+                  ⚠️ 老文档里没有这个字段 → 被当成"陈旧"忽略一次，
+                     正是我们想要的自愈效果（见 buildRegions 的说明）。
+                     所以**不需要**写数据迁移。
+                */
+                byUser: true
             });
             removed++;
         }
@@ -5047,6 +5164,18 @@
      *      · 用户标过的、命中 scope    → 会变（标注被删）
      *      · 原生判非 body、命中 scope → 会变（会被显式标成 body）
      *      · 本来就是 body 且没标注    → 不变，不计
+     *
+     * ⚠️⚠️ 首页锚点（`Abstract` / `Keywords`）的规则**必须同步** ══
+     *    （2026-09-28 修：确认文案数与实际动作数不一致）
+     *
+     * `clearTextMarksByType` 在「清空某一类」时会跳过首页锚点
+     * （见那里的长注释），所以这里也必须跳 —— 否则会出现
+     * 「确认框说 28 个、实际只清了 27 个」这种**假信息**。
+     * 而「清空全部」时两边都不跳，规则一致。
+     *
+     * 教训：这两个函数是**一对**（一个报数、一个干活），
+     * 任何一边改判据都要同步改另一边。项目里已因为
+     * "两处判据不一致"栽过好几次（见 §0.-1.6）。
      */
     function countTextMarks(type) {
         var blocks = lastBlocks || [];
@@ -5054,6 +5183,12 @@
         for (var i = 0; i < blocks.length; i++) {
             var b = blocks[i];
             if (!b || !b.text || b.line == null) continue;
+
+            /*
+              ⚠️ 与 clearTextMarksByType 同一行判据：有具体类型时跳过锚点。
+                 放在最前面 —— 锚点在两种情况下都不该被"某一类"清掉。
+            */
+            if (type && isFrontAnchorText(b.text)) continue;
 
             var mark = markAtLine(b.line);
             if (mark) {
@@ -6466,41 +6601,131 @@
 
             var mark = markFor(j);
             /*
-              ══ ⚠️⚠️ 自愈：忽略"钉在首页锚点上的 body 覆盖" ══
-                 （2026-09-28 修用户问题 B；兼容**已污染**的旧文档）
+              ══ ⚠️⚠️ 自愈：忽略**陈旧的**body 覆盖（只针对首页锚点） ══
+                 （2026-09-28，第二版；第一版有严重副作用，见下）
 
-              上面 `clearTextMarksByType` 已经不再往摘要/关键词行写
-              body 覆盖了（见那里的长注释）。但**用户已有的文档里
-              已经写进去了** —— 那些 `body:7-7` 这样的标注会一直
-              压着 guessKind，摘要区永远建不出来。
+              ══ 要解决什么 ══
 
-              只修"以后不再写"是不够的：用户升级后打开老文档，
-              症状必须自动消失，不能要求他"重新清一遍"或重导 PDF。
+              v0.1.33 的「清空」会把每个命中块写成 `type:'body'` 覆盖。
+              `Abstract` 那行原生是 `heading`，于是也被钉了一条 `body:7-7`。
+              而 `buildRegions` 是 `mark ? mark.type : guessKind(…)` ——
+              有 mark 就不调 `guessKind`，而它是摘要识别的**唯一**途径。
+              → 摘要区永远建不出来。
 
-              ✅ 所以读的时候也判一次：如果这条 mark 是 `body`、
-                 且它盖住的那一行**本来就是首页锚点**（Abstract /
-                 Keywords），就当它不存在，交回 guessKind 去认。
+              ══ ⚠️ 第一版的错误（我踩了）══
 
-              ⚠️ 为什么"body 钉在锚点上"可以无条件忽略：
-                 ① 用户不可能真心想把「Abstract」这一行标成正文 ——
-                    他的选项里"正文"是用来把**误判的标题**降级的，
-                    而摘要行在界面上显示的是"摘要"标签，不是标题；
-                 ② 就算他真想标成正文，忽略后 guessKind 会给它
-                    `'abstract'`（因为行首是 Abstract）—— 结果仍是"摘要"，
-                    与"钉成正文"相比只是**更符合文档结构**；
-                 ③ 这条判据只对"行首是 Abstract/Keywords"的行生效，
-                    范围极小，不会波及其它块。
+              我第一版写成**无条件**忽略"锚点上的 body 覆盖"：
 
-              ⚠️ 只忽略 `body`，**不能**忽略其它类型的标注 ——
-                 用户把某行标成 "heading/abstract/..." 是他的真实意图，
-                 必须尊重（那正是"用户标注优先"的核心）。
+                  if (mark && mark.type === 'body' && isFrontAnchorText(blk.text)) mark = null;
+
+              于是「清空**全部**」写入的 body 覆盖也被忽略 →
+              `Abstract` 又被认回 `abstract` → **摘要区永远清不掉**。
+
+              实测（真机）：
+                  清空全部后 marks 里有 28 条 body 覆盖（L7 也在内）
+                  但阅读视图仍输出 4 个区域：
+                    #0 section-lv1  #1 title  #2 author  #3 abstract
+                  用户原话：「我清除了所有区域之后，阅读视图没变？」
+                  reader:c 日志：`j=5 L7 mark=null type=abstract`  ← mark 被丢掉了
+
+              根因：**读写两侧的判据互相打架** ——
+                写侧（清空全部）"给锚点也写覆盖"，
+                读侧"忽略锚点上的覆盖"。
+              两边都"对"，合起来就是 bug。
+
+              ══ ✅ 第二版：按**写侧是否真的想覆盖**来判，而不是按文本 ══
+
+              关键认识：**"锚点上的 body 覆盖"有两种来源，语义完全相反**：
+                ① 陈旧的（v0.1.33 及更早写的）—— 语义是"清空标题"误伤，
+                   应当忽略，让 guessKind 重建摘要区；
+                ② 新的（v0.1.35 起「清空全部」写的）—— 语义是
+                   "用户要求全部变正文"，**必须生效**。
+
+              两者靠 `byUser` 字段区分（见 clearTextMarksByType /
+              clearTextMarkFor 写入处的说明）：
+                · `byUser: true` → 用户明确要求，**不忽略**
+                · 无该字段（老数据）→ 视为陈旧，忽略
+
+              ⚠️ 老文档怎么办：无 `byUser` 的旧覆盖会被忽略一次 ——
+                 正是我们想要的（自愈）。用户下次清空时写入的是带
+                 `byUser` 的新覆盖，从那时起完全由用户意志决定。
+                 所以**不需要**任何数据迁移，打开即自愈。
             */
-            if (mark && mark.type === 'body' && isFrontAnchorText(blk.text)) {
-                trace('reader:mark-skip', 'ignore body override on front anchor' +
+            if (mark && mark.type === 'body' && !mark.byUser &&
+                isFrontAnchorText(blk.text)) {
+                trace('reader:mark-skip', 'ignore STALE body override on front anchor' +
                       ' line=' + blk.line + ' j=' + j);
                 mark = null;
             }
             var type = mark ? mark.type : guessKind(blk, frontDone);
+
+            /*
+              ══ ⚠️⚠️ 「清空全部」之后，首页区的**位置判据**必须整体关掉 ══
+                 （2026-09-28 第四个补丁；不补这条，清空后还剩 3 个区）
+
+              ══ 症状 ══
+
+              用户在**干净文档**上点「清空全部」→ 确认：
+                · 数据正确：28 条 body 覆盖，全部 `byUser: true`
+                · 编辑视图正确：331 个块**全是 body**，一个标题都不剩
+                · 阅读视图**却还有 3 个区**：
+                    #0 section-lv1（"Attention Is All You Need …"）
+                    #1 title       （"Google Brain …"）
+                    #2 author      （"Google Research …"）
+
+              ══ 真因 ══
+
+              `clearTextMarksByType` **只为"原生判非 body"的块写覆盖**
+              （那是刻意的：`if (eff === 'body') continue`，避免白占存储）。
+              而首页那几段（作者、单位、邮箱）原生本来就是 `paragraph`
+              → `effectiveTypeAt` 已经是 `body` → **不写覆盖** → `mark = null`。
+
+              于是下面这几处"位置判据"照样生效：
+
+                  if (!mark && !frontDone && !sawTitle && …) type = 'title';
+                  if (!mark && !frontDone && authorPending && type === 'body')
+                      type = 'author';
+
+              它们只看 `!mark` —— 而"没写覆盖"和"用户没表态"在这个判据下
+              **长得一模一样**，无法区分。所以：
+                · j=0 开出一个 `head=null` 的一级区（sawBody 兜底）
+                · j=2..4 被判成 title / author → 又开两个前区
+
+              ⚠️ 这正是 §0.-1.6 那句话的又一例：
+                 **"没数据"与"数据说没有"必须能区分。**
+
+              ══ ✅ 修法 ══
+
+              加一个**全局信号**：只要文档里存在任何一条 `byUser` 的
+              body 覆盖，就说明用户**明确要求过"这段是正文"**，
+              那么整篇的首页区位置判据一律让路（他要求的就是没有区域头）。
+
+              ⚠️ 为什么用"存在任一 byUser"而不是"每块都有"：
+                 用户清空全部之后，正文块（原生就是 body）**不会**有覆盖 ——
+                 若要求"每块都有"，这个判据永远不成立，等于没修。
+                 而"存在任一 byUser body 覆盖"已经足够表达
+                 "用户在这一篇里做过清空动作"这个意图。
+
+              ⚠️ 为什么不必更细：用户想恢复自动识别，重新标几个块即可
+                 （标注会覆盖 body 覆盖）。清空是"我要一片干净"的整体操作，
+                 不该在残留几个区域头。
+            */
+            var userWantsPlainBody = false;
+            if (!userWantsPlainBody && marks.length) {
+                for (var mi = 0; mi < marks.length; mi++) {
+                    if (marks[mi].type === 'body' && marks[mi].byUser) {
+                        userWantsPlainBody = true;
+                        break;
+                    }
+                }
+            }
+            /*
+              ⚠️ 判据只对"没有明确标注"的块生效 ——
+                 用户后来又单独标了 heading/abstract 的块照旧走标注，
+                 不能被这个全局开关吃掉（标注永远优先）。
+            */
+            var frontHeuristicsOff = userWantsPlainBody && !mark;
+
             /*
               ⚠️ 调试：统计"有标注但没生效"的块数。
                  用户报「阅读视图没按标注重排」时，
@@ -6577,7 +6802,7 @@
                  用户标的可能是 abstract / keyword 等任何类型，
                  只要他表过态，就不该被位置判据改写。
             */
-            if (!mark && !frontDone && !sawTitle &&
+            if (!mark && !frontHeuristicsOff && !frontDone && !sawTitle &&
                 type !== 'abstract' && type !== 'keyword') {
                 type = 'title';
             }
@@ -6601,7 +6826,8 @@
                     **摘要/关键词之前**整段，靠"遇到 abstract/keyword
                     就关窗"来收口。
             */
-            if (!mark && !frontDone && authorPending && type === 'body') {
+            if (!mark && !frontHeuristicsOff && !frontDone && authorPending &&
+                type === 'body') {
                 type = 'author';
             }
 
