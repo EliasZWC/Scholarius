@@ -1537,20 +1537,48 @@ body {
     font-weight: bold;
 }
 
+/*
+  ══ 字号跨度（v0.1.56 加大）══
+
+  用户反馈：
+    「原本是+7/+4/+2/+1，但我觉得不太有区分度。改成+16/+8/+4/+2吧」
+
+  以默认正文 17px 计：
+      h3     17+2  = 19px
+      h2     17+4  = 21px
+      h1     17+8  = 25px
+      title  17+16 = 33px
+
+  ⚠️ 仍然用 `em`（相对当前正文字号）而不是 px —— 正文字号用户可调，
+     写成 px 的话调到 28px 时标题反而比正文小。系数按 17px 反算：
+
+      h3    (17+2)/17  = 1.1176
+      h2    (17+4)/17  = 1.2353
+      h1    (17+8)/17  = 1.4706
+      title (17+16)/17 = 1.9412
+
+  ⚠️ 行高不跟着放大 —— 标题行沿用 `.reader-para` 的 1.75，
+     33px 的字配上 1.75 行高会显得稀。所以这里把标题行的
+     line-height 收到 1.35，让多行标题仍然紧凑。
+*/
 .reader-para.is-labeled-body[data-label="h3"] {
-    font-size: 1.0588em;   /* 17 → 18px（+1） */
+    font-size: 1.1176em;   /* 17 → 19px（+2） */
+    line-height: 1.5;
 }
 
 .reader-para.is-labeled-body[data-label="h2"] {
-    font-size: 1.1176em;   /* 17 → 19px（+2） */
+    font-size: 1.2353em;   /* 17 → 21px（+4） */
+    line-height: 1.45;
 }
 
 .reader-para.is-labeled-body[data-label="h1"] {
-    font-size: 1.2353em;   /* 17 → 21px（+4） */
+    font-size: 1.4706em;   /* 17 → 25px（+8） */
+    line-height: 1.35;
 }
 
 .reader-para.is-labeled-body[data-label="title"] {
-    font-size: 1.4118em;   /* 17 → 24px（+7） */
+    font-size: 1.9412em;   /* 17 → 33px（+16） */
+    line-height: 1.3;
 }
 
 /*

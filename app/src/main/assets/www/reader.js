@@ -2990,8 +2990,28 @@
     /**
      * 造一个"已经处理过标注"的内容段（只要内容，不要标签段）。
      *
-     * ⚠️ 与 makeBlockEl 的区别：这里**不再**调用 makeLabeledBlock，
-     *    因为标签段由 appendLabeledRun 统一输出一次。
+     * ══ ⚠️⚠️ 只输出**被标注的字符区间**（v0.1.55）══
+     *
+     * 用户反馈：
+     *   「老问题怎么又出现了？怎么按段不按选中文本来标注区域啊」
+     *
+     * 真因：v0.1.50 重写"区域合并"时，这个函数被简化成
+     *   `el.textContent = b.text` —— 整块原文直接输出，
+     *   完全忽略了 `spans[0].start/end`。
+     *
+     * 于是用户只选了一个词标注，整段都被渲染成标题样式
+     * （并且带上了标题的字号字重，视觉上非常明显）。
+     * 数据层其实一直是对的（按区间存），错在渲染。
+     *
+     * ✅ 现在：
+     *    · 区间覆盖整块 → 直接输出块文本（常见情况，无额外节点）
+     *    · 区间是块的一部分 → **只输出那一段**，并把区间前后的
+     *      未标注文字作为**独立的普通段落**输出
+     *
+     * ⚠️ 前后残片必须单独成段，不能塞回同一个 `<p>` ——
+     *    否则标题的字号会被应用到整段（又变回"整段变标题"）。
+     *
+     * @return {DocumentFragment|Element}
      */
     function makeContentEl(b) {
         var edited = null;
@@ -2999,21 +3019,83 @@
             edited = edits[b.line];
         }
 
-        var el = document.createElement('p');
-        el.className = 'reader-para';
-        el.textContent = (edited != null) ? edited : b.text;
-
+        var fullText = (edited != null) ? edited : (b.text || '');
         var spans = (typeof b.line === 'number') ? labels[b.line] : null;
-        if (spans && spans.length === 1 && spans[0].label) {
-            el.classList.add('is-labeled-body');
-            el.setAttribute('data-label', spans[0].label);
+        var sp = (spans && spans.length === 1) ? spans[0] : null;
+
+        /*
+          ⚠️ 没有标注（或标注异常）→ 普通段落，整块输出。
+             这条路径也要走，否则无标签块会消失。
+        */
+        if (!sp || !sp.label) {
+            return makePlainPara(fullText, b);
         }
 
-        if (b.page) el.setAttribute('data-page', String(b.page));
-        if (typeof b.line === 'number' && b.line >= 0) {
-            el.setAttribute('data-line', String(b.line));
+        /*
+          夹边界：编辑过的段落长度可能变了，旧标注的 end 可能越界。
+        */
+        var a = Math.max(0, Math.min(sp.start || 0, fullText.length));
+        var bb = Math.max(0, Math.min(sp.end || 0, fullText.length));
+
+        /* 空区间 → 无从标注，当普通段落处理 */
+        if (bb <= a) {
+            return makePlainPara(fullText, b);
         }
-        return el;
+
+        var before = fullText.slice(0, a);
+        var body = fullText.slice(a, bb);
+        var after = fullText.slice(bb);
+
+        /*
+          ⚠️ 标注段要先造出来 —— 两个分支（整块 / 部分）都要用它。
+             踩过的坑：原来只在"整块"分支里 `var single = ...`，
+             "部分"分支里 `single` 是 undefined，
+             导致 appendChild 抛 TypeError，**整个正文渲染中断**（白屏）。
+        */
+        var marked = document.createElement('p');
+        marked.className = 'reader-para is-labeled-body';
+        marked.setAttribute('data-label', sp.label);
+        marked.textContent = body;
+        if (typeof b.line === 'number' && b.line >= 0) {
+            marked.setAttribute('data-line', String(b.line));
+        }
+
+        /*
+          区间正好覆盖整块 → 不必拆节点，省一层 DOM。
+        */
+        if (!before && !after) {
+            if (b.page) marked.setAttribute('data-page', String(b.page));
+            return marked;
+        }
+
+        /*
+          ⚠️ 部分标注 → 拆成 [前残片][标注段][后残片]。
+            残片是普通段落，**不带** data-label，所以不会被套上标题字号。
+            ⚠️ 只有标注段带 `data-line`（它是"这一行里的核心"）——
+                 残片也带上会让 blockElOf / 目录跳转定位到残片上。
+                 但残片仍需要能被选中/编辑，所以文字是真实文本节点。
+        */
+        var frag = document.createDocumentFragment();
+
+        if (before) frag.appendChild(makePlainPara(before, null));
+        frag.appendChild(marked);
+        if (after) frag.appendChild(makePlainPara(after, null));
+
+        return frag;
+    }
+
+    /** 造一个普通段落（不带标注） */
+    function makePlainPara(text, b) {
+        var p = document.createElement('p');
+        p.className = 'reader-para';
+        p.textContent = text;
+        if (b) {
+            if (b.page) p.setAttribute('data-page', String(b.page));
+            if (typeof b.line === 'number' && b.line >= 0) {
+                p.setAttribute('data-line', String(b.line));
+            }
+        }
+        return p;
     }
 
     /**
