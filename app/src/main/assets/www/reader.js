@@ -4256,11 +4256,22 @@
                 valEl.className = 'reader-author-value';
                 valEl.textContent = body;
                 whole.appendChild(valEl);
+            } else if (sp.label === 'author') {
+                /*
+                  ⚠️ 没有项名时**也要包一层** `.reader-author-value`（v0.1.75）——
+                     直接放文本节点的话，它是个匿名 flex 项，
+                     `flex: 1 1 auto` 的伸展规则对它不生效，
+                     于是内容不会贴右（用户报的"参差不齐"）。
+                     包成 span 后与有项名的情形走同一套布局。
+                */
+                whole.classList.add('is-author-body');
+
+                var valOnly = document.createElement('span');
+                valOnly.className = 'reader-author-value';
+                valOnly.textContent = body;
+                whole.appendChild(valOnly);
             } else {
                 whole.textContent = body;
-                if (sp.label === 'author') {
-                    whole.classList.add('is-author-body');
-                }
             }
 
             /*

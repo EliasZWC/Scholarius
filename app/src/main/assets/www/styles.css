@@ -1832,7 +1832,7 @@ body {
 }
 
 /*
-  ══ 作者信息区域：左项名 + 右对齐内容（v0.1.74）══
+  ══ 作者信息区域：左项名 + 右对齐内容（v0.1.74 / v0.1.75 修）══
 
   用户要求：
     「对于作者区域，文本右对齐。那么除了编号和提示条位置在左边，
@@ -1845,44 +1845,67 @@ body {
       ^^  ^  ^^^^              ^^^^^^^^^^^^^^^^
       编号 竖线 项名（左）        内容（右对齐）
 
-  ⚠️ 用 flex + `justify-content: space-between` 而不是 `text-align: right`：
-     只写 `text-align: right` 的话，项名和内容会连成一行一起被推到右边，
-     项名就跑到内容右边去了。flex 才能"一个贴左、一个贴右"。
+  ══ ⚠️⚠️ 不能用 `justify-content: space-between`（v0.1.75 修）══
+
+  用户反馈：
+    「作者信息文本没有右对齐，而是参差不齐，
+      然后提示条也什么位置都有，而不是固定在和其他提示条一个的地方。」
+
+  真因：作者段同时带 `.is-body-para`，它的 flex 子项有**四个**：
+
+      [::before 编号] [.reader-rule 竖线] [项名] [内容]
+
+  `space-between` 会在**所有**子项之间平均分配空隙 ——
+  不只把项名和内容推开，还把编号和竖线也推开了，
+  于是竖线跑到段落中间、内容也没贴右。
+
+  ✅ 正确做法：**不动主轴对齐**（保持默认 flex-start），
+     让「内容」自己吃掉剩余空间并内部右对齐：
+
+         .reader-author-value { flex: 1 1 auto; text-align: right; }
+
+     编号、竖线、项名宽度都由内容决定，自然紧挨在左边；
+     内容伸长到剩余宽度，文字在它内部靠右 ——
+     竖线位置因此与其他段落完全一致。
 */
 .reader-para.is-author-body {
     /*
-      ⚠️ 覆盖 `.is-body-para` 的 `align-items: flex-start` 吗？
-         不 —— 那是交叉轴对齐，这里要改的是主轴，用 justify-content。
-         （作者段未必带 is-body-para，但两者可能同时存在）
+      ⚠️ 刻意**不写** justify-content。
+         默认的 flex-start 让子项从左往右依次紧挨排列，
+         正是"编号、竖线固定在左边"所需要的。
     */
-    justify-content: space-between;
+    align-items: flex-start;
 }
 
-/* 项名：贴左，不参与右推 */
+/* 项名：贴左，不伸展 */
 .reader-author-field {
     /*
-      ⚠️ `flex: 0 0 auto` + 靠左：
-         `space-between` 会在两个可见子项之间分配空隙，
-         项名在前自然贴左、内容在后自然贴右。
+      ⚠️ `flex: 0 0 auto`：项名只占自己需要的宽度，
+         绝不吃掉剩余空间 —— 剩余空间全留给内容。
     */
     flex: 0 0 auto;
     text-align: left;
     /*
       ⚠️ 与内容用同一字号（用户要求"不改变字重和字号"），
-         只靠淡色 + 略小一点的字距区分。
+         只靠略小一点的字距区分。
          这里**不能**写 font-size，否则会与正文不一致。
     */
     letter-spacing: 0.2px;
     /*
-      ⚠️ 项名与内容之间至少留一点空隙，
+      ⚠️ 项名与内容之间留一点空隙，
          否则长内容会把项名挤扁。
     */
     padding-right: 12px;
 }
 
-/* 内容：贴右、可换行 */
+/* 内容：吃掉剩余宽度，内部右对齐 */
 .reader-author-value {
     flex: 1 1 auto;
+    /*
+      ⚠️ `min-width: 0` 必须写：flex 项的默认最小宽度是 `auto`，
+         内容很长（比如一长串邮箱）时它会拒绝收缩、把整行撑出屏幕。
+    */
+    min-width: 0;
     text-align: right;
     /*
       ⚠️ 作者单位/邮箱可能很长，必须允许换行，
