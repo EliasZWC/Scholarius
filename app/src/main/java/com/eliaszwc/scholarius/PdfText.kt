@@ -1312,11 +1312,55 @@ object PdfText {
             }
 
             /*
-              ⚠️ 字号远小于正文 → 图表刻度 / 脚注 / 页码，**直接丢弃**。
+              ⚠️ 字号远小于正文 → 图表刻度 / 页码，**直接丢弃**。
                  见 [MIN_BODY_RATIO] 的注释（ResNet 那批 3.3pt 的 `0 1 2 3`）。
+
+              ══ ⚠️⚠️ 但"字号小"**不能**单独作为丢弃依据（2026-10-21 修）══
+
+              用户要求：「先确保所有 pdf 内的正文文本都包含在阅读视图内了」。
+
+              实测（Transformer 论文第 8 页）漏掉了一条脚注：
+
+                  5We used values of 2.8, 3.7, 6.0 and 9.5 TFLOPS
+                  for K80, K40, M40 and P100, respectively.
+
+              它的字号是 **6.0pt**，正文是 10.0pt → 比例 0.60
+              < MIN_BODY_RATIO(0.75) → 被这一行直接 `continue` 丢掉。
+              覆盖率工具（tools/check_block_parity.py）第一次就抓到了它。
+
+              ⚠️ 为什么会漏判：`MIN_BODY_RATIO` 原本是为筛掉
+                 **图表坐标轴刻度**（`0` `1` `2` `3`、`training error (%)`）
+                 而设的。那些东西的共同特征是 **不像句子** ——
+                 它们没有谓语、没有空格分隔的词序列、没有句末标点。
+
+                 而脚注**是完整句子**，只是字号小。两者的区别不在字号，
+                 而在"是不是话"。用字号这一把尺子量两件事，必然误伤。
+
+              ✅ 修正：小字号的行，若**像句子**就留下，否则才丢。
+                 判据复用 [looksLikeProse]（它已经涵盖"词数 > 8"
+                 "含逗号且够长""句末标点"三条），
+                 再补一条"整行够长且空格够多"—— 脚注常有 10+ 个词。
+
+                 · `0` / `1` / `2.5` / `training error (%)` → 不像句子 → 丢
+                 · `We used values of 2.8, 3.7, ...` → 像句子 → **留**
+
+              ⚠️ 阈值 0.45 是**下限**（再小就真的是图表注记了，
+                 实测本论文最小正文类字号是 6.0/10.0 = 0.60，
+                 ResNet 的刻度是 3.3/10.0 = 0.33）。
+                 留一点余量，避免把 0.4 倍以下的装饰性文字也拉进来。
             */
-            if (bodySize > 0f && line.size > 0f && line.size < bodySize * MIN_BODY_RATIO) {
-                continue
+            if (bodySize > 0f && line.size > 0f &&
+                line.size < bodySize * MIN_BODY_RATIO
+            ) {
+                val tiny = line.size < bodySize * TINY_TEXT_RATIO
+                if (tiny || !looksLikeProse(t)) continue
+                /*
+                  ⚠️ 走到这里 = 小字号但是完整句子（典型就是脚注）。
+                     用 trace 记一条，方便下次再查"某段为什么不见了"。
+                */
+                if (DEBUG_TINY) {
+                    Log.i(TAG, "keep tiny prose size=${line.size} body=$bodySize: ${t.take(60)}")
+                }
             }
 
             /*
@@ -2077,6 +2121,23 @@ object PdfText {
      *    0.75 能把图表刻度筛掉，又不至于误伤脚注（脚注是完整句子，留着无害）。
      */
     private const val MIN_BODY_RATIO = 0.75f
+
+    /**
+     * 「极小字号」的下限比例 —— 低于它就是图表注记，**无条件丢弃**。
+     *
+     * ⚠️ 与 [MIN_BODY_RATIO] 的分工（2026-10-21）：
+     *    · `< MIN_BODY_RATIO` 但 `>= TINY_TEXT_RATIO` → **看内容**
+     *      （像句子就留，典型是脚注 6.0pt / 正文 10.0pt = 0.60）
+     *    · `< TINY_TEXT_RATIO` → 直接丢（图表刻度 3.3pt / 10.0pt = 0.33）
+     *
+     * ⚠️ 取 0.45 是量出来的下限：实测本机四篇论文里
+     *    最短的**完整句子**是 6.0pt（正文 10.0pt，比例 0.60）；
+     *    最小的**图表刻度**是 3.3pt（比例 0.33）。0.45 正好落在两者之间。
+     */
+    private const val TINY_TEXT_RATIO = 0.45f
+
+    /** 打开后把"保留了小字号句子"记进 logcat（排查漏正文时用） */
+    private const val DEBUG_TINY = false
 
     /**
      * 纯编号单独成行的形态：`3` / `3.1` / `3.1.2`。
