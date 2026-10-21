@@ -2395,8 +2395,23 @@
         var keep = bodyEl ? bodyEl.scrollTop : 0;
         contentEl.textContent = '';
 
-        if (lastBlocks && lastBlocks.length) {
-            renderBlocks(lastBlocks);
+        /*
+          ══ ⚠️⚠️ 必须渲染 `docModel.blocks`，不是 `lastBlocks`（v0.1.67）══
+
+          `lastBlocks` 是**原生桥传进来的原始数组**，只反映 PDF 转换结果。
+          而编辑/合并段落之后，新的段落结构写在 `docModel.blocks` 里
+          （见 reflowParagraphs）—— 两者会不一致。
+
+          实测症状：合并两段后 `docModel` 已经是 350 段，
+          但页面仍是 351 段、原文一字未变 ——
+          因为这里一直拿 `lastBlocks` 渲染，改动被完全忽略。
+        */
+        var model = (docModel.blocks && docModel.blocks.length)
+            ? docModel.blocks
+            : lastBlocks;
+
+        if (model && model.length) {
+            renderBlocks(model);
         } else if (lastText) {
             contentEl.textContent = lastText;
         }
@@ -2535,6 +2550,164 @@
      *    两者长度可能不一致（理论上 start/end 是相对当前显示的块量的，
      *    所以是一致的，但仍有浮点/换行差异风险），夹一下更稳。
      */
+    /**
+     * 把编辑结果写回文档模型，然后**重新划分段落**（v0.1.67）。
+     *
+     * ══ 用户要求（原话）══
+     *
+     *   「不用这么麻烦，我不是说从 pdf 转之后保存到一个文本文件吗？
+     *     如果文件被修改了，直接重新计数自然段就好了」
+     *
+     * ══ ✅ 思路 ══
+     *
+     * 不再由渲染层去猜"哪些块变空了"（那样要处理块级、残片级、
+     * 标注段级三处漏判）。既然文本是**唯一事实来源**，那么：
+     *
+     *   ① 把被编辑的几个块拼成一段完整文本；
+     *   ② 按空行（`\n{2,}`）重新切分 → 得到新的自然段列表；
+     *   ③ 用新段列表替换这几个旧块，**行号重新连续编号**；
+     *   ④ 把涉及到的标注按"新段偏移"重新映射。
+     *
+     * 这样合并两段 → 自然就只剩一段；拆开 → 自然就多一段。
+     * 不需要任何"空段落过滤"。
+     *
+     * ⚠️ 行号怎么办：
+     *    原来 `line` 是 PDF 块的行号，`edits` / `labels` 都以它为键。
+     *    重新切分后段数会变，继续用旧行号必然撞车。
+     *    所以这里**整体重排**：从第一个被编辑的块开始，
+     *    后续所有块行号顺移（delta = 新段数 - 旧块数）。
+     *
+     * ⚠️ 只重排 JSON 内部的映射，不需要改 PDF ——
+     *    `docModel.blocks` 就是运行时的"文本文件"。
+     */
+    function reflowParagraphs(lines, newValue) {
+        if (!lines || !lines.length) return;
+
+        var first = lines[0];
+        var last = lines[lines.length - 1];
+
+        /*
+          ① 拼接这几个块的当前文本。
+             ⚠️ 用 `\n\n` 连接：块与块之间本来就是段落边界，
+                这样即使某块被编辑成空串，也不会把相邻两段粘在一起。
+
+          ⚠️⚠️ 跨块编辑时用户**改的是整段内容** ——
+             `newValue` 就是编辑框里的全文（原各块以 `\n\n` 连接），
+             必须直接用它，而不是从 `edits` 里再拼一遍旧文本。
+             漏了这一步会导致"编辑了但页面没变"。
+        */
+        var joined;
+        if (typeof newValue === 'string') {
+            joined = newValue;
+        } else {
+            var parts = [];
+            for (var i = 0; i < lines.length; i++) {
+                parts.push(String(edits[lines[i]] != null
+                    ? edits[lines[i]]
+                    : blockTextOf(lines[i])));
+            }
+            joined = parts.join('\n\n');
+        }
+
+        /*
+          ② 重新切分自然段。
+             ⚠️ 先按空行切，再逐段 trim 掉首尾空白。
+             ⚠️ 丢掉空段 —— 这正是"自动删除空段落"。
+        */
+        var newTexts = [];
+        var chunks = joined.split(/\n{2,}/);
+        for (var c = 0; c < chunks.length; c++) {
+            var piece = chunks[c].replace(/^\s+|\s+$/g, '');
+            if (piece === '') continue;
+            newTexts.push(piece);
+        }
+
+        /*
+          ⚠️ 极端情况：用户把内容全删了 → 一段都不剩。
+             此时保留一个空块占位，避免后续按 line 查找时全部失效。
+        */
+        if (!newTexts.length) newTexts.push('');
+
+        /*
+          ③ 算出 delta，并整体重排后续块的行号。
+             delta > 0 表示段数变多（拆段），< 0 表示变少（合并）。
+        */
+        var delta = newTexts.length - lines.length;
+
+        /* 先把这些块的编辑内容清掉，它们会被新块取代 */
+        for (var d = 0; d < lines.length; d++) {
+            delete edits[lines[d]];
+            delete labels[lines[d]];
+        }
+
+        /* 收集受影响的后续块（行号大于 last 的） */
+        var tail = [];
+        var list = docModel.blocks || [];
+        for (var t = 0; t < list.length; t++) {
+            if (list[t].line > last) tail.push(list[t]);
+        }
+
+        /* 新块（行号接着 first 往下排） */
+        var newBlocks = [];
+        for (var n = 0; n < newTexts.length; n++) {
+            newBlocks.push({
+                line: first + n,
+                page: (docModel.blocks && docModel.blocks.length)
+                    ? docModel.blocks[0].page : null,
+                text: newTexts[n]
+            });
+        }
+
+        /*
+          ④ 重建 `docModel.blocks`：
+             头部（line < first）+ 新块 + 尾部（行号整体平移 delta）
+        */
+        var head = [];
+        for (var h = 0; h < list.length; h++) {
+            if (list[h].line < first) head.push(list[h]);
+        }
+
+        for (var k = 0; k < tail.length; k++) {
+            tail[k] = {
+                line: tail[k].line + delta,
+                page: tail[k].page,
+                text: tail[k].text
+            };
+        }
+
+        docModel.blocks = head.concat(newBlocks, tail);
+
+        /*
+          ⑤ 尾部原有块的编辑/标注要跟着平移键，否则会错位。
+             ⚠️ 从大到小遍历，避免平移过程中覆盖掉还没处理的行。
+        */
+        if (delta !== 0) {
+            var oldEdits = edits;
+            var oldLabels = labels;
+            edits = {};
+            labels = {};
+
+            for (var ek in oldEdits) {
+                if (!Object.prototype.hasOwnProperty.call(oldEdits, ek)) continue;
+                var el = parseInt(ek, 10);
+                if (!isFinite(el)) continue;
+                var nk = (el > last) ? (el + delta) : el;
+                edits[nk] = oldEdits[ek];
+            }
+            for (var lk in oldLabels) {
+                if (!Object.prototype.hasOwnProperty.call(oldLabels, lk)) continue;
+                var ll = parseInt(lk, 10);
+                if (!isFinite(ll)) continue;
+                var nlk = (ll > last) ? (ll + delta) : ll;
+                labels[nlk] = oldLabels[lk];
+            }
+        }
+
+        trace('reader:edit',
+            'reflow lines=' + lines.join(',') + ' -> ' + newTexts.length +
+            ' (delta=' + delta + ')');
+    }
+
     function applyEdit() {
         if (!editInputEl || !editSpan) return;
 
@@ -2553,55 +2726,39 @@
             trace('reader:edit', 'line=' + line + ' [' + a + ',' + b + ')');
         } else {
             /*
-              ⚠️ 跨块：按空行切分写回各段（与原逻辑一致）。
-                 跨段本身就是"重写这几段"，不适用区间替换。
+              ══ ⚠️⚠️ 跨块编辑：交给 `reflowParagraphs` 重新分段（v0.1.67）══
+
+              用户要求：
+                「如果文件被修改了，直接重新计数自然段就好了」
+
+              旧做法是把 value 按空行切分后，逐个写进 `edits[lines[i]]`。
+              两段合并成一段时，后面那段就拿到空串 `''` —— 于是：
+                · 屏幕上多一个空段落；
+                · 它占掉一个正文段编号，后面的编号全部错位；
+              再靠渲染层去"过滤空块"，等于把一个数据问题
+              当成显示问题来修，所以一直修不干净。
+
+              ✅ 现在把这几块的文本**重新当作一整篇文本**切分自然段，
+                 段数变了就重排行号。合并 → 段数变少；
+                 拆开 → 段数变多。不需要任何过滤。
             */
-            var lines = editSpan.lines;
-            var chunks = value.split(/\n{2,}/);
-
-            for (var i = 0; i < lines.length; i++) {
-                edits[lines[i]] = (chunks[i] != null) ? chunks[i] : '';
-            }
-
-            if (chunks.length > lines.length) {
-                var last = lines[lines.length - 1];
-                edits[last] = chunks.slice(lines.length - 1).join('\n\n');
-            }
-
-            trace('reader:edit', 'multi lines=' + lines.join(','));
+            reflowParagraphs(editSpan.lines, value);
         }
 
         /*
-          ══ ⚠️ 顺手清掉已变空的块的标注（v0.1.66）══
-
-          用户反馈：
-            「当编辑使得段落减少（比如令两段合并为一段）之后，
-              编号却没有，就会导致空段落的出现，应该自动删除空段落。」
-
-          渲染层已经在 `renderFlat` 里跳过空块，不会再有空段落。
-          但 `labels` 里可能还留着这些已消失块的标注区间 ——
-          它们会在目录里对应不到任何文字（`mergedTocEntries` 会
-          跳过，但数据一直堆着）。
-
-          ✅ 这里直接把空文本块的标注一并删掉。
-          ⚠️ 只删**完全搜不到的块**（文本为空），
-             不影响用户对别的段落做的标注。
+          ⚠️ 单块编辑也要检查：用户可能把这个块的内容**整个删掉**。
+             这时 `edits[line]` 变成空串，同样不该留下空段落。
+             走一次相同的重排逻辑即可（段数会从 1 变 0 → 保留 1 个空块占位）。
         */
-        var touched = editSpan.single ? [editSpan.line] : editSpan.lines;
-        var labelsChanged = false;
-        for (var t2 = 0; t2 < touched.length; t2++) {
-            var tl = touched[t2];
-            var txt = edits[tl];
-            if (txt == null) continue;
-            if (String(txt).replace(/\s+/g, '') !== '') continue;
-            if (labels[tl]) {
-                delete labels[tl];
-                labelsChanged = true;
+        if (editSpan.single) {
+            var curTxt = String(blockTextOf(editSpan.line));
+            if (curTxt.replace(/\s+/g, '') === '') {
+                reflowParagraphs([editSpan.line]);
             }
         }
 
         saveEdits();
-        if (labelsChanged) saveLabels();
+        saveLabels();
         closeEditSheet();
         clearSelection();
         rerenderKeepingScroll();
@@ -5542,7 +5699,11 @@ function tocTitleFrom(text) {
                     ? contentEl.querySelectorAll('[data-line]').length
                     : 0,
                 /* 当前选区（真机上编辑前应为用户选中的那几个字） */
-                selection: selectedTextExact()
+                selection: selectedTextExact(),
+                /* 诊断（v0.1.67）：编辑链路的中间状态 */
+                editSpan: editSpan,
+                lastError: global.__scholariusLastError || null,
+                docModelLines: (docModel.blocks || []).length
             };
         },
         /** 当前设置（供测试用） */
