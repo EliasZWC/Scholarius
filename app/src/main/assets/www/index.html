@@ -1353,6 +1353,24 @@
         <!-- 选项由 reader.js 的 mountLabelSheet() 动态生成 -->
         <ul class="sel-label-list" id="sheet-label-list" role="radiogroup"></ul>
 
+        <!--
+          ══ ⚠️ 引用目标选择器（v0.1.71）══
+
+          用户要求：
+            「增加一个引用标签，比如我给类似「[12]」这种就可以加引用标签，
+              然后选择标注为引用的时候应该选择引用哪条文献，
+              这就和上一个需求形成闭环了。」
+
+          ⚠️ 只在选中「引用」标签时显示 —— 其他标签不需要选目标。
+             显隐由 reader.js 的 renderLabelOptions() 控制。
+          ⚠️ 列表内容 = 所有被标为「参考文献」的段落，按文献编号排序。
+             由 reader.js 填充。
+        -->
+        <div class="sel-cite-picker" id="sheet-cite-picker" hidden>
+            <p class="sel-cite-title" data-i18n="reader.citePick">Reference</p>
+            <ul class="sel-cite-list" id="sheet-cite-list" role="radiogroup"></ul>
+        </div>
+
         <div class="form-actions">
             <button class="btn" type="button" id="sheet-label-cancel"
                 data-i18n="action.cancel">Cancel</button>

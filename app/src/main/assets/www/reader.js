@@ -292,8 +292,34 @@
         'h1',          /* 一级标题 */
         'h2',          /* 二级标题 */
         'h3',          /* 三级标题 */
-        'reference'    /* 参考文献 */
+        'reference',   /* 参考文献（每条一个区域）*/
+        'cite'         /* 参考文献的引用编号（如 [12]）*/
     ];
+
+    /**
+     * 这个标签是否**禁止区域合并**（v0.1.71）。
+     *
+     * ══ 用户要求（原话）══
+     *
+     *   「对于文献标签，设置一个可以批量选择的功能，具体而言是
+     *     当选中文本跨段时，每个段自动作为一个文献项从而得到
+     *     多个文献区域，而不是整合成一个大的文献区域。」
+     *
+     * ⚠️ `appendLabeledRun()` 会把**相邻且标签相同**的块合并成一个区域，
+     *    只在最前面输出一次标签段 —— 这对“作者信息”这类块是对 的，
+     *    但对参考文献完全相反：每一条文献都是**独立的**，
+     *    合并后会变成一个大区域、而且丢失每条的编号。
+     *
+     * ✅ 所以这两类标签要走“每块各自一个区域”的分支。
+     */
+    function labelSplitsPerBlock(key) {
+        /*
+          ⚠️ 只有参考文献需要拆。引用标记通常就在一段正文里
+             （`[12]` 这种），它应该保持行内小标记，
+             和周围正文融为一体，不能拆成独立区域。
+        */
+        return key === 'reference';
+    }
 
     /**
      * 取文案，可选做 `{name}` 插值。
@@ -2825,11 +2851,24 @@
     /** 表单里当前选中的标签（null = 未选） */
     var labelDraft = null;
 
+    /**
+     * 引用目标选择器（v0.1.71）。
+     *
+     * 用户要求：
+     *   「选择标注为引用的时候应该选择引用哪条文献」
+     */
+    var citePickerEl = null;
+    var citeListEl = null;
+    /** 选中的目标文献的 `line`（null = 未选） */
+    var citeTarget = null;
+
     function mountLabelSheet() {
         if (labelSheetEl) return;
 
         labelSheetEl = document.getElementById('sheet-label');
         labelListEl = document.getElementById('sheet-label-list');
+        citePickerEl = document.getElementById('sheet-cite-picker');
+        citeListEl = document.getElementById('sheet-cite-list');
         if (!labelSheetEl || !labelListEl) return;
 
         var cancel = document.getElementById('sheet-label-cancel');
@@ -2872,6 +2911,13 @@
         */
         labelDraft = findExistingLabel(labelSpan) || 'body';
 
+        /*
+          ⚠️ 引用目标也要预选（v0.1.71）——
+             用户再次打开同一条引用标注时，应该看到它现在指向哪一条文献。
+          ⚠️ 每次打开都先清空，避免上一篇文献的选择串到这一条。
+        */
+        citeTarget = findExistingCiteTarget(labelSpan);
+
         renderLabelOptions();
 
         hideSelectBarOnly();
@@ -2906,6 +2952,31 @@
         return list[0].label || null;
     }
 
+    /**
+     * 找出覆盖选区起点的引用标注所指向的文献 `line`（v0.1.71）。
+     *
+     * ⚠️ 没有引用标注时返回 null —— 表单里显示为“未选”，
+     *    用户必须主动选一条才能确认（见 `applyLabel`）。
+     */
+    function findExistingCiteTarget(span) {
+        var line = span.single ? span.line : (span.lines || [])[0];
+        if (typeof line !== 'number') return null;
+
+        var list = labels[line];
+        if (!list || !list.length) return null;
+
+        var probe = span.single ? span.start : 0;
+
+        for (var i = 0; i < list.length; i++) {
+            var sp = list[i];
+            if (!sp || sp.label !== 'cite') continue;
+            if (probe >= sp.start && probe < sp.end) {
+                return (typeof sp.ref === 'number') ? sp.ref : null;
+            }
+        }
+        return null;
+    }
+
     function renderLabelOptions() {
         if (!labelListEl) return;
         labelListEl.textContent = '';
@@ -2931,6 +3002,111 @@
             li.appendChild(btn);
             labelListEl.appendChild(li);
         });
+
+        renderCitePicker();
+    }
+
+    /**
+     * 渲染「引用目标」选择器（v0.1.71）。
+     *
+     * 用户要求：
+     *   「增加一个引用标签，比如我给类似「[12]」这种就可以加引用标签，
+     *     然后选择标注为引用的时候应该选择引用哪条文献，
+     *     这就和上一个需求形成闭环了。」
+     *
+     * ✅ 只在 `labelDraft === 'cite'` 时显示 ——
+     *    其他标签没有“引用哪一条”这个概念。
+     *
+     * ⚠️ 列表来源：所有 `data-label="reference"` 的块。
+     *    顺序按文档顺序，与服务区的文献编号一致。
+     */
+    function renderCitePicker() {
+        if (!citePickerEl || !citeListEl) return;
+
+        if (labelDraft !== 'cite') {
+            citePickerEl.hidden = true;
+            return;
+        }
+
+        citePickerEl.hidden = false;
+        citeListEl.textContent = '';
+
+        var refs = referenceItems();
+
+        if (!refs.length) {
+            var empty = document.createElement('li');
+            empty.className = 'sel-cite-empty';
+            empty.textContent = t('reader.citeEmpty');
+            citeListEl.appendChild(empty);
+            return;
+        }
+
+        refs.forEach(function (item) {
+            var li = document.createElement('li');
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'sel-cite-item';
+            btn.setAttribute('role', 'radio');
+            btn.setAttribute('data-line', String(item.line));
+            btn.setAttribute('aria-checked',
+                item.line === citeTarget ? 'true' : 'false');
+            if (item.line === citeTarget) btn.classList.add('is-active');
+
+            /*
+              ⚠️ 编号 + 截断后的文献内容。
+                 只显示编号的话用户分不清是哪一条；
+                 全显示又会把弹层撑破，所以截断。
+            */
+            var no = document.createElement('span');
+            no.className = 'sel-cite-no';
+            no.textContent = '[' + item.no + ']';
+            btn.appendChild(no);
+
+            var txt = document.createElement('span');
+            txt.className = 'sel-cite-text';
+            txt.textContent = clip(item.text.replace(/\s+/g, ' ').trim(), 40);
+            btn.appendChild(txt);
+
+            btn.addEventListener('click', function () {
+                citeTarget = item.line;
+                renderCitePicker();
+            });
+
+            li.appendChild(btn);
+            citeListEl.appendChild(li);
+        });
+    }
+
+    /**
+     * 列出所有被标为「参考文献」的块（v0.1.71）。
+     *
+     * ⚠️ 按文档顺序返回，`no` 从 1 开始 ——
+     *    与阅读视图里的文献编号一致（见 appendLabeledRun 的 refIndex）。
+     * ⚠️ 只收**整块**被标为 reference 的块；
+     *    部分标注的文献（只标了几个字）不算一条完整文献。
+     */
+    function referenceItems() {
+        var list = docModel.blocks || [];
+        var out = [];
+        var n = 0;
+
+        for (var i = 0; i < list.length; i++) {
+            var line = list[i].line;
+            var spans = labels[line];
+            if (!spans || spans.length !== 1) continue;
+            var sp = spans[0];
+            if (!sp || sp.label !== 'reference') continue;
+
+            var text = blockTextOf(line);
+            if (!text || !text.replace(/\s+/g, '')) continue;
+
+            /* 只收覆盖整块的标注 */
+            if (sp.start > 0 || sp.end < text.length) continue;
+
+            n++;
+            out.push({ line: line, no: n, text: text });
+        }
+        return out;
     }
 
     function closeLabelSheet() {
@@ -2992,11 +3168,21 @@
             }
 
             if (labelDraft && labelDraft !== 'body') {
-                kept.push({
+                var newSpan = {
                     start: labelSpan.start,
                     end: labelSpan.end,
                     label: labelDraft
-                });
+                };
+                /*
+                  ⚠️ 引用标记要记住“引用的是哪一条文献”（v0.1.71）——
+                     与文献标注形成闭环：写 `[12]` 时选定文献，
+                     日后可以据此跳转。
+                  ⚠️ 其他标签不写 `ref`，保持数据干净。
+                */
+                if (labelDraft === 'cite' && citeTarget != null) {
+                    newSpan.ref = citeTarget;
+                }
+                kept.push(newSpan);
             }
 
             if (kept.length) labels[line] = kept;
@@ -3014,11 +3200,15 @@
             for (var j = 0; j < lines.length; j++) {
                 var ln = lines[j];
                 if (labelDraft && labelDraft !== 'body') {
-                    labels[ln] = [{
+                    var rec = {
                         start: 0,
                         end: blockTextOf(ln).length,
                         label: labelDraft
-                    }];
+                    };
+                    if (labelDraft === 'cite' && citeTarget != null) {
+                        rec.ref = citeTarget;
+                    }
+                    labels[ln] = [rec];
                 } else {
                     delete labels[ln];
                 }
@@ -3316,6 +3506,18 @@
         var bodyIndex = { n: 0 };
 
         /*
+          ══ 文献编号计数器（v0.1.71）══
+
+          用户要求：
+            「生成的文献区域就和正文段的编号一样，也要给文献进行编号。」
+
+          ⚠️ 必须与 `bodyIndex` **分开**：
+             如果共用，正文编号会因为中间夹了参考文献而断档
+             （用户要求正文编号“连续，从全文第一个到最后一个”）。
+        */
+        var refIndex = { n: 0 };
+
+        /*
           ══ ⚠️⚠️ 跳过已变空的块（v0.1.66）══
 
           用户反馈：
@@ -3398,7 +3600,7 @@
               ⚠️ 传入计数器对象（而不是数字）—— 它要被就地递增，
                  数字是按值传递的，传出去改了外面看不到。
             */
-            appendLabeledRun(frag, run, bodyIndex);
+            appendLabeledRun(frag, run, bodyIndex, refIndex);
         }
 
         contentEl.appendChild(frag);
@@ -3498,9 +3700,42 @@
      * ⚠️ 标签段取区域内**第一个块**的标签名。同一区域内所有块的
      *    标签签名相同（见 labelSignatureOf），所以取哪个都一样。
      */
-    function appendLabeledRun(frag, run, bodyIndex) {
+    function appendLabeledRun(frag, run, bodyIndex, refIndex) {
         var firstLine = run.blocks[0].line;
         var spans = labels[firstLine] || [];
+
+        /*
+          ══ ⚠️⚠️ 参考文献：**每块各自一个区域**（v0.1.71）══
+
+          用户要求：
+            「当选中文本跨段时，每个段自动作为一个文献项
+              从而得到多个文献区域，而不是整合成一个大的文献区域。
+              对于选中的文献区域内的内容，采用 times new roman 字体，
+              虽然不改变字重和字号（同正文），但字体颜色改成淡一点的颜色。
+              然后生成的文献区域就和正文段的编号一样，也要给文献进行编号。」
+
+          ✅ 所以参考文献直接走“逐块独立”分支，
+             每块一个 `.reader-label-head` + 一个编号。
+
+          ⚠️ 不在 `makeLabeledBlock` 里做，那个函数是“一块多标签”的兜底，
+             它生成的是“标签段 + 内容段”的复合结构，语义不同。
+        */
+        var splitKey = spans[0] ? spans[0].label : null;
+        if (splitKey && labelSplitsPerBlock(splitKey)) {
+            for (var r2 = 0; r2 < run.blocks.length; r2++) {
+                var rb = run.blocks[r2];
+
+                var h2 = document.createElement('p');
+                h2.className = 'reader-label-head';
+                h2.setAttribute('data-label', splitKey);
+                h2.textContent = t('reader.label.' + splitKey);
+                frag.appendChild(h2);
+
+                var el2 = makeContentEl(rb, bodyIndex, refIndex);
+                frag.appendChild(el2);
+            }
+            return;
+        }
 
         /*
           ⚠️ 一个块里可能有多个不同标签（虽然少见）。此时无法只用一个
@@ -3512,7 +3747,7 @@
         if (hasMultiple) {
             for (var m = 0; m < run.blocks.length; m++) {
                 var sub = makeLabeledBlock(run.blocks[m], null,
-                    labels[run.blocks[m].line], bodyIndex);
+                    labels[run.blocks[m].line], bodyIndex, refIndex);
                 if (sub) frag.appendChild(sub);
             }
             return;
@@ -3525,14 +3760,55 @@
             var head = document.createElement('p');
             head.className = 'reader-label-head';
             head.setAttribute('data-label', labelKey);
-            head.textContent = t('reader.label.' + labelKey);
+
+            /*
+              ══ ⚠️⚠️ 一级标题：前置文本 + 一条分隔线（v0.1.71）══
+
+              用户要求：
+                「对于标题一，我希望前置文本后面跟着一条分隔线，
+                  意思是把整个文章通过一级标题分割成了不同章节。
+                  分割线的颜色和前置文本一个颜色就可以，
+                  长度为按页面文本宽度自适应，也就是前置文本开头
+                  距离屏幕左边多远，那么分割线的尾部距离屏幕右边就多远。
+                  然后分割线和前置文本直接记得也留一点空隙。」
+
+              ✅ 做法：把文字和线放进同一个 flex 行里：
+
+                  [一级标题]  ────────────────────
+                  ↑ 文字不动   ↑ flex:1，自动撑满剩余宽度
+
+                 用 `flex: 1` 而不是算像素 —— 用户要的就是
+                 “自适应页面文本宽度”，flex 天然做到。
+
+              ⚠️ 左端对齐：文字在左，线接在右边；
+                 右端到内容区右边缘为止，正好是“同一倍留白”。
+              ⚠️ 间距用 `gap`，不写死 px —— 与全局间隔保持一致。
+              ⚠️ 只对 `h1` 生效：文章标题（title）是文档级不是章节级，
+                 二级/三级标题也不该分割章节。
+            */
+            if (labelKey === 'h1') {
+                head.classList.add('is-h1-head');
+
+                var txt = document.createElement('span');
+                txt.className = 'reader-label-text';
+                txt.textContent = t('reader.label.' + labelKey);
+                head.appendChild(txt);
+
+                var line = document.createElement('span');
+                line.className = 'reader-label-rule';
+                line.setAttribute('aria-hidden', 'true');
+                head.appendChild(line);
+            } else {
+                head.textContent = t('reader.label.' + labelKey);
+            }
+
             frag.appendChild(head);
         }
 
         /* ② 内容段：区域内所有块，一块一个 `<p>` */
         for (var i = 0; i < run.blocks.length; i++) {
             var b = run.blocks[i];
-            var el = makeContentEl(b, bodyIndex);
+            var el = makeContentEl(b, bodyIndex, refIndex);
 
             /*
               ⚠️ 区域内只有**第一块**带 `data-line` 吗？
@@ -3569,7 +3845,7 @@
      *
      * @return {DocumentFragment|Element}
      */
-    function makeContentEl(b, bodyIndex) {
+    function makeContentEl(b, bodyIndex, refIndex) {
         /*
           ⚠️ 文本一律从 `blockTextOf()` 取（v0.1.57）——
              它按 `edits` → `docModel` 的顺序返回"这一块现在的文本"，
@@ -3602,6 +3878,58 @@
         var before = fullText.slice(0, a);
         var body = fullText.slice(a, bb);
         var after = fullText.slice(bb);
+
+        /*
+          ══ ⚠️⚠️ 引用标记保持**行内**（v0.1.71）══
+
+          用户要求：
+            「增加一个引用标签，比如我给类似「[12]」这种就可以加引用标签」
+
+          ⚠️ 引用标记是夹在正文句子中间的（"如文献 [12] 所示"），
+             绝不能像标题那样拆成独立段落 —— 那会把一句话劈成三段，
+             并且把行内 `[12]` 顶成一个空行。
+
+          ✅ 所以这里单独处理：
+             整块输出一个 `<p>`，被标注的那一段用 `<span>` 包起来，
+             保持行内流，再挂上 `data-cite` 供将来跳转用。
+
+          ⚠️ `data-line` 仍写在 `<p>` 上 ——
+             选中 `[12]` 时 `nodeOriginInBlock` 靠它算偏移，
+             与普通段落一致。
+        */
+        if (sp.label === 'cite') {
+            var citeP = document.createElement('p');
+            citeP.className = 'reader-para';
+            citeP.appendChild(document.createTextNode(before));
+
+            var citeEl = document.createElement('span');
+            citeEl.className = 'reader-cite';
+            citeEl.setAttribute('data-label', 'cite');
+            citeEl.textContent = body;
+            /*
+              ⚠️ 记下引用的目标文献行号。没有选定时不写这个属性，
+                 渲染时只是普通高亮文字。
+            */
+            if (typeof sp.ref === 'number') {
+                citeEl.setAttribute('data-cite', String(sp.ref));
+            }
+            citeP.appendChild(citeEl);
+
+            if (after) citeP.appendChild(document.createTextNode(after));
+
+            copyBlockAttrs(citeP, null, b);
+
+            /*
+              ⚠️ 带引用标记的段落**仍是正文段**，要编号 ——
+                 否则正文编号会在这里断档。
+            */
+            if (bodyIndex) {
+                bodyIndex.n++;
+                attachBodyMarker(citeP, bodyIndex.n);
+            }
+
+            return citeP;
+        }
 
         /*
           ══ ⚠️⚠️ 残片是**独立的普通正文段**（v0.1.56）══
@@ -3642,6 +3970,26 @@
             whole.setAttribute('data-label', sp.label);
             whole.textContent = body;
             copyBlockAttrs(whole, null, b);
+
+            /*
+              ══ ⚠️⚠️ 参考文献也要编号（v0.1.71）══
+
+              用户要求：
+                「生成的文献区域就和正文段的编号一样，也要给文献进行编号。」
+
+              ✅ 用同一个 `attachBodyMarker` ——
+                 编号样式、竖排、竖线、首行对齐全部复用，
+                 不另起一套视觉。
+
+              ⚠️ 但它**不是正文段**：不能参与 `bodyIndex` 递增，
+                 否则正文编号会出现断档。
+                 所以单独用一条计数器 `refIndex`。
+            */
+            if (sp.label === 'reference') {
+                refIndex.n++;
+                attachBodyMarker(whole, refIndex.n);
+            }
+
             return whole;
         }
 
@@ -3801,7 +4149,7 @@
      *
      * ⚠️ 未标注的部分仍按普通段落渲染，保持原样（v0.1.39 的"无等级"）。
      */
-    function makeLabeledBlock(b, baseEl, spans, bodyIndex) {
+    function makeLabeledBlock(b, baseEl, spans, bodyIndex, refIndex) {
         var frag = document.createDocumentFragment();
 
         /*

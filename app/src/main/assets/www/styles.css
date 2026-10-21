@@ -1609,6 +1609,65 @@ body {
     pointer-events: none;
 }
 
+/*
+  ══ 一级标题：前置文本 + 章节分隔线（v0.1.71）══
+
+  用户要求：
+    「对于标题一，我希望前置文本后面跟着一条分隔线，
+      意思是把整个文章通过一级标题分割成了不同章节。
+      分割线的颜色和前置文本一个颜色就可以，
+      长度为按页面文本宽度自适应，也就是前置文本开头距离屏幕左边多远，
+      那么分割线的尾部距离屏幕右边就多远。
+      然后分割线和前置文本直接记得也留一点空隙。」
+
+  ⚠️ 用 flex 而不是算像素宽度：
+     用户要的是「按页面文本宽度自适应」—— `flex: 1` 让线自动吃掉
+     文字右边的全部空间，屏幕多宽它就多长，不需要任何 JS 测量。
+
+  ⚠️ 线用 `flex: 1` 而不是给固定 width：
+     固定宽度在换字号/换屏幕时会错位。
+  ⚠️ 线用 `align-self: center` 而不是 stretch：
+     它要和文字**水平对齐在同一条中线上**，不能撑满整行高度。
+*/
+.reader-label-head.is-h1-head {
+    display: flex;
+    align-items: center;
+    /*
+      ⚠️ 间隙 8px —— 用户要求「分割线和前置文本之间记得也留一点空隙」。
+         不用 0，否则文字和线会粘成一条。
+    */
+    gap: 8px;
+}
+
+/* 分隔线本体：一条 1px 细线，颜色与标签文字一致 */
+.reader-label-head.is-h1-head .reader-label-rule {
+    flex: 1 1 auto;
+    height: 1px;
+    /*
+      ⚠️ 继承标签段的 `color`（`--on-surface-variant`），
+         用户明确要求「分割线的颜色和前置文本一个颜色」。
+         这里用 `currentColor` 保证跟随主题与标签文字同步。
+    */
+    background: currentColor;
+    /*
+      ⚠️ 降低不透明度，与标签文字本身的观感一致 ——
+         标签段本来就偏淡，实心线会显得过重。
+    */
+    opacity: 0.5;
+    /*
+      ⚠️ 装饰元素，不参与选中。
+    */
+    -webkit-user-select: none;
+    user-select: none;
+    pointer-events: none;
+}
+
+/* 标签段的文字部分（h1 被包了一层 span，样式需与直接写文字时一致） */
+.reader-label-head .reader-label-text {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
 .reader-para {
     margin: 1em 0 0;
     /* 段内换行按原样保留（公式对齐、列表缩进都依赖它） */
@@ -1734,6 +1793,47 @@ body {
 /* 被标注的内容段（保留普通正文样式，这里只给一个可辨识的钩子） */
 .reader-para.is-labeled-body {
     /* 无视觉差异 —— 刻意不加任何装饰 */
+}
+
+/*
+  ══ 参考文献区域的内容样式（v0.1.71）══
+
+  用户要求：
+    「对于选中的文献区域内的内容，采用 times new roman 字体，
+      虽然不改变字重和字号（同正文），但字体颜色改成淡一点的颜色。」
+
+  ⚠️ 只改 `font-family` 和 `color`，**不动字号、字重、行高** ——
+     用户明确说「不改变字重和字号（同正文）」。
+     所以这里绝不能写 font-size / font-weight / line-height。
+
+  ⚠️ 颜色用 `--on-surface-variant`（次要文字色）而不是自定义灰色：
+     这样深浅色主题切换时自动跟随，不会在暗色下变成一片黑。
+
+  ⚠️ 字体族与标题类标注一致（Times New Roman 优先），
+     但**不加粗** —— 那是 `.is-labeled-body[data-label=h1/h2/h3/title]`
+     的规则，不要混进来。
+*/
+.reader-para.is-labeled-body[data-label="reference"] {
+    font-family: "Times New Roman", Times, serif;
+    color: var(--on-surface-variant);
+}
+
+/*
+  ══ 引用标记（cite）（v0.1.71）══
+
+  用户要求：
+    「增加一个引用标签，比如我给类似「[12]」这种就可以加引用标签」
+
+  ⚠️ 它是**行内** `<span>`，不是独立段落（见 makeContentEl 的 cite 分支）：
+     引用就是夹在句子中间的「如文献 [12] 所示」，拆成段落会把句子劈开。
+
+  ⚠️ 不改字号也不搞上标：`[12]` 本来就是正文里的普通字符，
+     做成上标会改变行高、也让用户更难选中它去改标注。
+     只换个颜色区分足矣。
+*/
+.reader-cite {
+    color: var(--primary);
+    font-weight: 600;
 }
 
 /*
@@ -2102,6 +2202,103 @@ body {
 
 .sel-label-item:active {
     opacity: 0.6;
+}
+
+/*
+  ══ 引用目标选择器（v0.1.71）══
+
+  用户要求：
+    「增加一个引用标签，比如我给类似「[12]」这种就可以加引用标签，
+      然后选择标注为引用的时候应该选择引用哪条文献。」
+
+  ⚠️ 只在选「引用」时出现，所以样式上要和上面的标签列表**区分开** ——
+     加一条分隔线 + 小标题，避免用户以为这些也是标签选项。
+*/
+.sel-cite-picker {
+    /*
+      ⚠️ 与标签列表隔开：上边框 + 内边距。
+         不用 margin 而用 border-top，视觉上明确是"另一个区块"。
+    */
+    border-top: 1px solid var(--outline);
+    padding-top: 10px;
+    margin-bottom: 12px;
+}
+
+.sel-cite-title {
+    margin: 0 0 6px;
+    padding: 0 14px;
+    /*
+      ⚠️ 复用全站唯一的分组小标题类（见 styles.css 顶部的说明），
+         不新造字体样式。
+    */
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--on-surface-variant);
+}
+
+.sel-cite-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    /*
+      ⚠️ 高度受限：文献可能有几十条，不限制会把弹层撑出屏幕。
+    */
+    max-height: 28vh;
+    overflow-y: auto;
+}
+
+.sel-cite-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px 14px;
+    border: none;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--on-surface);
+    font-family: inherit;
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.sel-cite-item.is-active {
+    background: var(--sel-bg);
+    font-weight: 600;
+}
+
+.sel-cite-item:active {
+    opacity: 0.6;
+}
+
+/*
+  ⚠️ 编号固定宽度、不换行：文献一多时编号位数不同，
+     不定宽会让每行的文字起点参差不齐。
+*/
+.sel-cite-no {
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
+    color: var(--on-surface-variant);
+}
+
+/* 文献内容：单行截断，超出显示省略号 */
+.sel-cite-text {
+    flex: 1 1 auto;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.sel-cite-empty {
+    padding: 10px 14px;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--on-surface-variant);
 }
 
 /* 第一个段落不要上边距 —— 否则正文顶部会多出一块空白 */

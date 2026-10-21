@@ -229,6 +229,9 @@
             'reader.label.h2': 'Heading 2',
             'reader.label.h3': 'Heading 3',
             'reader.label.reference': 'References',
+            'reader.label.cite': 'Citation',
+            'reader.citePick': 'Cite Reference',
+            'reader.citeEmpty': 'No references yet. Label some paragraphs as References first.',
 
             // 阅读设置：字体
             'reader.font': 'Font',
@@ -531,6 +534,9 @@
             'reader.label.h2': '二级标题',
             'reader.label.h3': '三级标题',
             'reader.label.reference': '参考文献',
+            'reader.label.cite': '引用',
+            'reader.citePick': '引用哪条文献',
+            'reader.citeEmpty': '还没有文献。先把几段标注为「参考文献」。',
 
             // 阅读设置：字体
             'reader.font': '字体',
