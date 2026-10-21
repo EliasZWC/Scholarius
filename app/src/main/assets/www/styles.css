@@ -1365,48 +1365,91 @@ body {
       ⚠️ `-webkit-touch-callout: none` 必须留着：
          否则长按会额外弹出系统那个“拷贝/词典/分享”的原生菜单，
          与我们自己的操作条叠在一起（实测两层菜单同时出现）。
-      ⚠️ 原生 `::selection` 也一并去掉颜色 —— 高亮由 `.is-sel` 画
-         （原因：Android WebView 的 `::selection` 手指一抬就不画了）。
+
+      ⚠️⚠️ `touch-action` 留在 `auto`（v0.1.41）——
+         手势冲突由 JS 接管：`touchstart` 里 `preventDefault` 阻止
+         浏览器认领滚动，判定为滚动后由 reader.js 自己改 `scrollTop`
+         （详见 mountSelect 的长注释）。
+         所以这里**不要**写 `none`，否则系统选区手柄也拖不动。
     */
     -webkit-user-select: text;
     user-select: text;
     -webkit-touch-callout: none;
-}
-
-.reader-para::selection {
-    background: transparent;
+    touch-action: auto;
 }
 
 /*
-  选中高亮。
+  ══ ⚠️⚠️ 选中**进行中**时，必须掐断浏览器的滚动手势（v0.1.41）══
 
-  ⚠️ 用真实背景色而不是 `::selection`：
-     Android WebView 的 `::selection` 只在“触摸激活期间”绘制，
-     手指一抬就没了 —— 而我们需要它常驻到用户点复制为止。
+  踩过的坑（实测事件序列，`tools/emu_touch.py --record`）：
+
+      pointerdown   (180,790)  P.reader-para
+      pointermove   (180,792)  …
+      pointermove   (180,794)  …
+      pointermove   (180,796)  …
+      pointermove   (180,799)  …
+      **pointercancel (0,0)**   ← 第 5 次移动就被掐断了
+      touchmove …              （后续只剩 touch，pointer 链已死）
+
+  于是 `extendSelectionTo` 永远收不到 move，选区只能停在长按落下的那一个字符。
+
+  真因：`.reader-body` 是 `overflow-y: auto`，浏览器把"按住往下拖"
+  判成**滚动页面**，于是发 `pointercancel` 收回 pointer 事件。
+
+  ✅ 修法：进入"选中中"状态时给 root 加 `is-selecting` 类，
+     把链上的 `touch-action` 收回成 `none`（与当年 PDF 文字层同一个修法）。
+
+  ⚠️ 只在选中期间锁 —— 平时必须是 `auto`，否则页面滚不动。
+  ⚠️ 不能改成 `pan-y`（理论上"能滚又能选"）：实测仍然发
+     `pointercancel`，拖拽总带纵向分量，浏览器照样认领成滚动。
+*/
+
+/*
+  ══ 真正的选区高亮（v0.1.41）══
+
+  ⚠️ 上一版（v0.1.40）把 `::selection` 设成透明、改用 `.is-sel` 画背景。
+     但字符级选区需要用户**拖动系统选区手柄**来微调，
+     而手柄只在浏览器自己持有选区时才出现 —— 顺手把高亮也交回给
+     `::selection`，与手柄的视觉语言一致。
+
+  ⚠️ Android WebView 的 `::selection` 在“手指一拖就绘制、一抬就消失”
+     的问题：实测在 `user-select: text` + 真实 Range 的前提下，
+     **选完松手后高亮会保留**（与 v0.1.35 那次不同，那次是从未建立真实选区）。
+     保留 `.is-sel` 的兑底背景，是为了极少数机型上 `::selection` 不绘制时
+     至少还能看出选了哪段。
 
   ⚠️ 颜色用主题变量，不在暗色下闪白。
+*/
+.reader-para::selection {
+    background: var(--sel-bg);
+    color: inherit;
+}
+
+/*
+  ⚠️ 兑底高亮：只在 `::selection` 不生效的机型上才看得见。
+     现在不再由 JS 添加这个类（改为真实选区），保留样式供将来需要。
 */
 .reader-para.is-sel {
     background: var(--sel-bg);
     border-radius: 4px;
-    /* 负外边距让底色包住文字、又不推动布局 */
-    box-shadow: 0 0 0 4px var(--sel-bg);
 }
 
 /*
-  ══ 选中操作条（v0.1.40）══
+  ══ 选中操作条（v0.1.40，v0.1.41 改为跟随选区）══
 
   ⚠️ 挂在 `.reader`（阅读页根）上，**不挂在 `.reader-body` 里** ——
      否则会跟着正文滚动，长按处滚出视野后操作条就没了。
 
-  ⚠️ 位置：距底部选项栏上方一档，水平居中。
-     不跟在手指位置：手指会把按钮遮住，而且长按处可能在屏幕边缘。
+  ⚠️⚠️ 位置由 **JS** 算（`positionSelectBar`），这里**只给外观**。
+     上一版写死了 `bottom: 64px`，结果操作条正好压在正文上 ——
+     实测用户想在下方继续选区，点到的却是"复制"按钮。
+
+     现在的规则：JS 按选区矩形算出 `top` / `left`，
+     默认落在选区上方，上方挤不下时落到下方。
+     这里不写 `left/top/bottom` 任何定位值，避免与 JS 打架。
 */
 .sel-bar {
     position: absolute;
-    left: 50%;
-    /* 64px 是底栏内容高 + 一点呼吸空间，与 .reader-bottom 同源 */
-    bottom: calc(64px + var(--safe-bottom) + 16px);
     z-index: 3;
     display: flex;
     align-items: center;
@@ -1415,17 +1458,36 @@ body {
     background: var(--nav-bg);
     border-radius: 999px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
-    transform: translate(-50%, 12px);
+    /*
+      ⚠️ 位移**只做垂直方向的出现动画**，不再带水平居中位移 ——
+         `left` 由 JS 给出精确值，`translateX(-50%)` 会让它偏移半个身位。
+         透明度 + 轻微下移足够表达"浮出来"。
+    */
+    transform: translateY(6px);
     opacity: 0;
     pointer-events: none;
-    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), opacity 200ms linear;
+    transition: transform 180ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms linear;
 }
 
 .sel-bar.is-open {
-    transform: translate(-50%, 0);
+    transform: translateY(0);
     opacity: 1;
     pointer-events: auto;
-    /* 按钮的点按反馈才会显示 */
+}
+
+/*
+  ⚠️ 兜底模式：JS 拿不到选区矩形时才用（见 positionSelectBar）——
+     这时退回固定在底栏上方。
+*/
+.sel-bar.is-fixed-bottom {
+    left: 50% !important;
+    top: auto !important;
+    bottom: calc(64px + var(--safe-bottom) + 16px) !important;
+    transform: translate(-50%, 6px);
+}
+
+.sel-bar.is-fixed-bottom.is-open {
+    transform: translate(-50%, 0);
 }
 
 /*

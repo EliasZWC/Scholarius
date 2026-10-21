@@ -177,10 +177,28 @@
     /** 长按起点 */
     var selStartX = 0;
     var selStartY = 0;
+    /**
+     * `touchstart` 时的滚动位置与手指 y（v0.1.41）。
+     *
+     * ⚠️ 因为 `touchstart` 里 `preventDefault` 了（为了不丢 pointer 链），
+     *    浏览器**不会**再帮我们滚页面 —— 判定为滚动后要自己滚，
+     *    这两个量就是自滚所需的基准。
+     */
+    var touchScrollStart = 0;
+    var touchY0 = 0;
     /** 当前选中的纯文本（空串 = 没有选中） */
     var selectedText = '';
     /** 选中高亮覆盖的 Range 列表（可同时高亮多个段落） */
     var selectedRanges = [];
+    /**
+     * 选区的**起点** `{node, offset}`（v0.1.41）。
+     *
+     * ⚠️ `caretRangeFromPoint` 只能拿到"当前位置"，拿不到"最初从哪开始"。
+     *    而按住拖动时要决定往左还是往右扩展，必须有起点。
+     * ⚠️ 存 `{node, offset}` 而不是一个数字 —— 跨段落拖动时
+     *    文本节点会变，只记偏量会算错位置。
+     */
+    var selAnchor = null;
     /** 选中操作条元素 */
     var selBarEl = null;
     /** 选中操作条上的文字（显示选中了多少字） */
@@ -448,42 +466,64 @@
     // --- 文本选中（v0.1.40）-------------------------------------------------
 
     /**
-     * 长按正文 → 选中一段文字 → 弹出操作条。
+     * 长按正文 → **按字符**选中 → 拖动手柄继续扩展 → 弹出操作条。
      *
      * ══ ⚠️⚠️ 为什么自己实现，不用系统原生的长按选择 ══
      *
-     * WebView 确实内置了文本选择（长按出"复制/全选/搜索"菜单），
-     * 但它在这个项目里**用不了**，三条硬理由：
+     * WebView 确实内置了文本选择，但它在这个项目里**用不了**：
      *
-     *   ① 全局禁用了选择。`styles.css` 的 `body { user-select: none }`
-     *      是为了禁止用户误拖出蓝色选区（这是 App，不是网页）。
-     *      要恢复原生选择就得在正文上放开 `user-select`，
-     *      但那会**连带**打开拖拽选区的行为 —— 用户想滚动页面时
-     *      手指一横就选了一片字，体验很差。
+     *   ① 全局 `body { user-select: none }` 是为了让 App 不像网页。
+     *      直接放开会**连带**打开拖拽选区 —— 想滚动页面时手指一横
+     *      就选了一片字。
+     *   ② 系统菜单无法定制，是一排跟随系统的英文按钮，与 Scholarius
+     *      的视觉语言不符，也无法 i18n。
+     *   ③ 系统菜单不受主题控制，暗色下会闪一片白。
      *
-     *   ② 系统菜单无法定制。它弹出的是一排英文/跟随系统的按钮，
-     *      与 Scholarius 的视觉语言完全不符，也无法 i18n。
-     *      用户要求的是「弹出选中的操作选项，第一个是复制，
-     *      其他选项待定」—— 这是一个**要长成产品样子的**操作条。
+     * ✅ 所以自己接管：`caretRangeFromPoint` 定位到**字符** +
+     *    `window.getSelection()` 维护真实选区 + 自己画操作条。
      *
-     *   ③ 系统菜单的位置/亮度不受主题控制，暗色下会闪一片白。
+     * ══ ⚠️⚠️ 选中粒度：**字符**（v0.1.41 修）══
      *
-     * ✅ 所以自己接管：长按定时器 + Range 精确选中 + 自己画高亮 + 自己画操作条。
+     * 用户原话：
+     *   「不是一整段，而是我选中多少文本就是多少，
+     *     比如从一个单词中间到另一个单词中间也可以选中才对，
+     *     最小单位应该是正常语言下的最小单位，比如字母，比如字，
+     *     标点符号等等」
      *
-     * ══ 选中粒度：整段 ══
+     * ⚠️ 上一版（v0.1.40）做成了**整段选中** —— 那是错的，已推翻。
+     *    整段只是"碰巧够用"，用户要的是可控制的精确选区。
      *
-     * 用户原话：「长按能够选中**一段文本**」。
+     * ✅ 现在的做法：
+     *    · 长按（0.5s）→ 在按下的那个字符处**落一个光标**，
+     *      并把该字符本身选中（视觉上立刻有反馈）；
+     *    · **继续按住拖动** → 选区实时扩展到手指所在字符；
+     *    · 松手 → 选区保持，操作条出现。
      *
-     * ⚠️ 不做"按词/按字符"的精细选区，理由：
-     *    · 手机上拖拽调选区手柄是出了名的难用（手柄只有几像素宽）；
-     *    · 阅读场景里选中的目的通常是"复制这句话/这段结论"，
-     *      整段是绝大多数情况想要的边界；
-     *    · 精确到字符需要自己算每个字符的坐标（要么包 span 撑爆 DOM，
-     *      要么用 `caretPositionFromPoint`，后者在 WebView 里支持不齐）。
+     * ⚠️ 为什么用真实的 `window.getSelection()` 而不是自己记
+     *    (startNode, startOffset)：
+     *    操作条弹出后，用户还想要**系统级的选区手柄**（那两个小水滴）
+     *    来微调。只有真实选区才会有手柄；自己维护的范围不会。
+     *    而且复制可以直接用选区内容，不必自己拼。
      *
-     * ⚠️ 若长按落在**空白/标点**上，`caretFromPoint` 找不到文本节点 ——
-     *    此时退化成"选中所在段落的整段"，而不是什么都不做。
-     *    （用户按下去的地方是段落，就该选中那段。）
+     * ⚠️ 手柄拖动后选区会变，而 operation bar 上的字数要跟着更新 ——
+     *    所以监听 `selectionchange`（见 mountSelectBar 之后）。
+     *
+     * ══ 手势状态机 ══
+     *
+     *   down        → 起 500ms 计时；记起点
+     *   move < slop → 仍在等待（手指轻微抖动不算）
+     *   move > slop → **取消**计时（用户是在滚动）
+     *   timer 到期  → 进入"选区中"状态（armed=true）、震动、落光标
+     *   move（armed）→ 扩展选区到手指处
+     *   up          → armed ? 保留选区并弹操作条 : 什么都不做
+     *
+     * ⚠️ `armed` 之后**不能再取消**选区 —— 那是用户按住拖动时
+     *    的正常动作，不是"想滚动"。
+     *
+     * ⛔ 以上状态机是 v0.1.40 的设想，**已废弃**：
+     *    在 Android WebView 里 pointer 链活不过 60ms（`pointercancel`），
+     *    扩选根本走不到。现在改为直接使用浏览器原生选区，
+     *    详见 mountSelect 里的说明。
      */
     function mountSelect() {
         if (!contentEl) return;
@@ -491,35 +531,120 @@
         mountSelectBar();
 
         /*
-          ⚠️ 用 pointerdown 起计时，而不是 `touchstart` ——
-             pointer 事件在 WebView 里覆盖触摸且带 `pointerType`，
-             判断"是不是手指"更容易；鼠标调试也能走同一条路。
+          ══ 选区实现：**交给浏览器原生选区**（v0.1.41 重做）══
+
+          ══ 为什么放弃"自己接管手势" ══
+
+          前一版想用 pointer 事件自己建选区、自己扩展，实测走不通。
+          `tools/emu_touch.py --record` 逐条对比了三种做法：
+
+            · `touch-action: none`（在 pointerdown 里加）→ **无效**，
+              浏览器仍在第 5 次 `pointermove` 发 `pointercancel`。
+              原因：`touch-action` 只在**手势开始前**读取，
+              手势已被认领成滚动之后就改不动了。
+
+            · 在 `pointerdown` 里 `preventDefault()` → **无效**，
+              pointerdown 不是可取消的滚动起始点。
+
+            · 在 `touchstart` 里 `preventDefault()` → **也没用**。
+              实测探针显示到达的 `touchstart` 事件 `cancelable === false`，
+              即浏览器已把本次手势交给合成器线程，JS 无法取消。
+
+          ⚠️ 结论：在 Android WebView 里，**JS 抢不过合成器**。
+             只要手势可能变成滚动，pointermove 链就活不过 ~60ms。
+
+          ══ ✅ 所以反过来做：用原生选区，只接管"界面" ══
+
+          浏览器自己的长按选区**本来就是按字符的**（实测长按选中了
+          单字符 `p`），并且自带两个可拖动的手柄 —— 正好满足用户要求：
+
+              用户原话：「不是一整段，而是我选中多少文本就是多少，
+                比如从一个单词中间到另一个单词中间也可以选中才对，
+                最小单位应该是正常语言下的最小单位，比如字母，比如字，
+                标点符号等等。」
+
+          原生选区的默认行为就是"最小单位 = 字符"，而且是系统级的，
+          手感与用户平时的 Android 使用经验一致。
+
+          所以这里只做三件**不碰手势**的事：
+
+            ① 监听 `selectionchange` —— 选区一变就同步字数；
+               若选区非空且操作条还没弹出 → 弹出（并吃掉误触的 click）。
+            ② 操作条跟随选区位置（positionSelectBar）。
+            ③ 点正文空白处 → 收起选区与操作条。
+
+          ⚠️ 唯独「copy」不用原生菜单 —— 系统菜单没法定制、没法 i18n、
+             暗色下还闪白，所以照旧由我们自己的操作条来复制。
         */
-        contentEl.addEventListener('pointerdown', function (ev) {
+        /*
+          ══ 选区实现：**全部走 touch 事件**（v0.1.41 第三版）══
+
+          ══ 试过且失败的两条路 ══
+
+          ① **pointer 事件自己建选区**
+             实测 `tools/emu_touch.py --record`：长按后第 ~60ms 就收到
+             `pointercancel`，之后 `pointermove` 链彻底断掉，
+             拖到 500ms 才开始扩选根本来不及。
+             试过三招都不行：
+               · pointerdown 里加 `touch-action: none` → 无效
+                 （touch-action 只在手势开始前读取）
+               · pointerdown 里 preventDefault → 无效（不可取消）
+               · touchstart 里 preventDefault → 无效，
+                 探针显示到达的 touchstart `cancelable === false`，
+                 浏览器已把手势交给合成器线程。
+
+          ② **浏览器原生选区**
+             Android 的 `WebView.isLongClickable = false` 会连原生
+             文本选区一起关掉；已改为放开。但实测（模拟器 + `adb input`）
+             **长按始终产生不了选区**，`selectionchange` 只报空。
+             这条路无法在本地验证，不能拿来交付。
+
+          ══ ✅ 现在这条路：touch 事件 ══
+
+          ⚠️ 关键观察：`pointercancel` 之后 **`touchmove` 仍在继续**
+             （实测事件序列里，cancel 之后还有 8 个 touchmove）。
+             也就是说被合成器抢走的是 pointer 链，touch 链是完整的。
+
+          所以：全程用 touch 事件驱动，完全不碰 pointer。
+
+            · touchstart（单个触点）→ 记起点，起 500ms 定时器
+            · touchmove 且未 armed  → 移动超过 2mm 就取消定时器
+                                      （用户在滚动，交给浏览器，**不**
+                                      preventDefault）
+            · 定时器到期           → armed=true、震动、落一个字符选区
+            · touchmove 且 armed   → preventDefault + 把选区扩到手指处
+            · touchend             → armed ? 保留选区并弹操作条 : 不管
+
+          ⚠️ 只有 armed 之后的 touchmove 才 preventDefault。
+             之前的绝不阻止 —— 否则页面滚不动（这是第一版的惨痛教训：
+             touchstart 无条件 preventDefault，滚动全靠自己算，很脆）。
+        */
+        contentEl.addEventListener('touchstart', function (ev) {
             /*
-              ⚠️ 只处理触摸/笔。鼠标左键拖选在本功能里不需要
-                 （桌面预览时保留浏览器默认行为即可）。
+              ⚠️ 多指（缩放）不参与选区。
             */
-            if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+            if (ev.touches && ev.touches.length > 1) {
+                clearSelTimer();
+                return;
+            }
+
+            var tp = ev.touches && ev.touches[0];
+            if (!tp) return;
+
+            selStartX = tp.clientX;
+            selStartY = tp.clientY;
+
+            var armed = false;
 
             clearSelTimer();
-            selStartX = ev.clientX;
-            selStartY = ev.clientY;
-
-            /*
-              ⚠️ 用 pointerId 记下这次手指，pointermove 时核对 ——
-                 多指缩放/第二根手指按下时不该继续计时。
-            */
-            var pid = ev.pointerId;
-
             selTimer = global.setTimeout(function () {
                 selTimer = null;
+                armed = true;
 
                 /*
                   ⚠️ 触发选中时给一次**震动**。
                      Android 系统长按选中也有这一下，用户靠它确认
                      "我这次是按住了，不是在滑"。
-                     长度 12ms：够感知，不至于唬人一跳。
                      ⚠️ `navigator.vibrate` 在部分机型/设置下会抛，
                         必须包 try 且**不能**因为失败而中断选中。
                 */
@@ -529,32 +654,109 @@
                     }
                 } catch (e) { /* 忽略 */ }
 
-                selectParagraphAt(selStartX, selStartY);
+                armSelectionAt(selStartX, selStartY);
             }, SELECT_LONG_PRESS_MS);
 
             /*
-              ⚠️ 手指一动（超过抖动半径）就取消长按 ——
-                 用户是在滚动或快速点按，不是想选中。
+              ⚠️ 每次手势注册一对**一次性**的 move/end，
+                 结束就摘掉。不用全局监听，避免和别的触摸逻辑打架。
             */
             var onMove = function (mv) {
-                if (mv.pointerId !== pid) return;
-                var dx = mv.clientX - selStartX;
-                var dy = mv.clientY - selStartY;
-                if ((dx * dx + dy * dy) > (SELECT_SLOP_PX * SELECT_SLOP_PX)) {
-                    clearSelTimer();
-                    contentEl.removeEventListener('pointermove', onMove);
+                var tp2 = mv.touches && mv.touches[0];
+                if (!tp2) return;
+
+                if (!armed) {
+                    /*
+                      ⚠️ 手指一动（超过抖动半径）就取消长按 ——
+                         用户是在滚动，**不要** preventDefault，
+                         让浏览器正常滚动。
+                         阈值按物理尺寸定（2mm），见 SELECT_SLOP_PX。
+                    */
+                    var dx = tp2.clientX - selStartX;
+                    var dy = tp2.clientY - selStartY;
+                    if ((dx * dx + dy * dy) > (SELECT_SLOP_PX * SELECT_SLOP_PX)) {
+                        clearSelTimer();
+                        detach();
+                    }
+                    return;
+                }
+
+                /*
+                  ══ armed：按住拖动 → 实时扩展选区 ══
+                  ⚠️ 必须 preventDefault —— 否则浏览器会把这次拖动
+                     当成滚动，`.reader-body` 会跟着滚，选区永远扩不开。
+                */
+                if (mv.cancelable) mv.preventDefault();
+                extendSelectionTo(tp2.clientX, tp2.clientY);
+            };
+
+            var onEnd = function () {
+                clearSelTimer();
+                detach();
+
+                if (!armed) return;
+
+                /*
+                  ⚠️ 松手后选区**保持**，操作条出现。
+                     如果选中的只有空白（用户按在段落间隙里开始的），
+                     直接收掉，不要弹一个"已选中 0 字"的条。
+                */
+                syncSelectionFromNative();
+                if (!selectedText) {
+                    clearSelection();
+                    return;
+                }
+                showSelectBar();
+
+                /*
+                  ⚠️ 吃掉浏览器补发的 click，否则它会把选中立刻取消掉
+                     （症状：长按了但操作条一闪而过）。
+                */
+                if (global.ScholariusUI && global.ScholariusUI.markDragged) {
+                    global.ScholariusUI.markDragged();
                 }
             };
-            var onUp = function (up) {
-                if (up.pointerId !== pid) return;
-                clearSelTimer();
-                contentEl.removeEventListener('pointermove', onMove);
-                contentEl.removeEventListener('pointerup', onUp);
-                contentEl.removeEventListener('pointercancel', onUp);
-            };
-            contentEl.addEventListener('pointermove', onMove);
-            contentEl.addEventListener('pointerup', onUp);
-            contentEl.addEventListener('pointercancel', onUp);
+
+            function detach() {
+                contentEl.removeEventListener('touchmove', onMove);
+                contentEl.removeEventListener('touchend', onEnd);
+                contentEl.removeEventListener('touchcancel', onEnd);
+            }
+
+            contentEl.addEventListener('touchmove', onMove, { passive: false });
+            contentEl.addEventListener('touchend', onEnd);
+            contentEl.addEventListener('touchcancel', onEnd);
+        }, { passive: false });
+
+        document.addEventListener('selectionchange', function () {
+            var text = String(global.getSelection() || '');
+
+            /*
+              ⚠️ 空选区 → 可能是用户点了别处，也可能是浏览器收起了
+                 手柄。若此时操作条还开着，就一并收掉，避免出现
+                 "条上写着 12 字，但屏幕上什么都没选中"。
+            */
+            if (!text) {
+                if (selectedText) clearSelection();
+                return;
+            }
+
+            syncSelectionFromNative();
+            if (!selectedText) return;
+
+            if (!selBarEl || selBarEl.hidden) {
+                showSelectBar();
+
+                /*
+                  ⚠️ 吃掉浏览器补发的 click，否则它会把刚建好的选区
+                     立刻取消掉（症状：长按了但操作条一闪而过）。
+                */
+                if (global.ScholariusUI && global.ScholariusUI.markDragged) {
+                    global.ScholariusUI.markDragged();
+                }
+            } else {
+                positionSelectBar();
+            }
         });
 
         /*
@@ -576,108 +778,206 @@
         }
     }
 
+    /** 清掉浏览器层面的原生选区（不动我们的 UI 状态） */
+    function clearNativeSelection() {
+        try {
+            var s = global.getSelection();
+            if (s && s.rangeCount) s.removeAllRanges();
+        } catch (e) { /* 忽略 */ }
+    }
+
     /**
-     * 把屏幕坐标处的那个**段落**整个选中。
+     * 以长按点为**起点**建立字符级选区。
      *
-     * ⚠️ 用 `document.caretRangeFromPoint` / `caretPositionFromPoint` 定位，
-     *    而不是 `elementFromPoint` —— 后者只给元素，给不了"在段落里的哪个字"，
-     *    而对整段选中来说其实用 elementFromPoint 足够。
+     * ⚠️ 落点用 `caretRangeFromPoint` —— 它返回一个 collapsed Range，
+     *    其 `startContainer/startOffset` 就是"按在第几个字符之间"。
+     *    这正是"从一个单词中间开始选"所需要的信息。
      *
-     *    ⚠️ 那为什么还要 caret？因为要判断"用户按在这个段落的
-     *       正文上，还是按在段落之间的空隙里"。后者 `elementFromPoint`
-     *       会返回 `.reader-content` 容器，此时应该**什么都不选**，
-     *       而不是选中整个容器。
+     * ⚠️ 起始时先只选**一个字符**（`offset` → `offset + 1`），
+     *    因为：
+     *      · 用户立刻能看到"我确实选中了东西"，而不是等拖了才有反应；
+     *      · 与 Android 系统长按选词的整体手感一致（都是先落一个可见的选择）。
+     *      若用户想要整词，他自己往下拖即可。
      */
-    function selectParagraphAt(cx, cy) {
-        var el = document.elementFromPoint(cx, cy);
-        if (!el) return;
+    function armSelectionAt(cx, cy) {
+        var r = caretRangeAt(cx, cy);
+        if (!r) return;
 
-        var para = el.closest ? el.closest('.reader-para') : null;
-        if (!para) return;
+        var node = r.startContainer;
+        var off = r.startOffset;
 
-        var node = para.firstChild;
-        if (!node || node.nodeType !== 3 || !node.nodeValue) {
-            /*
-              ⚠️ 段落里没有文本节点（理论上不该发生，renderFlat 只放 textContent）
-                 —— 直接返回，不要抛异常把整个长按流程搞挂。
-            */
+        if (!node || node.nodeType !== 3) return;
+        var len = node.nodeValue ? node.nodeValue.length : 0;
+        if (!len) return;
+
+        /*
+          ⚠️ 落在字符最末时不能再 +1（越界），此时改选前一个字符。
+             否则会得到一个空选区，用户看不到任何高亮。
+        */
+        var a = off;
+        var b = off;
+        if (off >= len) { a = len - 1; b = len; }
+        else { b = off + 1; }
+
+        var range = document.createRange();
+        range.setStart(node, a);
+        range.setEnd(node, b);
+
+        try {
+            var s = global.getSelection();
+            s.removeAllRanges();
+            s.addRange(range);
+        } catch (e) {
             return;
         }
 
-        var len = node.nodeValue.length;
-        if (!len) return;
+        /*
+          ⚠️ 锚点必须记住：`caretRangeFromPoint` 只能拿到当前位置，
+             拿不到"最初从哪里开始"。而拖动时要知道起点才能决定
+             往左还是往右扩展。
+             ⚠️ 用 `{node, offset}` 而不是 offset 数字 ——
+                 跨段落拖动时节点会变，只记数字会算错。
+        */
+        selAnchor = { node: node, offset: a };
 
-        var range = document.createRange();
-        range.setStart(node, 0);
-        range.setEnd(node, len);
-
-        applySelection([range], node.nodeValue);
+        syncSelectionFromNative();
     }
 
     /**
-     * 应用一次选中：画高亮 + 弹操作条。
+     * 把选区扩展到手指当前所在的字符。
      *
-     * ⚠️ 高亮**自己画**（`.is-sel` 类），不用 `::selection`。
-     *    原因与 v0.1.35 在 PDF 文字层上踩过的是同一个：
-     *    Android WebView 的 `::selection` 只在"触摸激活期间"绘制，
-     *    手指一抬就没了 —— 而我们需要它常驻到用户点复制为止。
-     *
-     * @param {Array<Range>} ranges 选中的范围
-     * @param {string} text         选中的纯文本
+     * ⚠️ 用 `setBaseAndExtent(anchor, current)` 而不是
+     *    `range.setStart/setEnd` —— 前者自带方向语义，
+     *    往左上拖（current 在 anchor 之前）时才能正确表达，
+     *    并且**系统选区手柄**会出现在正确的两端。
      */
-    function applySelection(ranges, text) {
-        clearSelection();
+    function extendSelectionTo(cx, cy) {
+        if (!selAnchor) return;
 
-        if (!ranges || !ranges.length || !text) return;
+        var r = caretRangeAt(cx, cy);
+        if (!r) return;
 
-        selectedRanges = ranges;
-        selectedText = text;
+        var node = r.startContainer;
+        var off = r.startOffset;
+        if (!node || node.nodeType !== 3) return;
 
-        for (var i = 0; i < ranges.length; i++) {
-            var r = ranges[i];
-            /*
-              ⚠️ 只标记 `Range` 覆盖到的段落元素。
-                 整段选中时 Range 只在一个文本节点内，
-                 起点节点的父元素就是那个 `.reader-para`。
-            */
-            var startEl = r.startContainer.parentElement;
-            if (startEl && startEl.classList) {
-                startEl.classList.add('is-sel');
-            }
+        try {
+            var s = global.getSelection();
+            s.setBaseAndExtent(selAnchor.node, selAnchor.offset, node, off);
+        } catch (e) {
+            return;
         }
 
-        if (global.ScholariusUI && global.ScholariusUI.markDragged) {
-            /*
-              ⚠️ 吃掉浏览器在这之后补发的 click。
-                 否则长按选中完，那个 click 会落到正文/菜单切换逻辑里，
-                 把选中立刻取消掉（症状：长按了但操作条一闪而过）。
-            */
-            global.ScholariusUI.markDragged();
-        }
-
-        showSelectBar();
+        syncSelectionFromNative();
     }
 
-    /** 清掉选中状态与高亮，并收起操作条 */
-    function clearSelection() {
-        selectedText = '';
-
-        for (var i = 0; i < selectedRanges.length; i++) {
-            var el = selectedRanges[i].startContainer.parentElement;
-            if (el && el.classList) el.classList.remove('is-sel');
+    /**
+     * 把屏幕坐标换算成一个 collapsed `Range`。
+     *
+     * ⚠️ Android WebView 只实现了 `caretRangeFromPoint`（旧 API），
+     *    `caretPositionFromPoint` 是 `undefined`（实测确认）。
+     *    但仍然先试标准 API，万一是新版内核。
+     */
+    function caretRangeAt(cx, cy) {
+        if (document.caretRangeFromPoint) {
+            return document.caretRangeFromPoint(cx, cy) || null;
         }
-        selectedRanges = [];
+        if (document.caretPositionFromPoint) {
+            var pos = document.caretPositionFromPoint(cx, cy);
+            if (!pos || !pos.offsetNode) return null;
+            var r = document.createRange();
+            r.setStart(pos.offsetNode, pos.offset);
+            r.collapse(true);
+            return r;
+        }
+        return null;
+    }
+
+    /**
+     * 从真实的 `window.getSelection()` 同步 `selectedText` 并刷新字数。
+     *
+     * ⚠️ 为什么以原生选区为准，而不是自己维护 (start, end)：
+     *    用户可能去拖系统选区手柄，也可能用键盘选择 ——
+     *    那些都不会经过我们的 pointer 处理器。
+     *    直接读选区永远是最新的。
+     *
+     * ⚠️ `toString()` 会**包含换行**（跨段落时）。而相邻两个段落之间
+     *    在视觉上没有换行，用户不期望复制出来多一个空行。
+     *    实测：跨段选中 `…recurrent or` + `convolutional…`，
+     *    原生 toString 得到 `…recurrent or\nconvolutional…`。
+     *    这里把 `\n` 换成空格 —— 与"屏幕上看到的一行连续文字"一致。
+     *    ⚠️ 但段内有意的换行（pre-wrap 保留的）也会被替换，
+     *       这是可接受的：PDF 抽取出的段内换行本来就是排版折行，
+     *       不是语义换行。
+     */
+    function syncSelectionFromNative() {
+        var s = global.getSelection();
+        var text = s ? String(s) : '';
 
         /*
-          ⚠️ 兜底：万一有段落被漏标，整体扫一遍清掉。
-             `querySelectorAll` 只在这条路径上跑，且 `.is-sel` 通常只有 1 个。
+          ⚠️ 选区里可能只有空白（用户从段落间隙开始拖）。
+             这时不要当成"有选中"，否则会弹一个没意义的操作条。
+        */
+        if (!text.replace(/\s+/g, '')) {
+            selectedText = '';
+            if (selCountEl) selCountEl.textContent = '';
+            return;
+        }
+
+        selectedText = text.replace(/\r\n/g, '\n').replace(/\n/g, ' ');
+
+        if (selCountEl) {
+            selCountEl.textContent = t('reader.selectCount', {
+                n: String(countSelectionChars(text))
+            });
+        }
+    }
+
+    /**
+     * 选中了多少个字（字符）。
+     *
+     * ⚠️ 不计空白：用户不会觉得两个段落之间的那个换行算一个字。
+     */
+    function countSelectionChars(text) {
+        var n = 0;
+        for (var i = 0; i < text.length; i++) {
+            if (!/\s/.test(text.charAt(i))) n++;
+        }
+        return n;
+    }
+    /**
+     * 清掉选中状态：去掉原生选区、清空字数、收起操作条。
+     *
+     * ⚠️ 高亮不再由我们自己的类画（v0.1.41 改回**真实原生选区**）——
+     *    因为字符级选区需要系统选区手柄来微调，
+     *    而手柄只在真实 `window.getSelection()` 存在时才出现。
+     *    `::selection` 的高亮在 WebView 上手指抬起会消失，见 styles.css
+     *    里 `.reader-para::selection` 的说明（我们用了一个折中：只在
+     *    拖动期间依赖它，松手后靠系统的选区底色）。
+     */
+    function clearSelection() {
+        selectedText = '';
+        selAnchor = null;
+        selectedRanges = [];
+
+        if (selCountEl) selCountEl.textContent = '';
+
+        /*
+          ⚠️ 先 hideSelectBar 再清选区 —— 反过来会让 `selectionchange`
+             处理器（它还判断操作条是否显示）在清空后重新算一次。
+             顺序上先收起 UI，事件再来时 `selBarEl.hidden` 已为真，直接返回。
+        */
+        hideSelectBar();
+        clearNativeSelection();
+
+        /*
+          ⚠️ 兜底：清掉可能残留的 `.is-sel`（旧实现留下的类，现不再新增，
+             但防止历史状态把它们留在 DOM 上）。
         */
         if (contentEl) {
             var on = contentEl.querySelectorAll('.is-sel');
             for (var j = 0; j < on.length; j++) on[j].classList.remove('is-sel');
         }
-
-        hideSelectBar();
     }
 
     /** 有没有正在选中的文字（供返回键/菜单切换判断） */
@@ -731,17 +1031,25 @@
     function showSelectBar() {
         if (!selBarEl) return;
 
-        if (selCountEl) {
-            /*
-              ⚠️ 字数用 `{n}` 占位，与全站 i18n 的写法一致。
-                 不用 `textContent = 选中文本` —— 长段落会把操作条撑爆。
-            */
-            selCountEl.textContent = t('reader.selectCount', {
-                n: String(selectedText.length)
-            });
-        }
+        syncSelectionFromNative();
 
         selBarEl.hidden = false;
+
+        /*
+          ══ ⚠️⚠️ 操作条必须**贴着选区**，不能固定在底部（v0.1.41）══
+
+          踩过的坑：上一版把操作条固定在距底栏 64px 处，
+          于是它**正好压在正文上** —— 实测 `elementFromPoint(180,790)`
+          返回 `BUTTON.sel-action`，用户想在下方继续长按选区
+          却点到了"复制"按钮。
+
+          ✅ 现在按选区实际位置定位：
+             · 默认放在选区**上方** 10px
+             · 上方空间不够（选区靠近屏幕顶部）→ 放到选区下方
+             · 水平居中于选区，但夹在视口内，避免溢出
+        */
+        positionSelectBar();
+
         /*
           ⚠️ 等两帧再加 `is-open`，让 CSS 过渡能跑起来。
              同步加的话浏览器会把两次样式变更合并，动画不触发
@@ -752,6 +1060,79 @@
                 if (selBarEl && !selBarEl.hidden) selBarEl.classList.add('is-open');
             });
         });
+    }
+
+    /**
+     * 把操作条摆到选区上方（空间不够时到下方）。
+     *
+     * ⚠️ 用 `getSelection().getRangeAt(0).getBoundingClientRect()`，
+     *    它对**跨段落**选区同样有效（返回整个选区的外接矩形）。
+     *
+     * ⚠️ 位置用 `position: fixed` 更方便（相对视口），
+     *    但操作条挂在 `root`（.reader，是 `position: fixed` 的全屏层）上 ——
+     *    视口坐标与 root 坐标在这个项目里是一致的（root 铺满全屏、无位移）。
+     *    所以直接用视口坐标设置 `top/left` 是对的。
+     */
+    function positionSelectBar() {
+        if (!selBarEl) return;
+
+        var rect = null;
+        try {
+            var s = global.getSelection();
+            if (s && s.rangeCount) {
+                rect = s.getRangeAt(0).getBoundingClientRect();
+            }
+        } catch (e) { rect = null; }
+
+        /*
+          ⚠️ 拿不到选区矩形时（极少数时序）退回底部固定位置 ——
+             宁可位置难看，也不能不显示操作条。
+        */
+        if (!rect || (!rect.width && !rect.height)) {
+            selBarEl.style.left = '50%';
+            selBarEl.style.top = 'auto';
+            selBarEl.style.bottom = 'calc(64px + var(--safe-bottom) + 16px)';
+            selBarEl.classList.add('is-fixed-bottom');
+            return;
+        }
+        selBarEl.classList.remove('is-fixed-bottom');
+        selBarEl.style.bottom = 'auto';
+
+        /*
+          ⚠️ 先量一次操作条自身尺寸再定位 ——
+             要用它的宽高来决定"放上面还是下面"以及水平夹取。
+             `hidden=false` 之后 offsetWidth 才有效（上面已设）。
+        */
+        var bw = selBarEl.offsetWidth || 160;
+        var bh = selBarEl.offsetHeight || 48;
+
+        var GAP = 10;
+        var margin = 8;
+        var top;
+
+        if (rect.top - bh - GAP >= margin) {
+            // 上方放得下 → 放上方
+            top = rect.top - bh - GAP;
+        } else {
+            // 上方太挤 → 放下方（但不越过底栏）
+            top = rect.bottom + GAP;
+            var maxTop = global.innerHeight - bh - margin;
+            if (top > maxTop) top = Math.max(margin, maxTop);
+        }
+
+        /*
+          ⚠️ 水平居中于选区，并夹在视口内 ——
+             选区长文本时 `rect.left/width` 是整个选区的外接矩形，
+             居中会落在屏幕中间（合理）；短选区时贴着它。
+        */
+        var cx = rect.left + rect.width / 2;
+        var left = cx - bw / 2;
+        var maxLeft = global.innerWidth - bw - margin;
+        if (left < margin) left = margin;
+        if (left > maxLeft) left = Math.max(margin, maxLeft);
+
+        selBarEl.style.left = Math.round(left) + 'px';
+        selBarEl.style.top = Math.round(top) + 'px';
     }
 
     function hideSelectBar() {
@@ -777,6 +1158,23 @@
      *    这个组合在本项目 login.js / app.js 里已经用过，是验证过的。
      */
     function copySelection() {
+        /*
+          ⚠️ 复制前**重新从原生选区同步一次**（v0.1.41）——
+             用户可能刚拖过选区手柄，而 `selectionchange` 的刷新
+             在极少数时序下会晚于点击。这里再取一次是最稳的。
+             ⚠️ 但不能用 `syncSelectionFromNative()` 的宽松版本：
+                它遇到全空白会清空 `selectedText`，那样下面就会直接 return
+                而不给任何提示。这里只在**非空**时采纳。
+        */
+        var live = '';
+        try {
+            var s = global.getSelection();
+            live = s ? String(s) : '';
+        } catch (e) { live = ''; }
+        if (live.replace(/\s+/g, '')) {
+            selectedText = live.replace(/\r\n/g, '\n').replace(/\n/g, ' ');
+        }
+
         var text = selectedText;
         if (!text) return;
 

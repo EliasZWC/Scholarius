@@ -7,8 +7,8 @@ plugins {
 // 版本号：唯一来源。只有明确要求发版时才修改这两个值。
 // versionCode 每次发版 +1；versionName 必须与 Git 标签 vX.Y.Z 中的 X.Y.Z 一致。
 // ---------------------------------------------------------------------------
-val appVersionCode = 140
-val appVersionName = "0.1.40"
+val appVersionCode = 141
+val appVersionName = "0.1.41"
 
 // 可选：从环境变量读取发布签名（由 GitHub Actions 注入）。
 // 未配置时回退到 debug 签名，保证工作流始终能产出可安装的 APK。
@@ -109,7 +109,62 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+
+            /*
+              ══ ⚠️⚠️ 排除 BouncyCastle 的 PQC 测试向量（约 7.9 MB）══
+                 （v0.1.41）
+
+              `androidx.security:security-crypto` 会传递引入
+              `org.bouncycastle:bcprov/bcpkix/bcutil`。这些库里带了
+              **后量子密码学（PQC）算法的预计算参数文件**：
+
+                  org/bouncycastle/pqc/crypto/picnic/lowmc.properties   3.47 MB
+                  org/bouncycastle/pqc/crypto/sike/p751.properties      1.85 MB
+                  org/bouncycastle/pqc/crypto/sike/p610.properties      1.10 MB
+                  …（SIKE / Picnic / Rainbow 等多个）
+
+              我们只用 `EncryptedSharedPreferences` 做 AES256-GCM，
+              **完全用不到 PQC** —— 那些文件是 BouncyCastle 为
+              "能用"而附带的，运行时不加载即无影响。
+
+              ⚠️ 只排 `pqc/crypto/` 下的 `.properties`，
+                 不碰 `bcprov` 的类与其它资源（那些可能被 TLS/证书链用到）。
+              ⚠️ 若将来真的要用 PQC 算法，删掉这几条即可恢复。
+            */
+            excludes += "org/bouncycastle/pqc/**"
+
+            /*
+              ══ ⚠️⚠️ 开发预览数据**不进 APK**（v0.1.41）══
+
+              `assets/www/dev-library.js` 是本地预览用的真实论文全文，
+              约 **29 MB**。它已在 .gitignore 里（不入版本库），
+              但**只要文件还在磁盘上，Gradle 就会把它打进 assets** ——
+              之前每次发布都白带了 29 MB。
+
+              ⚠️ 它在运行时本来就是"浏览器预览才加载"的
+                 （index.html 里先探测 `window.ScholariusNative`，
+                  在 App 里直接 return），所以打包进 APK **毫无用处**。
+              ⚠️ 排除后本地预览不受影响：预览是直接打开
+                 `app/src/main/assets/www/index.html`，不经过 APK。
+
+              ⚠️ **assets 不走 `packaging.resources.excludes`** ——
+                 那个只作用于 Java 资源（META-INF 之类）。
+                 assets 要用 `androidResources.ignoreAssetsPattern`。
+            */
         }
+    }
+
+    androidResources {
+        /*
+          ══ ⚠️ 从 assets 里剔除开发预览数据（v0.1.41）══
+
+          语法是 `aapt` 的 ignoreAssetsPattern：用 `:` 分隔多个模式，
+          **路径**匹配（不是通配整棵目录）。
+
+          实测：写 `dev-library.js` 就能命中，因为 aapt 对
+          pattern 做的是"文件名/路径包含"匹配。
+        */
+        ignoreAssetsPattern = "dev-library.js"
     }
 
     lint {

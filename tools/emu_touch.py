@@ -144,7 +144,7 @@ def main():
             elif c == 'drag':
                 x1, y1, x2, y2 = [int(v) for v in args.cmd[i + 1:i + 5]]
                 cdp.touch('touchStart', [(x1, y1)])
-                time.sleep(0.03)
+                time.sleep(0.03 + args.hold)
                 for s in range(1, args.steps + 1):
                     t = float(s) / args.steps
                     cdp.touch('touchMove', [

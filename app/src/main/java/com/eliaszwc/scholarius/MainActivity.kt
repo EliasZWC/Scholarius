@@ -362,8 +362,21 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView() = with(webView) {
         setBackgroundColor(Color.TRANSPARENT)
-        isLongClickable = false
-        setOnLongClickListener { true }
+        /*
+          ⚠️ 长按必须**放开**给 WebView（v0.1.41）。
+
+             原来这里是 `isLongClickable = false` + `setOnLongClickListener { true }`，
+             意图是"App 不要像网页一样弹系统菜单"。但它**连原生文本选区
+             一起关掉了** —— 阅读页长按选字（v0.1.40 起的核心功能）
+             因此永远拿不到选区。
+
+             系统菜单的误弹风险由 CSS 挡住就够了：
+             全局 `body { user-select: none; -webkit-touch-callout: none }`，
+             只有 `.reader-para` 显式放开 `user-select: text`。
+             即：只有正文段落允许长按选中，其余（按钮、顶栏、表单）都不行。
+        */
+        isLongClickable = true
+        setOnLongClickListener(null)
         addJavascriptInterface(
             WebAppBridge(
                 onThemeMode = { mode -> runOnUiThread { setThemeMode(mode) } },
