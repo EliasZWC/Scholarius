@@ -1444,97 +1444,117 @@ body {
     「如果编号高度高于段，就让段高度不小于这个最小高度好了，
       然后正文内容再段高度中居中位置就行」
 
-  ⚠️⚠️ 关键：`min-height` 必须**跟着位数变**，不能写死。
-
-  踩过的坑：
-    · 写 `min-height: 36px` → 单行段落全部被拉到 36px，
-      即使编号只有 1 位（只需要 12px），段间距无端变松；
-    · 想用 `ch` 单位 → 竖排下 `ch` 度量的是**字符高度**，
-      不是个数，算不出总高；
-    · 想用 CSS `max()` 兜底（v0.1.62 的做法）→ **真机不生效**：
-      `max()` 需要 Chrome 79+，部分国内 WebView 内核更旧，
-      整条 `min-height` 声明解析失败 → 退化成默认值 →
-      看起来跟没加一样（用户反馈：「段落还是没有被编号最小高度
-      撑起来，而是又和之前一样了」）。
-
-  ✅ 实际做法：**JS 直接算好像素值**，CSS 只负责用：
-
-      JS：minH = Math.max(行高px, 编号总高px)  → 写到 style
-      CSS：min-height: var(--no-min-h, 0)
-
-    `var()` 的支持度比 `max()` 高得多（Chrome 49+），
-    而且算好的值就是一个纯像素数字，任何内核都认。
-
-  ⚠️ 为什么不写 `max()` 让 CSS 自己算：
-     见上 —— `max()` 兼容性差，且一个不支持的函数会让整条
-     声明被认为非法而**整条丢弃**，不是退化成两个参数之一。
-
   ⚠️ 正文垂直居中用 `display: flex; align-items: center;` 吗？
      **不行** —— 多行段落里垂直居中会把整个文本块浮到中间，
      而我们要的是"文本自然排在顶部，只是段落有足够高度装下编号"。
-     应该是 `min-height` + 内容自然顶部对齐：
-     单行段（正文 29.75px / 段落 36px）多出的 6px 在上方，
-     多行段完全不受影响。
 
      用户原话「正文内容再段高度中居中位置」—— 实际语义是
-     “不要在段落底部留一大块空白”，顶部对齐就能达到这个效果，
-     而且不会错位多行段落。
+     “不要在段落底部留一大块空白”。
+
+  ══ ⚠️⚠️ 不用 `min-height`、不用绝对定位、不用浮动（v0.1.65）══
+
+  失败路径回顾（三版都失败，别再试这几条）：
+
+    ① v0.1.62 `min-height: max(...)` —— `max()` 需 Chrome 79+，
+       旧内核判定整条声明非法 → 整条丢弃 → 完全不生效。
+
+    ② v0.1.63 `min-height: var(--no-min-h, 0)` + JS 算像素 ——
+       值算得完全正确（实测 36px），但**看不见效果**。
+       原因：编号是 `position: absolute`，脱离文档流，
+       绝对定位元素溢出时既不撑高父元素，也不受父元素
+       `min-height` 约束 → 溢出部分被下一段背景盖住。
+       一位数(12px)/两位数(24px) 都小于行高 29.75px，
+       本就不需要撑，所以只有三位数（36px）才暴露问题。
+
+    ③ v0.1.64 `::before { float: left }` —— 浮动本应参与父元素
+       高度计算，实测**没有**：
+         伪元素 float = left、height = 42.29px，
+         段落 height 仍 = 29.75px。
+       原因：浮动只影响"行盒"布局，段落已有 `white-space: pre-wrap`
+       下的文本行，父元素高度由行盒决定，浮动的高度不并入。
+
+  ✅ 最终方案：**段落 flex 化**，编号作为 flex 子项参与布局：
+
+      .is-body-para { display: flex; align-items: flex-start; }
+      .is-body-para > ::before { flex: 0 0 12px; ... }
+
+  ⚠️⚠️ flex 子项**必然参与**父元素高度计算 —— 这是和浮动最本质的差别：
+     浮动只是"贴着行盒"的旁支，flex 项是布局的一部分。
+     段落高度 = max(正文行盒高, 编号高)，正是用户要的语义。
+
+  ⚠️ `align-items: flex-start` 而不是 `center`：
+     多行段落里 center 会把正文浮到垂直中间，行距节奏被破坏。
+     flex-start 让正文贴顶，只有单行短段会被编号自然撑高，
+     多行段落完全不受影响。
+
+  ⚠️ 编号需要 `order: -1` + 负 margin 才能落在竖线左侧：
+     段落 `padding-left: 20px` 里，前 12px + 6px 留给编号，
+     编号用 `margin-left: -18px` 左移（12 + 6，不含 border）。
+     同时正文必须包一层 span，否则正文文字会成为 flex 匿名项，
+     无法与编号分列。
 */
 .reader-para.is-body-para {
     position: relative;
     /*
-      ⚠️ 左边距给编号区腾地方。
-         18px = 编号列 12px + 与竖线之间的 6px。
-         横排时要预留 38px，竖排后剩 18px，正文多回 20px 阅读宽度。
+      ⚠️ flex 让编号成为**参与布局的 flex 项** —— 它必然计入段落高度，
+         这正是浮动/绝对定位做不到的事。
     */
-    padding-left: 18px;
-    border-left: 2px solid var(--outline);
+    display: flex;
     /*
-      ⚠️ 值由 `attachBodyMarker()` 算好后写入（见 reader.js）。
-         默认 0 表示"没算过就不约束"。
+      ⚠️ flex-start 而不是 center：多行段落里 center 会把正文浮到
+         垂直中间，行距节奏被破坏。flex-start 让正文贴顶，
+         只有装不下编号的单行短段才会被撑高。
     */
-    min-height: var(--no-min-h, 0);
+    align-items: flex-start;
+    /*
+      ⚠️ 20px = 编号区 12px + 间隙 6px + border 2px。
+         编号用负 margin 移进这块 padding 里。
+    */
+    padding-left: 20px;
+    border-left: 2px solid var(--outline);
 }
 
 .reader-para.is-body-para::before {
     content: attr(data-body-no);
-    position: absolute;
     /*
-      ⚠️ 负偏移把编号放到 border 的**左边**。
-         border 在 padding 之外，所以要从 border 外再往左推。
+      ⚠️ 作为 flex 项（而不是绝对定位/浮动）——
+         它自己的高度会把段落撑到至少装得下它。
     */
-    right: calc(100% + 6px);
-    top: 0;
+    flex: 0 0 12px;
     /*
-      ⚠️ 行高与正文一致，编号才能和**第一行**文字对齐 ——
-         不用 `top: 50%` 居中，否则高段落里编号会跑到中间，
-         看不出它属于哪一行之首。
+      ⚠️ 负外边距把编号推到 border 左侧：
+         12px（编号宽）+ 6px（间隙）= 18px，不含 border。
+         flex 项的 margin 正常参与布局，所以能推出去。
     */
+    margin-left: -18px;
+    /*
+      ⚠️ 垂直方向不居中于整个段落，只对齐到**首行**：
+         正文首行行高 1.75 × 17px ≈ 29.75px，数字首行约占 14px，
+         差 ≈ 15.75px，取一半 ≈ 8px 让数字落在首行中线上。
+    */
+    margin-top: 8px;
+    /*
+      ⚠️⚠️ 负 `margin-bottom` 抵消编号自身高度对段落高度的贡献：
+         编号比正文行高**高**的时候（三位数 36px > 29.75px）
+         需要它撑高段落；但撑高后底部会多出一块空白 ——
+         用 `margin-bottom: -8px` 只把"超出的那部分"收回来，
+         让段落高度刚好等于编号高度，不额外留白。
+         与上面的 `margin-top: 8px` 对称，两者相加为 0。
+    */
+    margin-bottom: -8px;
     font-size: 12px;
-    /*
-      ⚠️ 竖排下 `line-height` 控制的是**字符之间的水平间距**，
-         不是行高。取 1 → 水平占宽 = 12px，钉死。
-    */
     line-height: 1;
     font-weight: 400;
     /*
       ⚠️⚠️ 竖排三件套，缺一不可：
          · `writing-mode: vertical-rl` —— 竖排；
          · `text-orientation: upright` —— 数字立正，不旋转 90°；
-         · 固定 `width` —— 让它从行内盒变成块盒，宽度才能钉死。
-         只要有 `width` 不写，竖排盒仍是 inline，宽度还是自适应。
+         · 固定 `width` —— 宽度才能钉死。
     */
     writing-mode: vertical-rl;
     text-orientation: upright;
     width: 12px;
-    /*
-      ⚠️ 数字用等宽：竖排后每个数字高度一致，编号整体长度可预测。
-    */
     font-variant-numeric: tabular-nums;
-    /*
-      ⚠️ 右对齐改成居中：竖排时水平方向只有一个字符，
-         `text-align` 管的是水平对齐，居中让数字稳定在栏目中线上。
-    */
     text-align: center;
     color: var(--on-surface-variant);
     opacity: 0.7;

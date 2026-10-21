@@ -3165,60 +3165,27 @@
      */
     function attachBodyMarker(el, no) {
         el.classList.add('is-body-para');
-        var s = String(no);
-        el.setAttribute('data-body-no', s);
+        el.setAttribute('data-body-no', String(no));
 
         /*
-          ══ ⚠️⚠️ 编号竖排后的总高必须让段落撑得住（v0.1.62）══
+          ══ ⚠️⚠️ 编号改由 CSS 浮动撑高段落（v0.1.64）══
 
           用户反馈：
-            「但是这样单行的段怎么办？放不开啊」
-            「如果编号高度高于段，就让段高度不小于这个最小高度好了，
-              然后正文内容再段高度中居中位置就行」
+            「还是不对，一位数和两位数的都撑起来了，三位数的又缩了，
+              只能撑起两位数」
 
-          ⚠️ 为什么不能在 CSS 里算：
-             编号总高 = 编号字号 × **数字个数**，
-             而 CSS 拿不到"个数"（竖排下 `ch` 度量的是字符高度，
-             不是字符数）。所以由这里算好写成自定义属性。
+          ⚠️⚠️ 真因不是算错了值 —— 实测 min-height = 36px 完全正确。
+             问题在于编号是 `position: absolute`，**脱离文档流**：
+             绝对定位元素溢出时不会撑高父元素，
+             父元素的 `min-height` 也管不到它。
+             超出的部分被下一个段落的背景盖住 → 看起来像"缩了"。
 
-          ⚠️⚠️ 为什么不用 CSS 的 `max()` 兜底（v0.1.62 踩过）：
-             `max()` 需要 Chrome 79+。部分国内 WebView 内核更旧，
-             而浏览器遇到**不认识的函数**时不是挑一个参数用，
-             而是判定整条 `min-height` 声明非法 → 整条丢弃。
-             表现就是"加了跟没加一样"（用户原话：
-             「段落还是没有被编号最小高度撑起来，而是又和之前一样了」）。
+             一位数(12px)/两位数(24px) 都小于行高 29.75px，
+             本就不需要撑，所以只有三位数才暴露问题。
 
-          ✅ 所以这里**直接算成像素数字**：
-             `var()` 的兼容性（Chrome 49+）远好于 `max()`，
-             而且算出来就是一个纯数值，任何内核都认。
-
-          ⚠️ 行高从计算样式里读，不要写死 29.75：
-             正文字号用户可调（12~28px），行高随之变化。
-             段落还没进 DOM 时 `getComputedStyle` 拿不到值，
-             所以套一层兜底并夹下限，避免算出 0 导致全部段落塌陷。
+          ✅ 现在编号用 `float: left`，**参与高度计算**：
+             段落自然被撑到"至少装得下编号"，无需任何 JS 计算。
         */
-        var noH = 12 * s.length;
-
-        var lh = 0;
-        try {
-            lh = parseFloat(window.getComputedStyle(el).lineHeight) || 0;
-        } catch (e) {
-            lh = 0;
-        }
-        /*
-          ⚠️ 元素此时还没插入文档，`lineHeight` 可能是 'normal' 或空串
-             → parseFloat 得 NaN → 已用 `|| 0` 兜住。
-             兜底按 1.75 × 继承字号估一个合理值。
-        */
-        if (!lh || lh < 1) {
-            var fs = 17;
-            try {
-                fs = parseFloat(window.getComputedStyle(el).fontSize) || 17;
-            } catch (e2) { /* 忽略 */ }
-            lh = fs * 1.75;
-        }
-
-        el.style.setProperty('--no-min-h', Math.max(lh, noH) + 'px');
     }
 
     /**
