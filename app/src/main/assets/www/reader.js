@@ -2571,7 +2571,37 @@
             trace('reader:edit', 'multi lines=' + lines.join(','));
         }
 
+        /*
+          ══ ⚠️ 顺手清掉已变空的块的标注（v0.1.66）══
+
+          用户反馈：
+            「当编辑使得段落减少（比如令两段合并为一段）之后，
+              编号却没有，就会导致空段落的出现，应该自动删除空段落。」
+
+          渲染层已经在 `renderFlat` 里跳过空块，不会再有空段落。
+          但 `labels` 里可能还留着这些已消失块的标注区间 ——
+          它们会在目录里对应不到任何文字（`mergedTocEntries` 会
+          跳过，但数据一直堆着）。
+
+          ✅ 这里直接把空文本块的标注一并删掉。
+          ⚠️ 只删**完全搜不到的块**（文本为空），
+             不影响用户对别的段落做的标注。
+        */
+        var touched = editSpan.single ? [editSpan.line] : editSpan.lines;
+        var labelsChanged = false;
+        for (var t2 = 0; t2 < touched.length; t2++) {
+            var tl = touched[t2];
+            var txt = edits[tl];
+            if (txt == null) continue;
+            if (String(txt).replace(/\s+/g, '') !== '') continue;
+            if (labels[tl]) {
+                delete labels[tl];
+                labelsChanged = true;
+            }
+        }
+
         saveEdits();
+        if (labelsChanged) saveLabels();
         closeEditSheet();
         clearSelection();
         rerenderKeepingScroll();
@@ -3081,6 +3111,37 @@
              不能每个 run 重置 —— 用户要求"连续，从全文第一个到最后一个"。
         */
         var bodyIndex = { n: 0 };
+
+        /*
+          ══ ⚠️⚠️ 跳过已变空的块（v0.1.66）══
+
+          用户反馈：
+            「还有一个问题就是当编辑使得段落减少（比如令两段合并为一段）
+              之后，编号却没有，就会导致空段落的出现，应该自动删除空段落。」
+
+          场景：跨块编辑时，`applyEdit()` 把用户写的内容按空行切分，
+          分别写回 `edits[lines[i]]`。如果用户把两段合成一段，
+          后面的块就拿到空串 `''` —— 但这个块仍然留在 `blocks` 里，
+          `renderFlat` 仍会给它造一个 `<p>`：
+            · 屏幕上出现一个只有竖线、没有文字的空段落；
+            · 它还会占掉一个正文段编号，导致后面的编号错位。
+
+          ✅ 所以在建 run **之前**先把空块滤掉：
+             不渲染 → 不占编号 → 编号保持连续。
+
+          ⚠️ 判据用 `trim()` 而不是 `=== ''`：
+             用户编辑时可能只留下空格/换行，那些同样应该被视为空段落。
+          ⚠️ 只在这次渲染时过滤，**不删掉数据** ——
+             `edits[line]` 仍保留着，用户以后在别处恢复文本还能回来。
+        */
+        var live = [];
+        for (var q = 0; q < blocks.length; q++) {
+            var qt = blockTextOf(blocks[q].line);
+            if (qt == null) qt = '';
+            if (String(qt).replace(/\s+/g, '') === '') continue;
+            live.push(blocks[q]);
+        }
+        blocks = live;
 
         /*
           把块切成"运行"（run）：连续、且标注标签集合完全相同的块归一段。
