@@ -213,6 +213,22 @@
             'reader.selectCopied': 'Copied.',
             'reader.selectCopyFailed': 'Could Not Copy.',
             'reader.selectCount': '{n} Characters Selected',
+            'reader.selectEdit': 'Edit',
+            'reader.selectLabel': 'Label',
+
+            // 编辑表单（v0.1.45）
+            'reader.editTitle': 'Edit',
+
+            // 标注表单（v0.1.45）
+            'reader.labelTitle': 'Label',
+            'reader.label.body': 'Body Text',
+            'reader.label.title': 'Article Title',
+            'reader.label.author': 'Author Info',
+            'reader.label.abstract': 'Abstract',
+            'reader.label.h1': 'Heading 1',
+            'reader.label.h2': 'Heading 2',
+            'reader.label.h3': 'Heading 3',
+            'reader.label.reference': 'References',
 
             // 阅读设置：字体
             'reader.font': 'Font',
@@ -499,6 +515,22 @@
             'reader.selectCopied': '已复制。',
             'reader.selectCopyFailed': '复制失败。',
             'reader.selectCount': '已选中 {n} 字',
+            'reader.selectEdit': '编辑',
+            'reader.selectLabel': '标注',
+
+            // 编辑表单（v0.1.45）
+            'reader.editTitle': '编辑',
+
+            // 标注表单（v0.1.45）
+            'reader.labelTitle': '标注',
+            'reader.label.body': '正文',
+            'reader.label.title': '文章标题',
+            'reader.label.author': '作者信息',
+            'reader.label.abstract': '摘要',
+            'reader.label.h1': '一级标题',
+            'reader.label.h2': '二级标题',
+            'reader.label.h3': '三级标题',
+            'reader.label.reference': '参考文献',
 
             // 阅读设置：字体
             'reader.font': '字体',

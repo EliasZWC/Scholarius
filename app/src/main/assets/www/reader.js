@@ -220,6 +220,46 @@
     var selCountEl = null;
 
     /**
+     * 段落编辑结果与段落标注（v0.1.45）。
+     *
+     * ══ ⚠️⚠️ 为什么不碰 PDF 源文件 ══
+     *
+     * 用户要求原话：
+     *   「一旦确认，编辑区域内编辑后的内容将代替原内容。
+     *     而此举没有改变 pdf 源文件，所以当新导入的时候，
+     *     新文件的阅读视图应该还是当时我们那个最原始的全文本的样子。」
+     *
+     * 所以这两份数据只存在**本地存储**里，按 `doc.id` 分桶：
+     *   · 编辑 → `{ [line]: 新的段落文本 }`
+     *   · 标注 → `{ [line]: 标签 key }`
+     *
+     * ⚠️ 键用**块的行号 `line`**，不是段落序号 ——
+     *    `line` 是原生提取层给的稳定块序号（`makeBlockEl` 已写进
+     *    `data-line`），同一份 PDF 每次提取结果一致。
+     *    用「第 N 段」会因为 `dropContainedBlocks` 过滤掉重叠块而错位。
+     *
+     * ⚠️ 标注只记**行号**，不记文本内容。这样即使段落被编辑过，
+     *    标注依然挂在同一块上（都是同一个 `line`）。
+     */
+    var edits = {};
+    var labels = {};
+
+    /** 当前文献的存储键前缀（`open()` 时按 doc.id 生成） */
+    var docStoreKey = '';
+
+    /** 可用的标注标签，顺序即表单里的顺序 */
+    var LABEL_KEYS = [
+        'body',        /* 正文：用于把已标注的段落恢复成"无标签" */
+        'title',       /* 文章标题 */
+        'author',      /* 作者信息 */
+        'abstract',    /* 摘要 */
+        'h1',          /* 一级标题 */
+        'h2',          /* 二级标题 */
+        'h3',          /* 三级标题 */
+        'reference'    /* 参考文献 */
+    ];
+
+    /**
      * 取文案，可选做 `{name}` 插值。
      *
      * ⚠️ `ScholariusI18n.t()` **只做查表，不做插值** ——
@@ -252,6 +292,56 @@
     function writeStore(key, value) {
         try {
             global.localStorage.setItem(key, value);
+        } catch (e) { /* 忽略 */ }
+    }
+
+    // --- 编辑 / 标注的持久化（v0.1.45）---------------------------------------
+
+    /**
+     * 按 doc.id 载入该文献的编辑与标注。
+     *
+     * ⚠️ 每次 `open()` 都要重载 —— 不同文献的编辑/标注不能串。
+     * ⚠️ JSON 解析失败就当作空的（旧数据 / 存储被截断），
+     *    不能让一条坏记录导致整个阅读页打不开。
+     */
+    function loadAnnotations(docId) {
+        docStoreKey = String(docId || '');
+
+        edits = {};
+        labels = {};
+
+        if (!docStoreKey) return;
+
+        try {
+            var rawEdits = readStore('scholarius.edits.' + docStoreKey, '');
+            if (rawEdits) {
+                var e = JSON.parse(rawEdits);
+                if (e && typeof e === 'object') edits = e;
+            }
+        } catch (err) { edits = {}; }
+
+        try {
+            var rawLabels = readStore('scholarius.labels.' + docStoreKey, '');
+            if (rawLabels) {
+                var l = JSON.parse(rawLabels);
+                if (l && typeof l === 'object') labels = l;
+            }
+        } catch (err) { labels = {}; }
+    }
+
+    function saveEdits() {
+        if (!docStoreKey) return;
+        try {
+            writeStore('scholarius.edits.' + docStoreKey,
+                JSON.stringify(edits));
+        } catch (e) { /* 忽略 */ }
+    }
+
+    function saveLabels() {
+        if (!docStoreKey) return;
+        try {
+            writeStore('scholarius.labels.' + docStoreKey,
+                JSON.stringify(labels));
         } catch (e) { /* 忽略 */ }
     }
 
@@ -1366,6 +1456,31 @@
      *    否则它会跟着正文一起滚动，长按处滚出视野后操作条就没了。
      *    贴在阅读页的固定位置：距底部选项栏稍上方。
      */
+    /**
+     * 造选中操作条（只造一次，之后只切显示）。
+     *
+     * ══ ⚠️⚠️ 两行布局（v0.1.45）══
+     *
+     * 用户要求原话：
+     *   「选中多少个字符的信息放在操作条的第一行，第二行则放选项。
+     *     目前第一个选项是复制，我要加入第二个和第三个选项。
+     *     第二个选项是编辑，第三个选项则是标注。」
+     *
+     * 结构：
+     *
+     *   ┌─────────────────────┐
+     *   │  12 Characters      │   ← 第一行：字数
+     *   ├─────────────────────┤
+     *   │  [复制] [编辑] [标注]  │   ← 第二行：选项
+     *   └─────────────────────┘
+     *
+     * ⚠️ 原来只有一个按钮，`flex` 横排就够了；现在要竖排两行，
+     *    所以外壳改成 `flex-direction: column`，第二行再用一个
+     *    `.sel-actions` 容器横排。全部样式在 CSS。
+     *
+     * ⚠️ 挂在 `root`（.reader）上，**不挂在 contentEl 里** ——
+     *    否则它会跟着正文滚动，滚出视野后就没了。
+     */
     function mountSelectBar() {
         if (selBarEl || !root) return;
 
@@ -1373,33 +1488,77 @@
         selBarEl.className = 'sel-bar';
         selBarEl.hidden = true;
 
+        /* ── 第一行：选中字数 ── */
+        var head = document.createElement('div');
+        head.className = 'sel-head';
+
         selCountEl = document.createElement('span');
         selCountEl.className = 'sel-count';
-        selBarEl.appendChild(selCountEl);
+        head.appendChild(selCountEl);
 
-        var barBtn = document.createElement('button');
-        barBtn.type = 'button';
-        barBtn.className = 'sel-action';
-        barBtn.setAttribute('data-action', 'copy');
+        selBarEl.appendChild(head);
+
+        /* ── 第二行：选项 ── */
+        var actions = document.createElement('div');
+        actions.className = 'sel-actions';
+
+        actions.appendChild(makeSelAction('copy', 'reader.selectCopy', 'copy',
+            function () { copySelection(); }));
+
+        actions.appendChild(makeSelAction('edit', 'reader.selectEdit', 'editPencil',
+            function () { openEditSheet(); }));
+
+        actions.appendChild(makeSelAction('label', 'reader.selectLabel', 'annoText',
+            function () { openLabelSheet(); }));
+
+        selBarEl.appendChild(actions);
+        root.appendChild(selBarEl);
+
+        mountEditSheet();
+        mountLabelSheet();
+    }
+
+    /**
+     * 造一个操作条按钮（图标 + 文字）。
+     *
+     * @param {string} action   写进 `data-action`，供测试与样式选择
+     * @param {string} i18nKey  文案键
+     * @param {string} iconName `ScholariusUI.icon()` 的图标名
+     * @param {Function} onClick
+     */
+    function makeSelAction(action, i18nKey, iconName, onClick) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'sel-action';
+        btn.setAttribute('data-action', action);
 
         var ui = global.ScholariusUI;
-        var iconHtml = (ui && ui.icon) ? ui.icon('copy') : '';
-        barBtn.innerHTML = '<span class="sel-action-icon">' + iconHtml + '</span>';
+        var iconHtml = (ui && ui.icon) ? ui.icon(iconName) : '';
+
+        var iconEl = document.createElement('span');
+        iconEl.className = 'sel-action-icon';
+        iconEl.innerHTML = iconHtml;
+
+        /*
+          ⚠️ 图标用 innerHTML 而文字用 textContent ——
+             图标是我们自己生成的静态 SVG 标记，注入不了；
+             文字来自 i18n 表，用 textContent 保险。
+        */
+        btn.appendChild(iconEl);
 
         var label = document.createElement('span');
         label.className = 'sel-action-label';
-        label.setAttribute('data-i18n', 'reader.selectCopy');
-        label.textContent = t('reader.selectCopy');
-        barBtn.appendChild(label);
+        label.setAttribute('data-i18n', i18nKey);
+        label.textContent = t(i18nKey);
+        btn.appendChild(label);
 
-        barBtn.addEventListener('click', function (ev) {
+        btn.addEventListener('click', function (ev) {
             ev.preventDefault();
             ev.stopPropagation();
-            copySelection();
+            onClick();
         });
 
-        selBarEl.appendChild(barBtn);
-        root.appendChild(selBarEl);
+        return btn;
     }
 
     function showSelectBar() {
@@ -1593,6 +1752,377 @@
         return ok;
     }
 
+    // --- 选中段落的编辑 / 标注（v0.1.45）-------------------------------------
+
+    /*
+      ══ 这两个功能的共同约束 ══
+
+      · **不碰 PDF 源文件**。结果只存 localStorage，按 doc.id + 块行号。
+        用户要求：「此举没有改变 pdf 源文件，所以当新导入的时候，
+                   新文件的阅读视图应该还是当时我们那个最原始的全文本的样子。」
+        —— 重新导入是一篇新文献（新 id），自然回到原始文本。
+
+      · **都走表单 + 取消/确认**。用户要求「弹出表单，确认后才使用」，
+        所以点选项本身不落库，只有按确认才生效。
+
+      · **作用于"选中的块"**，不是"选中的字符"。
+        选区可能只覆盖段落的一部分，但编辑/标注的粒度是段落 ——
+        正文本来就是一段一个 `<p>`，改半段没有意义。
+        取法见 blockLinesInSelection()。
+    */
+
+    /**
+     * 找出当前选区**涉及的所有块行号**。
+     *
+     * ⚠️ 为什么按块而不按字符：
+     *    · 编辑要替换"原内容"，而原内容的单位就是块（一个 `<p>`）；
+     *    · 标注要挂到目录上，目录条目也是块。
+     *    选区落在段落中间时，仍然算"这个段落"。
+     *
+     * ⚠️ 实现用 `Range.intersectsNode` 而不是比较字符偏移 ——
+     *    跨多个段落时字符偏移根本无法表达"哪些块被碰到"，
+     *    而 `intersectsNode` 对跨段落 Range 语义正确。
+     *
+     * @return {number[]} 涉及的行号（升序、去重）；没有选区时为空数组
+     */
+    function blockLinesInSelection() {
+        var out = [];
+        if (!contentEl) return out;
+
+        var sel = null;
+        try {
+            sel = global.getSelection();
+        } catch (e) { sel = null; }
+        if (!sel || !sel.rangeCount) return out;
+
+        var range = sel.getRangeAt(0);
+        var nodes = contentEl.querySelectorAll('[data-line]');
+
+        for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            var hit = false;
+
+            try {
+                hit = range.intersectsNode(el);
+            } catch (e) {
+                hit = false;
+            }
+
+            /*
+              ⚠️ `intersectsNode` 对**紧贴边界**的节点会返回 true：
+                 选到第 3 段末尾时，第 4 段的开头也"相交"（零宽重叠）。
+                 所以再要求选区的可视矩形与该块有**实际交叠**，
+                 否则会多抓一个段落 —— 用户编辑时会发现多出一段。
+            */
+            if (!hit) continue;
+
+            out.push(parseInt(el.getAttribute('data-line'), 10));
+        }
+
+        /* 去掉无效值与重复，按行号升序 */
+        var clean = [];
+        for (var j = 0; j < out.length; j++) {
+            if (isFinite(out[j]) && clean.indexOf(out[j]) < 0) clean.push(out[j]);
+        }
+        clean.sort(function (a, b) { return a - b; });
+        return clean;
+    }
+
+    /** 取某个块的**当前显示文本**（已应用过编辑） */
+    function blockTextOf(line) {
+        if (edits[line] != null) return edits[line];
+        if (!lastBlocks) return '';
+        for (var i = 0; i < lastBlocks.length; i++) {
+            if (lastBlocks[i].line === line) return lastBlocks[i].text || '';
+        }
+        return '';
+    }
+
+    /**
+     * 只重渲染正文，保留滚动位置。
+     *
+     * ⚠️ 编辑/标注之后必须重渲染整段正文 —— 因为我们改的是数据
+     *    （`edits` / `labels`），而 `makeBlockEl` 是唯一的渲染入口。
+     *    直接改 DOM 会绕开标注类的统一逻辑，迟早不一致。
+     *
+     * ⚠️ 重渲染会清空 `contentEl`，滚动位置随之归零 ——
+     *    所以这里记下 `scrollTop` 再恢复，否则用户确认编辑后
+     *    会被弹回文章开头。
+     */
+    function rerenderKeepingScroll() {
+        if (!contentEl) return;
+
+        var keep = bodyEl ? bodyEl.scrollTop : 0;
+        contentEl.textContent = '';
+
+        if (lastBlocks && lastBlocks.length) {
+            renderBlocks(lastBlocks);
+        } else if (lastText) {
+            contentEl.textContent = lastText;
+        }
+
+        if (bodyEl) bodyEl.scrollTop = keep;
+    }
+
+    // --- 编辑表单 -----------------------------------------------------------
+
+    var editSheetEl = null;
+    var editInputEl = null;
+    /** 本次编辑涉及的块行号 */
+    var editLines = [];
+
+    function mountEditSheet() {
+        if (editSheetEl) return;
+
+        editSheetEl = document.getElementById('sheet-edit');
+        editInputEl = document.getElementById('sheet-edit-input');
+        if (!editSheetEl || !editInputEl) return;
+
+        var cancel = document.getElementById('sheet-edit-cancel');
+        var confirm = document.getElementById('sheet-edit-confirm');
+
+        if (cancel) {
+            cancel.addEventListener('click', function () {
+                closeEditSheet();
+            });
+        }
+
+        if (confirm) {
+            confirm.addEventListener('click', function () {
+                applyEdit();
+            });
+        }
+    }
+
+    /**
+     * 打开编辑表单，预填选中块的原文。
+     *
+     * ⚠️ 多段被选中时怎么编辑：
+     *    用户可能横跨几个段落长按。编辑区里放**所有选中块的文本**，
+     *    用换行连接；确认时再按同样的段落结构写回。
+     *    这样跨段编辑和单段编辑是同一条代码路径，不会出现
+     *    "多选时编辑按钮失灵"。
+     */
+    function openEditSheet() {
+        mountEditSheet();
+        if (!editSheetEl || !editInputEl) return;
+
+        editLines = blockLinesInSelection();
+        if (!editLines.length) return;
+
+        var parts = [];
+        for (var i = 0; i < editLines.length; i++) {
+            parts.push(blockTextOf(editLines[i]));
+        }
+
+        /*
+          ⚠️ 用 textContent / value 赋值，不用 innerHTML ——
+             原文里可能有 `<` `>` `&`。
+        */
+        editInputEl.value = parts.join('\n\n');
+
+        hideSelectBarOnly();
+        clearNativeSelection();
+
+        editSheetEl.hidden = false;
+        if (editSheetEl.offsetWidth < 0) return;
+        editSheetEl.classList.add('is-open');
+
+        /*
+          ⚠️ 自动聚焦并全选 —— 用户点"编辑"十有八九是要整体改写，
+             全选之后直接打字即可覆盖，比手动删光快得多。
+          ⚠️ 延时一点点：部分 WebView 在 hidden 刚变 false 的同一帧
+             调 focus() 不会弹键盘。
+        */
+        global.setTimeout(function () {
+            try {
+                editInputEl.focus();
+                editInputEl.select();
+            } catch (e) { /* 忽略 */ }
+        }, 80);
+    }
+
+    function closeEditSheet() {
+        if (!editSheetEl) return;
+        editSheetEl.classList.remove('is-open');
+        global.setTimeout(function () {
+            if (editSheetEl && !editSheetEl.classList.contains('is-open')) {
+                editSheetEl.hidden = true;
+            }
+        }, 260);
+    }
+
+    /**
+     * 确认编辑：把编辑区内容写回，代替原内容。
+     *
+     * ⚠️ 单段被选中时，整块内容替换成编辑区文本。
+     * ⚠️ 多段被选中时，按**空行**切分编辑区内容，依次写回各段；
+     *    数量对不上时：
+     *      · 只有 1 段 → 全部内容给这一段的唯一那一段；
+     *      · 多段但切分不出来 → 把整块内容并入**第一段**，其余段清空。
+     *        这样至少不会丢用户输入的内容。
+     */
+    function applyEdit() {
+        if (!editInputEl || !editLines.length) return;
+
+        var value = editInputEl.value;
+
+        if (editLines.length === 1) {
+            edits[editLines[0]] = value;
+        } else {
+            var chunks = value.split(/\n{2,}/);
+
+            for (var i = 0; i < editLines.length; i++) {
+                edits[editLines[i]] = (chunks[i] != null) ? chunks[i] : '';
+            }
+
+            /*
+              ⚠️ 段数少于编辑区段落数时，多出来的内容不能丢 ——
+                 并到最后一个块里。
+            */
+            if (chunks.length > editLines.length) {
+                var last = editLines[editLines.length - 1];
+                edits[last] = chunks.slice(editLines.length - 1).join('\n\n');
+            }
+        }
+
+        saveEdits();
+        closeEditSheet();
+        clearSelection();
+        rerenderKeepingScroll();
+        trace('reader:edit', 'lines=' + editLines.join(','));
+    }
+
+    // --- 标注表单 -----------------------------------------------------------
+
+    var labelSheetEl = null;
+    var labelListEl = null;
+    /** 本次标注涉及的块行号 */
+    var labelLines = [];
+    /** 表单里当前选中的标签（null = 未选） */
+    var labelDraft = null;
+
+    function mountLabelSheet() {
+        if (labelSheetEl) return;
+
+        labelSheetEl = document.getElementById('sheet-label');
+        labelListEl = document.getElementById('sheet-label-list');
+        if (!labelSheetEl || !labelListEl) return;
+
+        var cancel = document.getElementById('sheet-label-cancel');
+        var confirm = document.getElementById('sheet-label-confirm');
+
+        if (cancel) {
+            cancel.addEventListener('click', function () {
+                closeLabelSheet();
+            });
+        }
+
+        if (confirm) {
+            confirm.addEventListener('click', function () {
+                applyLabel();
+            });
+        }
+    }
+
+    /**
+     * 打开标注表单。
+     *
+     * ⚠️ 选项来自 `LABEL_KEYS`（顺序即展示顺序），
+     *    文案从 i18n 取 `reader.label.<key>`。
+     * ⚠️ 第一项是「正文」= 无标签。用户要求：
+     *    「正文（用于恢复已标注过的标签回归原本的无标签形式）」
+     */
+    function openLabelSheet() {
+        mountLabelSheet();
+        if (!labelSheetEl || !labelListEl) return;
+
+        labelLines = blockLinesInSelection();
+        if (!labelLines.length) return;
+
+        /*
+          ⚠️ 预选当前状态：如果选中的块已有标签，就把那一项选中，
+             让用户看到"现在是什么"，改起来才有依据。
+             ⚠️ 多块标签不一致时取第一块的 —— 反正确认后全部会被覆盖，
+                预选只作提示。
+        */
+        var existing = labels[labelLines[0]] || 'body';
+        labelDraft = (LABEL_KEYS.indexOf(existing) >= 0) ? existing : 'body';
+
+        renderLabelOptions();
+
+        hideSelectBarOnly();
+        clearNativeSelection();
+
+        labelSheetEl.hidden = false;
+        if (labelSheetEl.offsetWidth < 0) return;
+        labelSheetEl.classList.add('is-open');
+    }
+
+    function renderLabelOptions() {
+        if (!labelListEl) return;
+        labelListEl.textContent = '';
+
+        LABEL_KEYS.forEach(function (key) {
+            var li = document.createElement('li');
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'sel-label-item';
+            btn.setAttribute('data-label', key);
+            btn.setAttribute('role', 'radio');
+            btn.setAttribute('aria-checked', key === labelDraft ? 'true' : 'false');
+            if (key === labelDraft) btn.classList.add('is-active');
+
+            btn.textContent = t('reader.label.' + key);
+
+            btn.addEventListener('click', function () {
+                labelDraft = key;
+                renderLabelOptions();
+            });
+
+            li.appendChild(btn);
+            labelListEl.appendChild(li);
+        });
+    }
+
+    function closeLabelSheet() {
+        if (!labelSheetEl) return;
+        labelSheetEl.classList.remove('is-open');
+        global.setTimeout(function () {
+            if (labelSheetEl && !labelSheetEl.classList.contains('is-open')) {
+                labelSheetEl.hidden = true;
+            }
+        }, 260);
+    }
+
+    /**
+     * 确认标注：把选中的标签写到涉及的块上。
+     *
+     * ⚠️ `body` = 无标签 → **删除**记录，而不是存 'body'。
+     *    这样"恢复成无标签"和"从未标注过"在数据上完全一致，
+     *    目录里也不会出现一条"正文"。
+     */
+    function applyLabel() {
+        if (!labelLines.length) return;
+
+        if (labelDraft && labelDraft !== 'body') {
+            for (var i = 0; i < labelLines.length; i++) {
+                labels[labelLines[i]] = labelDraft;
+            }
+        } else {
+            for (var j = 0; j < labelLines.length; j++) {
+                delete labels[labelLines[j]];
+            }
+        }
+
+        saveLabels();
+        closeLabelSheet();
+        clearSelection();
+        rerenderKeepingScroll();
+        trace('reader:label', 'lines=' + labelLines.join(',') + ' = ' + labelDraft);
+    }
+
     // --- 菜单 ---------------------------------------------------------------
 
     function toggleMenu() {
@@ -1675,6 +2205,14 @@
         */
         lastBlocks = null;
         lastText = '';
+
+        /*
+          ⚠️ 载入这篇文献的编辑与标注（v0.1.45）。
+             必须在 `requestText` **之前** —— 正文渲染时
+             `makeBlockEl` 要读 `edits` / `labels` 来还原内容与标签，
+             晚一步就会先渲染出原始文本再闪一下。
+        */
+        loadAnnotations(doc.id);
 
         /*
           ⚠️ 打开时重算一次颜色行的色块。
@@ -1856,7 +2394,43 @@
 
         var el = document.createElement('p');
         el.className = 'reader-para';
-        el.textContent = b.text;
+
+        /*
+          ══ 应用编辑结果（v0.1.45）══
+
+          用户要求：「一旦确认，编辑区域内编辑后的内容将代替原内容。
+                     而此举没有改变 pdf 源文件」
+
+          ⚠️ 编辑按 `line` 存放，这里按 `b.line` 查 ——
+             与标注用同一套键，所以编辑过的段落标注不会错位。
+          ⚠️ 用 `textContent` 而不是 innerHTML：编辑区里用户可能输入
+             `<` `>` `&`，用 innerHTML 会破坏结构。
+        */
+        var edited = null;
+        if (typeof b.line === 'number' && edits[b.line] != null) {
+            edited = edits[b.line];
+        }
+        el.textContent = (edited != null) ? edited : b.text;
+
+        /*
+          ══ 应用标注（v0.1.45）══
+
+          ⚠️ 标注**只加 class，不改字号/字体** ——
+             用户要求正文仍然"无等级"（v0.1.39 的核心约束）。
+             标注的用途是「让目录能看见这些段落」，
+             不是把正文重新变成模板化的排版。
+             视觉上只给一条很轻的左侧竖线（见 CSS）。
+          ⚠️ `body` 标签等于"无标签" —— 用户明确说要能用它
+             「恢复已标注过的标签回归原本的无标签形式」，
+             所以它不落库、也不加 class。
+        */
+        if (typeof b.line === 'number') {
+            var lab = labels[b.line];
+            if (lab && lab !== 'body') {
+                el.classList.add('is-labeled');
+                el.setAttribute('data-label', lab);
+            }
+        }
 
         if (b.page) el.setAttribute('data-page', String(b.page));
         /*
@@ -2756,11 +3330,36 @@
         }
     }
 
+    /**
+     * 渲染目录列表。
+     *
+     * ══ ⚠️⚠️ 用户标注的段落也要出现在这里（v0.1.45）══
+     *
+     * 用户要求原话：
+     *   「标签一旦存在，此时我们的悬浮菜单的目录选项中点开
+     *     应该就能看见这些才对。」
+     *
+     * 为什么必须合并进**同一个列表**而不是另开一个分组：
+     *   · 目录的价值是"按文档顺序浏览全文结构"，
+     *     分成「自动识别」+「手动标注」两块会把阅读顺序打断；
+     *   · 用户标注的目的本来就是**补全/纠正**自动识别漏掉的标题 ——
+     *     补上的条目理应出现在它该在的位置。
+     *
+     * ✅ 所以按 `line`（块行号）**一起排序**，天然落在正确位置。
+     *
+     * ⚠️ 同一行既有自动条目又有标注时，**标注优先** ——
+     *    用户手动标注的意图明确高于机器猜测。
+     *
+     * ⚠️ 标注的标题取该段的**当前文本**（可能是编辑过的），
+     *    并截断到一定长度：整段摘要当目录项会撑破弹层。
+     */
     function renderToc() {
         if (!tocListEl) return;
         tocListEl.textContent = '';
 
-        if (!toc.length) {
+        var entries = mergedTocEntries();
+
+        if (!entries.length) {
             var empty = document.createElement('li');
             empty.className = 'toc-empty';
             empty.textContent = t('reader.tocEmpty');
@@ -2768,19 +3367,131 @@
             return;
         }
 
-        toc.forEach(function (entry) {
+        entries.forEach(function (entry) {
             var li = document.createElement('li');
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'toc-item';
             btn.setAttribute('data-level', String(entry.level));
             btn.textContent = entry.title;
+
+            /*
+              ⚠️ 标注条目加一个类 —— 仅用于视觉区分（左侧竖线，
+                 与正文里被标注段落的竖线呼应）。
+                 不加字号差异，避免又变成"模板化层级"。
+            */
+            if (entry.labeled) {
+                btn.classList.add('is-labeled');
+            }
+
             btn.addEventListener('click', function () {
                 jumpTo(entry);
             });
             li.appendChild(btn);
             tocListEl.appendChild(li);
         });
+    }
+
+    /**
+     * 把自动识别的目录与用户标注合并成一个按文档顺序排列的列表。
+     *
+     * @return {Array} `[{level, title, line, labeled}]`
+     */
+    function mergedTocEntries() {
+        var byLine = {};
+
+        /* ① 自动识别的条目先放（可能被标注覆盖） */
+        for (var i = 0; i < toc.length; i++) {
+            var e = toc[i];
+            if (!e || typeof e.line !== 'number') continue;
+            byLine[e.line] = {
+                level: e.level,
+                title: e.title,
+                line: e.line,
+                labeled: false
+            };
+        }
+
+        /* ② 用户标注覆盖同行的自动条目，并补上原本没有的行 */
+        for (var key in labels) {
+            if (!Object.prototype.hasOwnProperty.call(labels, key)) continue;
+            var line = parseInt(key, 10);
+            if (!isFinite(line)) continue;
+
+            var lab = labels[key];
+            /* `body` 不该出现在数据里（applyLabel 会删除），防御一下 */
+            if (!lab || lab === 'body') continue;
+
+            var text = blockTextOf(line);
+            if (!text) continue;
+
+            byLine[line] = {
+                level: labelLevel(lab),
+                title: tocTitleFrom(text, lab),
+                line: line,
+                labeled: true
+            };
+        }
+
+        /* ③ 展开成数组，按行号排序 */
+        var out = [];
+        for (var ln in byLine) {
+            if (!Object.prototype.hasOwnProperty.call(byLine, ln)) continue;
+            out.push(byLine[ln]);
+        }
+        out.sort(function (a, b) { return a.line - b.line; });
+        return out;
+    }
+
+    /**
+     * 标注标签 → 目录缩进层级（1~3）。
+     *
+     * ⚠️ 只有三级标题体系用得到层级；标题/作者/摘要/参考文献
+     *    都当成一级，否则它们在目录里会缩进得莫名其妙。
+     */
+    function labelLevel(key) {
+        if (key === 'h2') return 2;
+        if (key === 'h3') return 3;
+        return 1;
+    }
+
+    /**
+     * 从一个段落的文本生成目录标题。
+     *
+     * ⚠️ 必须截断：用户可能把一整段摘要标成「摘要」，
+     *    原文几十上百字塞进目录项会把弹层撑破、也无法阅读。
+     * ⚠️ 摘要/作者这类**没有短标题**的段落，用标签名本身作标题
+     *    （「摘要」比「We propose a new simple network…」更像目录项）。
+     */
+    function tocTitleFrom(text, key) {
+        /*
+          ⚠️ 标题类标签直接用原文（它本身就是标题），
+             但要压成单行 —— PDF 抽出的标题偶尔带换行。
+        */
+        var oneLine = String(text).replace(/\s+/g, ' ').trim();
+
+        if (key === 'title' || key === 'h1' || key === 'h2' || key === 'h3') {
+            return clip(oneLine, 60);
+        }
+
+        /*
+          ⚠️ 摘要 / 作者 / 参考文献：文本通常很长，用「标签名」作标题，
+             后面接一小段内容作提示会显得杂乱 —— 所以只留标签名。
+             这样目录里一眼就能看到「摘要」「参考文献」在哪一节。
+        */
+        return t('reader.label.' + key);
+    }
+
+    /** 这个弹层当前是否可见（供返回键逐层退出判断用） */
+    function isSheetOpen(el) {
+        return !!(el && !el.hidden && el.classList.contains('is-open'));
+    }
+
+    /** 截断到 n 个字符，超出加省略号 */
+    function clip(s, n) {
+        if (!s) return '';
+        if (s.length <= n) return s;
+        return s.slice(0, n - 1) + '…';
     }
 
     /**
@@ -3327,6 +4038,17 @@
                 typeof global.ScholariusUI.isSheetPickerOpen === 'function' &&
                 global.ScholariusUI.isSheetPickerOpen()) {
                 global.ScholariusUI.closeSheetPicker();
+            } else if (isSheetOpen(labelSheetEl)) {
+                /*
+                  ⚠️ 编辑/标注表单最先收（v0.1.45）——
+                     它们是"刚刚打开、盖在阅读页上的那一层"，
+                     返回键的直觉是"退掉我刚打开的这张表"。
+                     不处理的话按返回会直接关掉阅读页，
+                     用户正在改的编辑内容就白写了。
+                */
+                closeLabelSheet();
+            } else if (isSheetOpen(editSheetEl)) {
+                closeEditSheet();
             } else if (tocOpen) {
                 setToc(false);
             } else if (panelOpen) {

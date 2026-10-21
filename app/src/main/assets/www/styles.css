@@ -1405,6 +1405,25 @@ body {
 */
 
 /*
+  ══ 段落标注的视觉（v0.1.45）══
+
+  ⚠️⚠️ 只加一条**很轻的左侧竖线**，绝不改字号/字重/行距。
+
+     理由：v0.1.39 用户明确要求「不允许有任何模板，我看到的应该是
+     无等级的全部文本」。标注的用途是「让目录能看见这些段落」，
+     不是把正文重新变成模板化排版 —— 一旦这里出现
+     `.reader-para[data-label="h1"] { font-size: 24px }`，
+     那种「PDF 结构可视化」的模板就又回来了，与用户的明确要求相悖。
+
+  ⚠️ 竖线用 `box-shadow: inset` 而不是 `border-left` ——
+     border 会把文字整体右移 3px，同一篇里标注段与未标注段的
+     左边距就不齐了，视觉上像"缩进错乱"。inset 阴影不占布局。
+*/
+.reader-para.is-labeled {
+    box-shadow: inset 3px 0 0 var(--sel-bg);
+}
+
+/*
   ══ 真正的选区高亮（v0.1.41）══
 
   ⚠️ 上一版（v0.1.40）把 `::selection` 设成透明、改用 `.is-sel` 画背景。
@@ -1462,12 +1481,17 @@ body {
     z-index: 3;
     left: 50%;
     bottom: calc(18px + var(--safe-bottom));
+    /*
+      ⚠️ 竖排两行（v0.1.45）：第一行字数，第二行选项。
+         原来只有一个按钮用 flex 横排就行，现在必须改成 column。
+    */
     display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 6px 6px 6px 14px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    padding: 10px 10px 8px;
     background: var(--nav-bg);
-    border-radius: 999px;
+    border-radius: 18px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
     /*
       ⚠️ 居中的 `translateX(-50%)` 必须与出现动画的 `translateY`
@@ -1480,6 +1504,20 @@ body {
     transition: transform 180ms cubic-bezier(0.2, 0, 0, 1),
         bottom 200ms cubic-bezier(0.2, 0, 0, 1),
         opacity 180ms linear;
+}
+
+/* 第一行：选中字数。左对齐，与第二行按钮的文字列对齐 */
+.sel-head {
+    display: flex;
+    align-items: center;
+    padding: 0 6px 2px;
+}
+
+/* 第二行：选项横排 */
+.sel-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 
 .sel-bar.is-open {
@@ -1512,17 +1550,23 @@ body {
   操作条上的按钮。
 
   ⚠️ 尺寸与 `.reader-action`（底栏按钮）同一套图标尺寸，
-     但这里是**胶囊内的小按钮**，所以用横排（图标 + 文字）、
+     但这里是**圆角卡片内的小按钮**，所以用横排（图标 + 文字）、
      内边距更小。
+
+  ⚠️ v0.1.45 起有三个（复制 / 编辑 / 标注）并排，
+     所以水平内边距从 14px 收到 10px，靠 `flex: 1` 均分宽度，
+     保证窄屏（320px）下也不会挤成两层或溢出。
 */
 .sel-action {
+    flex: 1 1 0;
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 4px;
     height: 36px;
-    padding: 0 14px 0 10px;
+    padding: 0 10px;
     border: none;
-    border-radius: 999px;
+    border-radius: 12px;
     background: transparent;
     color: var(--on-surface);
     font-family: inherit;
@@ -1530,6 +1574,7 @@ body {
     font-weight: 600;
     white-space: nowrap;
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .sel-action-icon {
@@ -1546,6 +1591,92 @@ body {
 
 /* 按下只降透明度，与全站按钮一致（不做阴影/缩放） */
 .sel-action:active {
+    opacity: 0.6;
+}
+
+/*
+  ══ 编辑表单的编辑区（v0.1.45）══
+
+  ⚠️ 用 `<textarea>` 而不是 contenteditable：
+     · 用户编辑的是**纯文本**段落，不需要富文本；
+     · textarea 在 WebView 里的光标/选区/输入法行为最可靠，
+       contenteditable 在旧内核上中文输入容易丢字。
+
+  ⚠️ 高度用 `min-height` + `max-height` 而不是固定 rows：
+     短段落时不要撑出一大片空白，长段落（摘要/整节）又要能看全，
+     超出就内部滚动（否则弹层本身会被撑到超过一屏）。
+
+  ⚠️ 字号 16px：iOS/Android 上小于 16px 时，输入框获得焦点会自动
+     放大页面（Android WebView 同样有这个行为），
+     那会把整个布局推歪。
+*/
+.sel-edit-input {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 120px;
+    max-height: 46vh;
+    margin: 4px 0 16px;
+    padding: 12px 14px;
+    border: 1px solid var(--outline);
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--on-surface);
+    font-family: inherit;
+    font-size: 16px;
+    line-height: 1.6;
+    resize: none;
+    overflow-y: auto;
+}
+
+.sel-edit-input:focus {
+    outline: none;
+    border-color: var(--success);
+}
+
+/*
+  ══ 标注表单的选项列表（v0.1.45）══
+
+  ⚠️ 单选列表而不是一排 chip：
+     8 个标签（正文/标题/作者/摘要/一~三级标题/参考文献）横排放不下，
+     横排必然换行、高度不一，看起来像两堆东西。
+     竖排一列与全站设置项（`.setting-row`）的视觉语言一致。
+*/
+.sel-label-list {
+    list-style: none;
+    margin: 4px 0 16px;
+    padding: 0;
+    max-height: 46vh;
+    overflow-y: auto;
+}
+
+.sel-label-item {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 12px 14px;
+    border: none;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--on-surface);
+    font-family: inherit;
+    font-size: 15px;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/*
+  ⚠️ 选中项用 `--sel-bg`（与选区高亮同色）而不是 --primary：
+     绿色在全站只表示"确认操作"（见 .btn-primary 的注释），
+     用它标"当前选中项"会让用户以为点了就直接生效了。
+*/
+.sel-label-item.is-active {
+    background: var(--sel-bg);
+    font-weight: 600;
+}
+
+.sel-label-item:active {
     opacity: 0.6;
 }
 
@@ -3366,6 +3497,23 @@ body {
     padding-left: 58px;
     font-size: 13px;
     color: var(--on-surface-variant);
+}
+
+/*
+  ══ 用户标注出来的目录条目（v0.1.45）══
+
+  ⚠️ 只加一条很轻的左侧竖线，与正文里被标注段落的竖线呼应 ——
+     让用户一眼看出"这条是我自己标的，不是自动识别的"。
+
+  ⚠️ 不用不同字号/颜色：目录的层级已经由 data-level 表达，
+     再叠一层"标注"的视觉差异会让同一级的条目看起来不一样，
+     反而分不清哪些是标题层级、哪些是来源差异。
+
+  ⚠️ scaleY 用 60% + 居中：竖线跟满整行会显得像分隔条，
+     短一点才像"标记"。
+*/
+.toc-item.is-labeled {
+    box-shadow: inset 3px 0 0 var(--sel-bg);
 }
 
 .toc-empty {

@@ -1304,6 +1304,63 @@
         </div>
     </section>
 
+    <!-- ==================================================================
+         阅读页 · 选中段落的**编辑**表单（v0.1.45）
+
+         ⚠️ 只改我们的阅读视图，**不碰 PDF 源文件**。
+            用户要求原话：「此举没有改变 pdf 源文件，所以当新导入的时候，
+            新文件的阅读视图应该还是当时我们那个最原始的全文本的样子。」
+
+            实现：结果存 localStorage，按 doc.id + 块行号 存放，
+            重新导入同一份 PDF 会被当成一篇新文献，自然回到原始文本。
+
+         ⚠️ 复用的是全站通用的 `.sheet` + `.form-actions` 形态，
+            不新造一套弹层样式（用户明确要求「和我们的表单同一个样式」）。
+         ================================================================== -->
+    <section class="sheet sel-edit-sheet" id="sheet-edit" role="dialog" aria-modal="true"
+        aria-labelledby="sheet-edit-title" hidden>
+        <h2 class="sheet-title title-text" id="sheet-edit-title"
+            data-i18n="reader.editTitle">Edit</h2>
+
+        <!-- 编辑区：多行，可滚动，随内容长高 -->
+        <textarea class="sel-edit-input" id="sheet-edit-input" rows="8"
+            spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+
+        <div class="form-actions">
+            <button class="btn" type="button" id="sheet-edit-cancel"
+                data-i18n="action.cancel">Cancel</button>
+            <button class="btn btn-primary" type="button" id="sheet-edit-confirm"
+                data-i18n="action.confirm">Confirm</button>
+        </div>
+    </section>
+
+    <!-- ==================================================================
+         阅读页 · 选中段落的**标注**表单（v0.1.45）
+
+         ⚠️ 标注的作用是「让目录能看见这些段落」——
+            用户要求原话：「标签一旦存在，此时我们的悬浮菜单的目录选项中
+            点开应该就能看见这些才对。当然，这个也是弹出表单，
+            确认后这个标注行为的结果才会被使用。」
+
+         所以这里是一张**单选列表**，点一项即选中，按确认才落库。
+         ⚠️ 单选而不是点击即生效 —— 用户明确要求"弹出表单，确认后才使用"。
+         ================================================================== -->
+    <section class="sheet sel-label-sheet" id="sheet-label" role="dialog" aria-modal="true"
+        aria-labelledby="sheet-label-title" hidden>
+        <h2 class="sheet-title title-text" id="sheet-label-title"
+            data-i18n="reader.labelTitle">Label</h2>
+
+        <!-- 选项由 reader.js 的 mountLabelSheet() 动态生成 -->
+        <ul class="sel-label-list" id="sheet-label-list" role="radiogroup"></ul>
+
+        <div class="form-actions">
+            <button class="btn" type="button" id="sheet-label-cancel"
+                data-i18n="action.cancel">Cancel</button>
+            <button class="btn btn-primary" type="button" id="sheet-label-confirm"
+                data-i18n="action.confirm">Confirm</button>
+        </div>
+    </section>
+
     <!--
       隐藏的文件输入。点「+」时用 JS 触发它的 click，
       从而走到原生的 WebChromeClient.onShowFileChooser 弹出系统文件选择器。
