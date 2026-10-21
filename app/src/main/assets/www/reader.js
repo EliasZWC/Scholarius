@@ -244,6 +244,42 @@
     var edits = {};
     var labels = {};
 
+    /**
+     * ══ 文档模型（v0.1.57）══
+     *
+     * 用户要求原话：
+     *   「直接把 pdf 转完的文本保存一份就好了，
+     *     然后我们的操作都在这个保存的文本上直接操作就行」
+     *
+     * ══ ⚠️⚠️ 为什么需要它 ══
+     *
+     * v0.1.45~56 一直在做"从 DOM 反推区间"：
+     *   · 选中几个字 → 遍历 DOM 找 `[data-line]` → 算在块文本里的偏移；
+     *   · 标注把一段拆成 [前残片][标注段][后残片] 之后，
+     *     残片没有真实的块身份，偏移就全乱了；
+     *   · 于是不断打补丁（虚拟行号、残片表、跳过标签文字…），
+     *     每个补丁都带来新的边界 bug。
+     *
+     * ✅ 现在改成**以数据为准**：
+     *
+     *   docModel = {
+     *     blocks: [{ line, page, text }]   ← PDF 转换后的原始文本，只读
+     *   }
+     *
+     *   · `edits`  存**编辑后的整块文本**（`{line: 新文本}`）
+     *   · `labels` 存**在该块文本上的字符区间**（`{line: [{start,end,label}]}`）
+     *
+     *   两者都以 `blocks[i].text` 为坐标系，与 DOM 结构**完全无关**。
+     *   DOM 只是模型的一个**投影** —— 渲染怎么拆段落、插不插标签段，
+     *   都不影响"这一段现在的文本是什么、哪个区间被标注了"。
+     *
+     * ⚠️ 这样 `blockTextOf(line)` 就是唯一的事实来源：
+     *    `edits[line]` 存在就返回它，否则返回 `blocks[i].text`。
+     *    残片不再需要虚拟行号 —— 它们只是渲染产物，操作时用的是
+     *    "这个块的完整文本"，与用户看到的残片可以不同。
+     */
+    var docModel = { blocks: [] };
+
     /** 当前文献的存储键前缀（`open()` 时按 doc.id 生成） */
     var docStoreKey = '';
 
@@ -1833,15 +1869,134 @@
         return clean;
     }
 
-    /** 取某个块的**当前显示文本**（已应用过编辑） */
+    /**
+     * 取某个块的**当前文本**（已应用过编辑）。
+     *
+     * ══ ⚠️ 唯一的事实来源（v0.1.57）══
+     *
+     * 编辑和标注都以"块的完整文本"为坐标系，与 DOM 怎么切段落无关 ——
+     * 见 docModel 的说明。
+     *
+     * ⚠️ 顺序很重要：
+     *   ① `edits[line]` —— 用户编辑过的版本优先；
+     *   ② `docModel.blocks` 里的原文 —— PDF 转换的原始文本；
+     *   ③ 兜底 `lastBlocks`（老数据 / 未走 setText 的路径）。
+     *
+     * ⚠️ 绝不能返回 DOM 里的 `textContent` ——
+     *    标注后的块在 DOM 里可能被拆成多段、还带着标签文字，
+     *    拿它当"原文"会让区间偏移全错。
+     */
     function blockTextOf(line) {
         if (edits[line] != null) return edits[line];
-        if (!lastBlocks) return '';
-        for (var i = 0; i < lastBlocks.length; i++) {
-            if (lastBlocks[i].line === line) return lastBlocks[i].text || '';
+
+        var key = String(line);
+
+        var list = docModel.blocks || [];
+        for (var i = 0; i < list.length; i++) {
+            if (String(list[i].line) === key) return list[i].text || '';
+        }
+
+        if (lastBlocks) {
+            for (var j = 0; j < lastBlocks.length; j++) {
+                if (String(lastBlocks[j].line) === key) {
+                    return lastBlocks[j].text || '';
+                }
+            }
         }
         return '';
     }
+
+    /**
+     * 求一个文本节点在「它所属的块文本」里的起始偏移（v0.1.57 重写）。
+     *
+     * ══ ⚠️⚠️ 为什么这次能简单 ══
+     *
+     * 因为 `data-line` 现在被**同一块的所有分段共用**（见 makeContentEl）：
+     * 一个块被标注拆成三个 `<p>` 时，三段的 `data-line` 都是 `20`。
+     *
+     * 所以求偏移只需要两步：
+     *   ① 找到该节点所在的 `<p>`，读它的 `data-line`；
+     *   ② 按 DOM 顺序累加"同一 line 的段"中、位于它之前的文字长度。
+     *
+     * ⚠️ 不再需要"向前找兄弟""判断残片归属"这类推断 ——
+     *    那套逻辑正是 v0.1.56 引入 bug 的地方。
+     *
+     * ⚠️ 必须跳过 `.reader-label-head`（标签段「文章标题」）：
+     *    它不是块的正文内容，算进偏移会让区间整体后移。
+     *    标签段**不带** `data-line`，所以按 line 过滤天然排除；
+     *    但同一行里如果有标签段混在中间，还是显式判断一下更稳。
+     *
+     * @return {Object|null} `{ line, offset }`
+     */
+    function nodeOriginInBlock(node) {
+        if (!node || !contentEl) return null;
+
+        var host = (node.nodeType === 1) ? node : node.parentNode;
+        if (!host) return null;
+
+        /* ① 找该节点所属的、带 data-line 的段 */
+        var seg = host;
+        while (seg && seg !== contentEl) {
+            if (seg.getAttribute && seg.getAttribute('data-line') != null) break;
+            seg = seg.parentNode;
+        }
+        if (!seg || seg === contentEl) return null;
+
+        var lineKey = seg.getAttribute('data-line');
+        var line = parseInt(lineKey, 10);
+        if (!isFinite(line)) return null;
+
+        /*
+          ② 收集同一块的**所有分段**（DOM 顺序）。
+             ⚠️ 用属性字符串比较，不用 parseInt —— 行号可能是
+                 `0`，`parseInt` 没问题，但统一用字符串更直接。
+        */
+        var all = contentEl.querySelectorAll('[data-line]');
+        var segs = [];
+        for (var i = 0; i < all.length; i++) {
+            if (all[i].getAttribute('data-line') === lineKey) segs.push(all[i]);
+        }
+        if (!segs.length) return null;
+
+        /*
+          ③ 累加：从该块第一段开始，到目标节点之前的所有正文文字。
+        */
+        var total = 0;
+
+        for (var s = 0; s < segs.length; s++) {
+            var p = segs[s];
+
+            /*
+              ⚠️ 标签段（.reader-label-head）不参与偏移 ——
+                 它是界面文字。虽然正常不带 data-line，
+                 这里再判一次是防御。
+            */
+            if (p.classList && p.classList.contains('reader-label-head')) continue;
+
+            if (p === seg || p.contains(node)) {
+                /*
+                  目标在这一段里 → 加上"段内、节点之前"的部分。
+                  ⚠️ 用 Range 求，天然处理嵌套的 span（标注段里
+                     不会有子元素，但残片可能被浏览器拆分文本节点）。
+                */
+                try {
+                    var r = document.createRange();
+                    r.setStart(p, 0);
+                    r.setEnd(node, 0);
+                    total += String(r).length;
+                } catch (e) {
+                    /* 兜底：按纯文本长度算到段首 */
+                    total += 0;
+                }
+                return { line: line, offset: total };
+            }
+
+            total += (p.textContent || '').length;
+        }
+
+        return null;
+    }
+
 
     /**
      * 取当前选区的**精确文本**（用户实际选中的那几个字）。
@@ -2017,6 +2172,54 @@
         var range = sel.getRangeAt(0);
         var lines = blockLinesInSelection();
 
+        /*
+          ══ ⚠️⚠️ 先尝试**按"原块"归并**选区端点（v0.1.56）══
+
+          标注会把一个原块拆成多个 `<p>`。用户选中残片里的文字时，
+          `blockLinesInSelection` 可能返回 1 个行号（因为同属一行），
+          但端点所在的那一段未必带 `data-line`。
+
+          ✅ 所以先分别求两个端点"属于哪个原块、在原块文本里的偏移"，
+             两者行号相同 → 就是单块区间，**哪怕它们分处两个分段**。
+        */
+        var startPt = nodeOriginInBlock(range.startContainer);
+        var endPt = nodeOriginInBlock(range.endContainer);
+
+        if (startPt && endPt && startPt.line === endPt.line) {
+            var a0 = Math.min(startPt.offset, endPt.offset);
+            var b0 = Math.max(startPt.offset, endPt.offset);
+
+            /*
+              ⚠️ 端点落在文本节点中间时要带上节点内偏移 ——
+                 `nodeOriginInBlock` 给的是"节点起点"的位置，
+                 不含 `range.startOffset`。
+              ⚠️ 必须把**起点/终点各自的** offset 加回对应的那一端，
+                 不能简单加 min/max 的那个。
+            */
+            if (range.startContainer.nodeType === 3) {
+                if (startPt.offset <= endPt.offset) a0 += range.startOffset;
+                else b0 += range.startOffset;
+            }
+            if (range.endContainer.nodeType === 3) {
+                if (endPt.offset >= startPt.offset) b0 += range.endOffset;
+                else a0 += range.endOffset;
+            }
+
+            if (b0 < a0) { var sw = a0; a0 = b0; b0 = sw; }
+
+            var full = blockTextOf(startPt.line);
+            var ca = Math.max(0, Math.min(a0, full.length));
+            var cb = Math.max(0, Math.min(b0, full.length));
+
+            return {
+                single: true,
+                line: startPt.line,
+                start: ca,
+                end: cb,
+                text: full.slice(ca, cb)
+            };
+        }
+
         if (lines.length !== 1) {
             return { single: false, lines: lines, text: text };
         }
@@ -2076,8 +2279,14 @@
     function blockElOf(line) {
         if (!contentEl) return null;
         var nodes = contentEl.querySelectorAll('[data-line]');
+        var want = String(line);
         for (var i = 0; i < nodes.length; i++) {
-            if (parseInt(nodes[i].getAttribute('data-line'), 10) === line) {
+            /*
+              ⚠️ 按**字符串**比较而不是 parseInt（v0.1.56）——
+                 残片的虚拟行号是 `20.1`，parseInt 会得到 20，
+                 和真正的第 20 块撞车，编辑/标注会落到错误的元素上。
+            */
+            if (nodes[i].getAttribute('data-line') === want) {
                 return nodes[i];
             }
         }
@@ -3014,12 +3223,13 @@
      * @return {DocumentFragment|Element}
      */
     function makeContentEl(b) {
-        var edited = null;
-        if (typeof b.line === 'number' && edits[b.line] != null) {
-            edited = edits[b.line];
-        }
+        /*
+          ⚠️ 文本一律从 `blockTextOf()` 取（v0.1.57）——
+             它按 `edits` → `docModel` 的顺序返回"这一块现在的文本"，
+             是唯一的事实来源。不要在这里再手写 `edits[b.line]` 分支。
+        */
+        var fullText = blockTextOf(b.line);
 
-        var fullText = (edited != null) ? edited : (b.text || '');
         var spans = (typeof b.line === 'number') ? labels[b.line] : null;
         var sp = (spans && spans.length === 1) ? spans[0] : null;
 
@@ -3047,39 +3257,63 @@
         var after = fullText.slice(bb);
 
         /*
-          ⚠️ 标注段要先造出来 —— 两个分支（整块 / 部分）都要用它。
-             踩过的坑：原来只在"整块"分支里 `var single = ...`，
-             "部分"分支里 `single` 是 undefined，
-             导致 appendChild 抛 TypeError，**整个正文渲染中断**（白屏）。
+          ══ ⚠️⚠️ 残片是**独立的普通正文段**（v0.1.56）══
+
+          用户要求：
+            「那就是如果同一段某一截被标注了，其他的就剩下作为文本
+              分成正文段就好了。」
+
+          ⚠️⚠️ 必须理解为什么残片也需要自己的 `data-line`：
+
+          编辑和标注都靠 `blockLinesInSelection()` → 找 `[data-line]` 元素，
+          再按 `blockElOf(line)` + `blockTextOf(line)` 取"整块原文"。
+
+          如果残片不带 `data-line`：
+            · 选中残片里的字 → `blockLinesInSelection()` 返回空 →
+              `selectionSpan()` 返回 null → 编辑表单打开但编辑区是空的。
+              这正是用户报的 bug：
+              「我选中 ashish 的时候，点击编辑，编辑区域却什么也没有」
+
+          ✅ 所以残片要像普通段落一样带 `data-line`。
+             但它的文本**不是**原始块全文，只是切出来的那一段 ——
+             所以要在 `edits`/`labels` 之外再维护一份"残片文本",
+             否则 `blockTextOf()` 会返回整块原文，区间又会错位。
+
+          ══ ✅ 现在：残片与标注段**共用同一个 `data-line`**（v0.1.57）══
+
+          因为文本的事实来源是 `blockTextOf(line)` = 这一块的**完整文本**，
+          与 DOM 被切成几段无关。所以：
+            · 三个 `<p>` 都写同一个 `data-line`；
+            · 用户选中残片里的字，偏移是相对**整块文本**算的；
+            · 编辑/标注直接作用在整块文本的区间上，永远对得上。
         */
+
+        /* 整块被标注 → 不必拆节点 */
+        if (!before && !after) {
+            var whole = document.createElement('p');
+            whole.className = 'reader-para is-labeled-body';
+            whole.setAttribute('data-label', sp.label);
+            whole.textContent = body;
+            copyBlockAttrs(whole, null, b);
+            return whole;
+        }
+
+        var frag = document.createDocumentFragment();
+
+        if (before) {
+            frag.appendChild(makePlainPara(before, b));
+        }
+
         var marked = document.createElement('p');
         marked.className = 'reader-para is-labeled-body';
         marked.setAttribute('data-label', sp.label);
         marked.textContent = body;
-        if (typeof b.line === 'number' && b.line >= 0) {
-            marked.setAttribute('data-line', String(b.line));
-        }
-
-        /*
-          区间正好覆盖整块 → 不必拆节点，省一层 DOM。
-        */
-        if (!before && !after) {
-            if (b.page) marked.setAttribute('data-page', String(b.page));
-            return marked;
-        }
-
-        /*
-          ⚠️ 部分标注 → 拆成 [前残片][标注段][后残片]。
-            残片是普通段落，**不带** data-label，所以不会被套上标题字号。
-            ⚠️ 只有标注段带 `data-line`（它是"这一行里的核心"）——
-                 残片也带上会让 blockElOf / 目录跳转定位到残片上。
-                 但残片仍需要能被选中/编辑，所以文字是真实文本节点。
-        */
-        var frag = document.createDocumentFragment();
-
-        if (before) frag.appendChild(makePlainPara(before, null));
+        copyBlockAttrs(marked, null, b);
         frag.appendChild(marked);
-        if (after) frag.appendChild(makePlainPara(after, null));
+
+        if (after) {
+            frag.appendChild(makePlainPara(after, b));
+        }
 
         return frag;
     }
@@ -3508,9 +3742,32 @@
         if (blocks && blocks.length) {
             lastBlocks = blocks;
             lastText = '';
+
+            /*
+              ══ 建立文档模型（v0.1.57）══
+
+              ⚠️ 这是**唯一**的文本事实来源。`edits` / `labels` 都以这里的
+                 `blocks[i].text` 为坐标系，与 DOM 怎么渲染完全无关。
+
+              ⚠️ 必须存一份**副本** —— 调用方（原生桥）传进来的数组
+                 可能是同一份引用，后续被复用时会串数据。
+            */
+            docModel.blocks = blocks.map(function (b) {
+                return {
+                    line: b.line,
+                    page: b.page,
+                    text: b.text || ''
+                };
+            });
         } else {
             lastBlocks = null;
             lastText = text;
+
+            /*
+              ⚠️ 没有块数据（老文献）→ 退回"整篇一个块"，
+                 这样编辑/标注仍然可用（按整篇文本做区间）。
+            */
+            docModel.blocks = [{ line: 0, page: null, text: text || '' }];
         }
 
         if (blocks && blocks.length) {
