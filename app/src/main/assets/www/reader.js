@@ -314,12 +314,35 @@
      */
     function labelSplitsPerBlock(key) {
         /*
-          ⚠️ 只有参考文献需要拆。引用标记通常就在一段正文里
-             （`[12]` 这种），它应该保持行内小标记，
-             和周围正文融为一体，不能拆成独立区域。
+          ⚠️ 参考文献与作者信息都要拆成独立区域（v0.1.72）。
+
+          用户要求：
+            「关于通过段自动识别，我希望作者信息也这么样，
+              可以通过段来自动分别成不同的作者信息区域。」
+
+          理由：一条文献、一位作者都是一个独立条目；
+          合并成一个大区域会丢失它们的个体身份，
+          也无法给每条单独编号。
+
+          ⚠️ 引用标记（`cite`）**不拆** —— 它是行内小标记，
+             夹在句子中间，拆段会把句子劈开。
         */
-        return key === 'reference';
+        return key === 'reference' || key === 'author';
     }
+
+    /**
+     * 各类区域编号的前缀（v0.1.72）。
+     *
+     * 用户要求：
+     *   「为了区别正文段编号，参考文献区域段编号加个 R 前缀，
+     *     然后作者加个 A 前缀，前缀后面是数字编号。」
+     *
+     * ⚠️ 正文段没有前缀 —— 它是最常见的一类，加上前缀反而乱。
+     */
+    var LABEL_NO_PREFIX = {
+        reference: 'R',
+        author: 'A'
+    };
 
     /**
      * 取文案，可选做 `{name}` 插值。
@@ -3506,16 +3529,31 @@
         var bodyIndex = { n: 0 };
 
         /*
-          ══ 文献编号计数器（v0.1.71）══
+          ══ 分类编号计数器（v0.1.72）══
 
           用户要求：
-            「生成的文献区域就和正文段的编号一样，也要给文献进行编号。」
+            「为了区别正文段编号，参考文献区域段编号加个 R 前缀，
+              然后作者加个 A 前缀，前缀后面是数字编号。」
 
-          ⚠️ 必须与 `bodyIndex` **分开**：
-             如果共用，正文编号会因为中间夹了参考文献而断档
-             （用户要求正文编号“连续，从全文第一个到最后一个”）。
+          ⚠️ 每类**各算各的**：
+             正文 1,2,3…、文献 R1,R2,R3…、作者 A1,A2,A3…
+             不能共用一个计数器，否则 R 编号会出现 1、5、9 这种跳号。
         */
         var refIndex = { n: 0 };
+        var authorIndex = { n: 0 };
+
+        /**
+         * 给一个区域挂编号（带类型前缀）。
+         *
+         * ⚠️ 正文段不走这里 —— 它没有前缀，由 `bodyIndex` 直接处理。
+         */
+        function markTyped(el, labelKey) {
+            var prefix = LABEL_NO_PREFIX[labelKey];
+            if (!prefix) return;
+            var counter = (labelKey === 'reference') ? refIndex : authorIndex;
+            counter.n++;
+            attachBodyMarker(el, prefix + counter.n);
+        }
 
         /*
           ══ ⚠️⚠️ 跳过已变空的块（v0.1.66）══
@@ -3600,14 +3638,14 @@
               ⚠️ 传入计数器对象（而不是数字）—— 它要被就地递增，
                  数字是按值传递的，传出去改了外面看不到。
             */
-            appendLabeledRun(frag, run, bodyIndex, refIndex);
+            appendLabeledRun(frag, run, bodyIndex, refIndex, authorIndex, markTyped);
         }
 
         contentEl.appendChild(frag);
     }
 
     /**
-     * 给一个**正文段**挂上编号 + 左侧提示条（v0.1.57 / v0.1.68 重做）。
+     * 给一个段落挂上编号 + 左侧提示条（v0.1.57 / v0.1.68 重做）。
      *
      * 用户要求：
      *   「正文段计数，左边加提示条和正文段编号。编号在提示条左边。」
@@ -3640,6 +3678,8 @@
      *
      * ⚠️ 竖线要插在**编号之后、正文之前**，所以只能 `prepend` 到
      *    段落里（此时段落里只有文本节点）。
+     *
+     * @param {string|number} no 编号，可以是 `12` 或带前缀的 `R3` / `A2`
      */
     function attachBodyMarker(el, no) {
         el.classList.add('is-body-para');
@@ -3700,25 +3740,24 @@
      * ⚠️ 标签段取区域内**第一个块**的标签名。同一区域内所有块的
      *    标签签名相同（见 labelSignatureOf），所以取哪个都一样。
      */
-    function appendLabeledRun(frag, run, bodyIndex, refIndex) {
+    function appendLabeledRun(frag, run, bodyIndex, refIndex, authorIndex, markTyped) {
         var firstLine = run.blocks[0].line;
         var spans = labels[firstLine] || [];
 
         /*
-          ══ ⚠️⚠️ 参考文献：**每块各自一个区域**（v0.1.71）══
+          ══ ⚠️⚠️ 文献 / 作者：**每块各自一个区域**（v0.1.71 / v0.1.72）══
 
           用户要求：
             「当选中文本跨段时，每个段自动作为一个文献项
-              从而得到多个文献区域，而不是整合成一个大的文献区域。
-              对于选中的文献区域内的内容，采用 times new roman 字体，
-              虽然不改变字重和字号（同正文），但字体颜色改成淡一点的颜色。
-              然后生成的文献区域就和正文段的编号一样，也要给文献进行编号。」
+              从而得到多个文献区域，而不是整合成一个大的文献区域。」
+            「我希望作者信息也这么样，可以通过段来自动分别成
+              不同的作者信息区域。」
 
-          ✅ 所以参考文献直接走“逐块独立”分支，
+          ✅ 所以这两类标签直接走"逐块独立"分支，
              每块一个 `.reader-label-head` + 一个编号。
 
-          ⚠️ 不在 `makeLabeledBlock` 里做，那个函数是“一块多标签”的兜底，
-             它生成的是“标签段 + 内容段”的复合结构，语义不同。
+          ⚠️ 不在 `makeLabeledBlock` 里做，那个函数是"一块多标签"的兜底，
+             它生成的是"标签段 + 内容段"的复合结构，语义不同。
         */
         var splitKey = spans[0] ? spans[0].label : null;
         if (splitKey && labelSplitsPerBlock(splitKey)) {
@@ -3731,7 +3770,7 @@
                 h2.textContent = t('reader.label.' + splitKey);
                 frag.appendChild(h2);
 
-                var el2 = makeContentEl(rb, bodyIndex, refIndex);
+                var el2 = makeContentEl(rb, bodyIndex, refIndex, authorIndex, markTyped);
                 frag.appendChild(el2);
             }
             return;
@@ -3747,7 +3786,7 @@
         if (hasMultiple) {
             for (var m = 0; m < run.blocks.length; m++) {
                 var sub = makeLabeledBlock(run.blocks[m], null,
-                    labels[run.blocks[m].line], bodyIndex, refIndex);
+                    labels[run.blocks[m].line], bodyIndex, refIndex, authorIndex, markTyped);
                 if (sub) frag.appendChild(sub);
             }
             return;
@@ -3808,7 +3847,7 @@
         /* ② 内容段：区域内所有块，一块一个 `<p>` */
         for (var i = 0; i < run.blocks.length; i++) {
             var b = run.blocks[i];
-            var el = makeContentEl(b, bodyIndex, refIndex);
+            var el = makeContentEl(b, bodyIndex, refIndex, authorIndex, markTyped);
 
             /*
               ⚠️ 区域内只有**第一块**带 `data-line` 吗？
@@ -3845,7 +3884,7 @@
      *
      * @return {DocumentFragment|Element}
      */
-    function makeContentEl(b, bodyIndex, refIndex) {
+    function makeContentEl(b, bodyIndex, refIndex, authorIndex, markTyped) {
         /*
           ⚠️ 文本一律从 `blockTextOf()` 取（v0.1.57）——
              它按 `edits` → `docModel` 的顺序返回"这一块现在的文本"，
@@ -3972,23 +4011,21 @@
             copyBlockAttrs(whole, null, b);
 
             /*
-              ══ ⚠️⚠️ 参考文献也要编号（v0.1.71）══
+              ══ ⚠️⚠️ 文献 / 作者区域带前缀编号（v0.1.72）══
 
               用户要求：
-                「生成的文献区域就和正文段的编号一样，也要给文献进行编号。」
+                「为了区别正文段编号，参考文献区域段编号加个 R 前缀，
+                  然后作者加个 A 前缀，前缀后面是数字编号。」
 
               ✅ 用同一个 `attachBodyMarker` ——
                  编号样式、竖排、竖线、首行对齐全部复用，
-                 不另起一套视觉。
+                 不另起一套视觉，只是编号字符串变成 `R1` / `A1`。
 
-              ⚠️ 但它**不是正文段**：不能参与 `bodyIndex` 递增，
+              ⚠️ 它们**不是正文段**：不参与 `bodyIndex` 递增，
                  否则正文编号会出现断档。
-                 所以单独用一条计数器 `refIndex`。
+                 前缀与计数器都由 `markTyped()` 统一处理。
             */
-            if (sp.label === 'reference') {
-                refIndex.n++;
-                attachBodyMarker(whole, refIndex.n);
-            }
+            if (markTyped) markTyped(whole, sp.label);
 
             return whole;
         }
@@ -4149,7 +4186,7 @@
      *
      * ⚠️ 未标注的部分仍按普通段落渲染，保持原样（v0.1.39 的"无等级"）。
      */
-    function makeLabeledBlock(b, baseEl, spans, bodyIndex, refIndex) {
+    function makeLabeledBlock(b, baseEl, spans, bodyIndex, refIndex, authorIndex, markTyped) {
         var frag = document.createDocumentFragment();
 
         /*

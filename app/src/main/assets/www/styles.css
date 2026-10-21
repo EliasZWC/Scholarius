@@ -1813,7 +1813,8 @@ body {
      但**不加粗** —— 那是 `.is-labeled-body[data-label=h1/h2/h3/title]`
      的规则，不要混进来。
 */
-.reader-para.is-labeled-body[data-label="reference"] {
+.reader-para.is-labeled-body[data-label="reference"],
+.reader-para.is-labeled-body[data-label="author"] {
     font-family: "Times New Roman", Times, serif;
     color: var(--on-surface-variant);
 }
