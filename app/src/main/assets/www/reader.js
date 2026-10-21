@@ -4194,9 +4194,19 @@
                 第一行  `.toc-label-kind`  —— 标签种类，淡色小字
                 第二行  `.toc-label-text`  —— 标注的内容，正常大小
 
-              ⚠️ 去掉了 v0.1.47 的 `.is-labeled`（左侧彩色竖线）——
-                 用户明确说「目录中左边怎么还有颜色标记？这个要去掉」。
-                 两行结构本身已经足够区分来源，不需要颜色。
+              ══ ⚠️⚠️ 但只有**标题类**标签才显示第二行（v0.1.51）══
+
+              用户要求原话：
+                「目录中，只有文章标题、一级标题、二级标题、三级标题
+                  显示标签内容，其他只显示标签」
+
+              理由：标题类标签的内容本身就是一句短标题，看目录时有用；
+              而「作者信息 / 摘要 / 参考文献」的内容往往是整段话，
+              塞进目录既占地方又没有阅读价值 —— 只需要知道
+              "这里是作者信息"就够了。
+
+              ⚠️ 判定用 `labelShowsContent()`，与阅读视图的渲染**无关** ——
+                 正文里那些区域仍然照常显示全部内容。
             */
             if (entry.labeled) {
                 btn.classList.add('is-labeled-entry');
@@ -4206,10 +4216,12 @@
                 kind.textContent = entry.labelKind || '';
                 btn.appendChild(kind);
 
-                var text = document.createElement('span');
-                text.className = 'toc-label-text';
-                text.textContent = entry.title;
-                btn.appendChild(text);
+                if (labelShowsContent(entry.label)) {
+                    var text = document.createElement('span');
+                    text.className = 'toc-label-text';
+                    text.textContent = entry.title;
+                    btn.appendChild(text);
+                }
             } else {
                 /*
                   ⚠️ 自动识别的条目保持单行纯文本 —— 它们没有"种类"，
@@ -4304,6 +4316,13 @@
                     level: labelLevel(sp.label),
                     title: tocTitleFrom(slice, sp.label),
                     /*
+                      ⚠️ 原始标签键（title/h1/author/…），供
+                         labelShowsContent() 判断要不要显示第二行（v0.1.51）。
+                         `labelKind` 是**译文**，不能拿来判断 ——
+                         它随语言变。
+                    */
+                    label: sp.label,
+                    /*
                       ⚠️ 标签种类（中文/英文的标签名），供目录两行结构的
                          第一行用（v0.1.48）。与阅读视图里标签段的
                          文字完全相同 —— 用户要求"二者一看就能呼应"。
@@ -4370,6 +4389,28 @@
         var prevSig = labelSignatureOf(prev);
 
         return !!curSig && curSig === prevSig && curSig === label;
+    }
+
+    /**
+     * 这个标签在目录里是否要显示**内容**（第二行，v0.1.51）。
+     *
+     * ══ 用户要求（原话）══
+     *
+     *   「目录中，只有文章标题、一级标题、二级标题、三级标题
+     *     显示标签内容，其他只显示标签」
+     *
+     * 理由：
+     *   · 标题类标签的内容本身就是一句短标题，看目录时有用；
+     *   · 「作者信息 / 摘要 / 参考文献」的内容往往是整段话，
+     *     塞进目录既占地方又没有阅读价值 ——
+     *     只需要知道"这里是作者信息"就够了。
+     *
+     * ⚠️ 只影响**目录**，不影响阅读视图 —— 正文里这些区域
+     *    仍然照常显示全部内容（用户没有要求改正文）。
+     */
+    function labelShowsContent(key) {
+        return key === 'title' || key === 'h1' ||
+            key === 'h2' || key === 'h3';
     }
 
     /**

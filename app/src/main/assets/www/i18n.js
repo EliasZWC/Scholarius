@@ -195,8 +195,8 @@
             'reader.noBridge': 'Original Page Is Unavailable In This Preview.',
 
             // 底部选项栏
-            'reader.toc': 'Contents',
-            'reader.tocLabel': 'Content',
+            'reader.toc': 'Catalogue',
+            'reader.tocLabel': 'Catalogue',
             'reader.settings': 'Reader Setting',
             'reader.settingsLabel': 'Setting',
             'reader.tocEmpty': 'No Headings Found In This Document.',
@@ -503,7 +503,8 @@
             'reader.noBridge': '预览环境无法显示原始版面。',
 
             // 底部选项栏
-            'reader.toc': '目录',            'reader.tocLabel': '目录',
+            'reader.toc': '目录',
+            'reader.tocLabel': '目录',
             'reader.settings': '阅读设置',
             'reader.settingsLabel': '设置',
             'reader.tocEmpty': '未能从本文中识别出标题。',
