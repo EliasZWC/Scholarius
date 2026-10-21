@@ -1839,6 +1839,153 @@
     }
 
     /**
+     * 取当前选区的**精确文本**（用户实际选中的那几个字）。
+     *
+     * ⚠️ 这是编辑对象，**不是**整段。
+     *
+     * ══ ⚠️⚠️ 为什么不能用整段（v0.1.46 修）══
+     *
+     * 用户实测反馈：
+     *   「编辑区域的内容和我选中的内容不一样，比如我只选中了一个词，
+     *     但出现了整个句子。这是范围出错了。」
+     *
+     * 我的原设计是"编辑的粒度是段落"，理由是正文本来就是一段一个 `<p>`。
+     * 但用户的行为是**只选一个词就想改那个词** —— 给他整段，
+     * 就等于强行把他的注意力扩大到一个他不想碰的范围，
+     * 而且确认后整段都会被替换（连他没选的部分也一起改掉）。
+     *
+     * ⚠️ 这不只是"显示不对"，是**会破坏数据**：
+     *    用户只想改 "polosukhin"，却把整段邮箱地址都替换成了新内容。
+     *
+     * ✅ 现在：编辑区只放选中的文字，确认后只替换选中那一段区间。
+     */
+    function selectedTextExact() {
+        try {
+            var s = global.getSelection();
+            if (!s || !s.rangeCount) return '';
+            return String(s);
+        } catch (e) {
+            return '';
+        }
+    }
+
+    /**
+     * 取选区的边界信息，用于"精确替换"。
+     *
+     * @return {Object|null} 形如：
+     *   {
+     *     single: true,          // 是否落在同一个块内
+     *     line: 6,               // single 时的块行号
+     *     start: 5, end: 9,      // single 时在该**块文本**里的字符区间
+     *     text: '.pol'           // 选中的原文
+     *   }
+     *   跨块时返回 `{ single:false, lines:[...], text }`。
+     */
+    function selectionSpan() {
+        var text = selectedTextExact();
+        if (!text) return null;
+
+        if (!contentEl) return null;
+
+        var sel = null;
+        try {
+            sel = global.getSelection();
+        } catch (e) { return null; }
+        if (!sel || !sel.rangeCount) return null;
+
+        var range = sel.getRangeAt(0);
+        var lines = blockLinesInSelection();
+
+        if (lines.length !== 1) {
+            return { single: false, lines: lines, text: text };
+        }
+
+        var line = lines[0];
+        var el = blockElOf(line);
+        if (!el) return { single: false, lines: lines, text: text };
+
+        /*
+          ══ 算选区在该块**纯文本**里的字符偏移 ══
+
+          ⚠️ 不能用 `range.startOffset` —— 那个偏移是相对**文本节点**的，
+             而一个块可能被拆成多个文本节点？目前不会（`textContent` 写入，
+             只有一个文本节点），但为了稳妥，用 Range 的
+             `setEnd(块的首个文本节点, ...)` 方式反推更可靠。
+
+          ✅ 做法：造一个从「块首」到「选区起点」的 Range，它的
+             `toString().length` 就是起点偏移。终点同理。
+             这对多文本节点的块也成立。
+        */
+        var tn = firstTextNode(el);
+        if (!tn) return { single: false, lines: lines, text: text };
+
+        var startOff = offsetWithin(el, tn, range.startContainer, range.startOffset);
+        var endOff = offsetWithin(el, tn, range.endContainer, range.endOffset);
+
+        if (startOff < 0 || endOff < 0) {
+            return { single: false, lines: lines, text: text };
+        }
+
+        if (startOff > endOff) {
+            var tmp = startOff; startOff = endOff; endOff = tmp;
+        }
+
+        return {
+            single: true,
+            line: line,
+            start: startOff,
+            end: endOff,
+            text: text
+        };
+    }
+
+    /** 找某个行号对应的块元素 */
+    function blockElOf(line) {
+        if (!contentEl) return null;
+        var nodes = contentEl.querySelectorAll('[data-line]');
+        for (var i = 0; i < nodes.length; i++) {
+            if (parseInt(nodes[i].getAttribute('data-line'), 10) === line) {
+                return nodes[i];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 求「从 el 的首个文本节点开头」到「(node, offset)」的字符距离。
+     *
+     * @return {number} 偏移；node 不在 el 内时返回 -1
+     */
+    function offsetWithin(el, firstTn, node, offset) {
+        if (!node) return -1;
+
+        /*
+          ⚠️ 选区端点可能落在元素上（比如整块被选中时，
+             `startContainer` 是 `<p>` 而不是文本节点），
+             此时按"元素起点"处理。
+        */
+        if (node.nodeType !== 3) {
+            if (!el.contains(node)) return -1;
+            /* 元素端点：用它里面的第一个文本节点 + 0 */
+            var inner = firstTextNode(node);
+            if (inner) { node = inner; offset = 0; }
+            else if (node === el) { node = firstTn; offset = 0; }
+            else return -1;
+        }
+
+        if (!el.contains(node)) return -1;
+
+        try {
+            var r = document.createRange();
+            r.setStart(firstTn, 0);
+            r.setEnd(node, offset);
+            return String(r).length;
+        } catch (e) {
+            return -1;
+        }
+    }
+
+    /**
      * 只重渲染正文，保留滚动位置。
      *
      * ⚠️ 编辑/标注之后必须重渲染整段正文 —— 因为我们改的是数据
@@ -1868,8 +2015,14 @@
 
     var editSheetEl = null;
     var editInputEl = null;
-    /** 本次编辑涉及的块行号 */
-    var editLines = [];
+    /**
+     * 本次编辑的范围（v0.1.46）。
+     *
+     * ⚠️ 从 "editLines（块行号数组）" 改成 "editSpan（精确区间）" ——
+     *    因为编辑的对象是**选中的那几个字**，不是整段。
+     *    结构见 selectionSpan()。
+     */
+    var editSpan = null;
 
     function mountEditSheet() {
         if (editSheetEl) return;
@@ -1895,31 +2048,50 @@
     }
 
     /**
-     * 打开编辑表单，预填选中块的原文。
+     * 打开编辑表单，预填**用户选中的那些字**。
      *
-     * ⚠️ 多段被选中时怎么编辑：
-     *    用户可能横跨几个段落长按。编辑区里放**所有选中块的文本**，
-     *    用换行连接；确认时再按同样的段落结构写回。
-     *    这样跨段编辑和单段编辑是同一条代码路径，不会出现
-     *    "多选时编辑按钮失灵"。
+     * ══ ⚠️⚠️ 只填选中的区间，不填整段（v0.1.46 修）══
+     *
+     * 用户实测反馈：
+     *   「编辑区域的内容和我选中的内容不一样，比如我只选中了一个词，
+     *     但出现了整个句子。这是范围出错了。」
+     *
+     * 旧实现填的是整段文本 —— 这既让用户困惑（我明明只选了一个词），
+     * 又很危险：确认后整段会被替换，用户没选的部分也被一起改掉。
+     *
+     * ✅ 现在：编辑区 = 选区原文；确认后只替换选中的那一段区间。
+     *
+     * ⚠️ 跨块选中时无法用"一个字符区间"表达，退化为整块编辑
+     *    （见 selectionSpan 返回 single:false 的分支）——
+     *    跨段编辑本来就是"重写这几段"，语义上是合理的。
      */
     function openEditSheet() {
         mountEditSheet();
         if (!editSheetEl || !editInputEl) return;
 
-        editLines = blockLinesInSelection();
-        if (!editLines.length) return;
+        var span = selectionSpan();
+        if (!span) return;
 
-        var parts = [];
-        for (var i = 0; i < editLines.length; i++) {
-            parts.push(blockTextOf(editLines[i]));
-        }
+        editSpan = span;
 
         /*
-          ⚠️ 用 textContent / value 赋值，不用 innerHTML ——
+          ⚠️ 用 `value` 赋值，不用 innerHTML ——
              原文里可能有 `<` `>` `&`。
         */
-        editInputEl.value = parts.join('\n\n');
+        if (span.single) {
+            /*
+              ⚠️ 选区端点可能把首尾空白包进来（用户拖过了字）。
+                 保留它 —— 用户看到的就是他拖出来的范围，
+                 擅自 trim 会让"我改的和看到的不一致"。
+            */
+            editInputEl.value = span.text;
+        } else {
+            var parts = [];
+            for (var i = 0; i < span.lines.length; i++) {
+                parts.push(blockTextOf(span.lines[i]));
+            }
+            editInputEl.value = parts.join('\n\n');
+        }
 
         hideSelectBarOnly();
         clearNativeSelection();
@@ -1953,44 +2125,63 @@
     }
 
     /**
-     * 确认编辑：把编辑区内容写回，代替原内容。
+     * 确认编辑：把编辑区内容写回，**只替换选中的那一段区间**。
      *
-     * ⚠️ 单段被选中时，整块内容替换成编辑区文本。
-     * ⚠️ 多段被选中时，按**空行**切分编辑区内容，依次写回各段；
-     *    数量对不上时：
-     *      · 只有 1 段 → 全部内容给这一段的唯一那一段；
-     *      · 多段但切分不出来 → 把整块内容并入**第一段**，其余段清空。
-     *        这样至少不会丢用户输入的内容。
+     * ══ ⚠️⚠️ 精确替换（v0.1.46）══
+     *
+     * 旧实现是"整块替换"：用户只选了一个词，确认后整段都变成了新内容。
+     * 这既不符合"我选中多少就改多少"的直觉，也会**破坏数据** ——
+     * 段落里没被选中的部分被一并抹掉了。
+     *
+     * ✅ 现在按 `editSpan.start / end` 做**字符串拼接**：
+     *
+     *      新块文本 = 原文本[0, start) + 编辑区内容 + 原文本[end, 末尾)
+     *
+     * ⚠️ 边界必须夹在 [0, len] 内 —— 选区是在**编辑前**的 DOM 上量的，
+     *    而这里要拼接的是**当前**文本。如果这一段之前被编辑过，
+     *    两者长度可能不一致（理论上 start/end 是相对当前显示的块量的，
+     *    所以是一致的，但仍有浮点/换行差异风险），夹一下更稳。
      */
     function applyEdit() {
-        if (!editInputEl || !editLines.length) return;
+        if (!editInputEl || !editSpan) return;
 
         var value = editInputEl.value;
 
-        if (editLines.length === 1) {
-            edits[editLines[0]] = value;
+        if (editSpan.single) {
+            var line = editSpan.line;
+            var cur = blockTextOf(line);
+            var len = cur.length;
+
+            var a = Math.max(0, Math.min(editSpan.start, len));
+            var b = Math.max(a, Math.min(editSpan.end, len));
+
+            edits[line] = cur.slice(0, a) + value + cur.slice(b);
+
+            trace('reader:edit', 'line=' + line + ' [' + a + ',' + b + ')');
         } else {
+            /*
+              ⚠️ 跨块：按空行切分写回各段（与原逻辑一致）。
+                 跨段本身就是"重写这几段"，不适用区间替换。
+            */
+            var lines = editSpan.lines;
             var chunks = value.split(/\n{2,}/);
 
-            for (var i = 0; i < editLines.length; i++) {
-                edits[editLines[i]] = (chunks[i] != null) ? chunks[i] : '';
+            for (var i = 0; i < lines.length; i++) {
+                edits[lines[i]] = (chunks[i] != null) ? chunks[i] : '';
             }
 
-            /*
-              ⚠️ 段数少于编辑区段落数时，多出来的内容不能丢 ——
-                 并到最后一个块里。
-            */
-            if (chunks.length > editLines.length) {
-                var last = editLines[editLines.length - 1];
-                edits[last] = chunks.slice(editLines.length - 1).join('\n\n');
+            if (chunks.length > lines.length) {
+                var last = lines[lines.length - 1];
+                edits[last] = chunks.slice(lines.length - 1).join('\n\n');
             }
+
+            trace('reader:edit', 'multi lines=' + lines.join(','));
         }
 
         saveEdits();
         closeEditSheet();
         clearSelection();
         rerenderKeepingScroll();
-        trace('reader:edit', 'lines=' + editLines.join(','));
     }
 
     // --- 标注表单 -----------------------------------------------------------
@@ -4003,6 +4194,35 @@
         getBlocks: function () {
             return lastBlocks ? lastBlocks.slice() : null;
         },
+        /**
+         * 编辑 / 标注的当前状态（供真机排查用，v0.1.46）。
+         *
+         * ⚠️ 加这个是因为：编辑"确认后没变化"这类问题在模拟器上
+         *    复现不出来（CDP 绕过 WebView 原生选择器），只能靠真机上
+         *    一行 JS 把链路各环节的值打出来 ——
+         *    是没取到选区、没落库、还是落库了但渲染没读到。
+         *
+         * 用法（真机连 adb 后）：
+         *   chrome://inspect 或 `python tools/emu_js.py "return JSON.stringify(window.ScholariusReader.dumpEdits())"`
+         */
+        dumpEdits: function () {
+            return {
+                /* 存储键前缀，空串说明 open() 没跑到 loadAnnotations */
+                docStoreKey: docStoreKey,
+                /* 已经落库的编辑 / 标注 */
+                edits: edits,
+                labels: labels,
+                /* localStorage 里的原始值（用来区分"没存"和"存了但没读"） */
+                rawEdits: readStore('scholarius.edits.' + docStoreKey, null),
+                rawLabels: readStore('scholarius.labels.' + docStoreKey, null),
+                /* 当前 DOM 里实际渲染出的块数与第一个块的行号 */
+                domBlocks: contentEl
+                    ? contentEl.querySelectorAll('[data-line]').length
+                    : 0,
+                /* 当前选区（真机上编辑前应为用户选中的那几个字） */
+                selection: selectedTextExact()
+            };
+        },
         /** 当前设置（供测试用） */
         getSettings: function () {
             return { size: getSize(), color: getColor(), font: getFont() };
@@ -4024,8 +4244,7 @@
             }
         },
         /** 系统返回键用：选项表单 → 目录 → 面板 → 菜单 → 关阅读页，逐层退 */
-        handleBack: function () {
-            if (!isOpen()) {
+        handleBack: function () {            if (!isOpen()) {
                 return false;
             }
             /*
