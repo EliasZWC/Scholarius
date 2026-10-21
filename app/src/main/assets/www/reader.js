@@ -373,6 +373,47 @@
         } catch (e) { /* 忽略 */ }
     }
 
+    /**
+     * 保存**重排后的段落结构**（v0.1.70）。
+     *
+     * ══ ⚠️⚠️ 为什么需要这个 ══
+     *
+     * 用户反馈：
+     *   「还有一个 bug 得修，编辑了之后没有保存更改，
+     *     重新进入又恢复原状了」
+     *
+     * 真因：v0.1.67 引入 `reflowParagraphs()` 后，合并/拆分段落的结果
+     * 被写进了 `docModel.blocks`，同时把对应的 `edits` 条目**删掉**了
+     * （因为新段落的文本已经在 blocks 里，不再需要覆盖层）。
+     *
+     * 但持久化只存了 `edits` —— `docModel.blocks` 每次打开都从原生桥
+     * 重新加载**原始 PDF 块**，于是重排结果丢失，页面恢复原状。
+     *
+     * ✅ 现在把 blocks 也存下来，打开时优先用它。
+     *
+     * ⚠️ 只存 `line / page / text` 三个字段 ——
+     *    `docModel.blocks` 里可能挂着渲染期的临时字段，
+     *    序列化它们会让存储膨胀且不稳定。
+     */
+    function saveDocBlocks() {
+        if (!docStoreKey) return;
+        try {
+            var list = docModel.blocks || [];
+            var plain = [];
+            for (var i = 0; i < list.length; i++) {
+                var b = list[i];
+                if (!b) continue;
+                plain.push({
+                    line: b.line,
+                    page: (b.page == null) ? null : b.page,
+                    text: (b.text == null) ? '' : b.text
+                });
+            }
+            writeStore('scholarius.blocks.' + docStoreKey,
+                JSON.stringify(plain));
+        } catch (e) { /* 忽略 */ }
+    }
+
     function saveLabels() {
         if (!docStoreKey) return;
         try {
@@ -2759,6 +2800,11 @@
 
         saveEdits();
         saveLabels();
+        /*
+          ⚠️ 段落结构可能被 `reflowParagraphs()` 改过（合并/拆分），
+             必须一并落盘，否则重新进入时恢复原样（v0.1.70）。
+        */
+        saveDocBlocks();
         closeEditSheet();
         clearSelection();
         rerenderKeepingScroll();
@@ -4083,6 +4129,52 @@
                     text: b.text || ''
                 };
             });
+
+            /*
+              ══ ⚠️⚠️ 用已保存的段落结构覆盖（v0.1.70）══
+
+              用户反馈：
+                「编辑了之后没有保存更改，重新进入又恢复原状了」
+
+              原生桥每次都传**原始 PDF 块**，而编辑合并/拆分的
+              结果存在 `scholarius.blocks.<id>` 里。
+              不读它的话，重排结果就丢了。
+
+              ⚠️ 只接受**形状合法**的存档：
+                 · 必须是数组且非空；
+                 · 每项要有 `line`（数字）与 `text`（字符串）。
+                 存档损坏时静默退回原始块，不能因此打不开文档。
+              ⚠️ 存档的块数可能与原始不同（合并/拆分过），这是正常的。
+            */
+            var saved = readStore('scholarius.blocks.' + docStoreKey, '');
+            if (saved) {
+                try {
+                    var arr = JSON.parse(saved);
+                    if (arr && arr.length) {
+                        var ok = true;
+                        var restored = [];
+                        for (var sb = 0; sb < arr.length; sb++) {
+                            var it = arr[sb];
+                            if (!it || typeof it.line !== 'number' ||
+                                typeof it.text !== 'string') {
+                                ok = false;
+                                break;
+                            }
+                            restored.push({
+                                line: it.line,
+                                page: (it.page == null) ? null : it.page,
+                                text: it.text
+                            });
+                        }
+                        if (ok && restored.length) {
+                            docModel.blocks = restored;
+                            trace('reader:blocks',
+                                'restored ' + restored.length +
+                                ' of ' + blocks.length + ' from store');
+                        }
+                    }
+                } catch (err) { /* 存档坏了 → 用原始块 */ }
+            }
         } else {
             lastBlocks = null;
             lastText = text;
@@ -4094,8 +4186,8 @@
             docModel.blocks = [{ line: 0, page: null, text: text || '' }];
         }
 
-        if (blocks && blocks.length) {
-            renderBlocks(blocks);
+        if (docModel.blocks && docModel.blocks.length) {
+            renderBlocks(docModel.blocks);
         } else {
             /*
               ⚠️ 用 textContent + CSS pre-wrap，不用 innerHTML。
@@ -4967,6 +5059,19 @@
                 var sp = sorted[s];
                 if (!sp || !sp.label || sp.label === 'body') continue;
 
+                /*
+                  ══ ⚠️⚠️ 目录只收标题类标签（v0.1.70）══
+
+                  用户要求：
+                    「目录中仅出现标题类标签，即文章标题、一级标题、
+                      二级标题、三级标题。其他的标签不显示在目录中。」
+
+                  ✅ 直接在这里过滤掉 author / abstract / reference / cite ——
+                     而不是生成后再隐式，否则排序和区域合并逻辑
+                     仍会把这些条目当邻居参与计算。
+                */
+                if (!labelShowsContent(sp.label)) continue;
+
                 var slice = text.slice(sp.start || 0, sp.end || 0);
                 if (!slice) continue;
 
@@ -5242,12 +5347,38 @@ function tocTitleFrom(text) {
         }
 
         /*
-          留出顶部栏高度，否则跳过去的标题正好被顶栏压住。
-          菜单这时是收起的，所以只需一点呼吸空间。
+          ══ ⚠️⚠️ 跳转后把标题放在**视窗中央**（v0.1.70）══
+
+          用户要求：
+            「在目录中点击标题跳转，尽量让标题位于视窗中央，
+              类似头部的文章标题可能没法做到位于中间无所谓，
+              但能做到的尽量都做到跳转后位于视窗中心。」
+
+          ⚠️ 为什么不能直接 `scrollTo(y - 24)`：
+             那只把标题放到顶部，用户还得往下找正文。
+             放在中央，标题前后都有上下文，是阅读器的常见做法。
+
+          ⚠️ 视口高度要取**可见区**，不是 window.innerHeight：
+             顶栏/状态栏会遮住一部分。用 `bodyEl.clientHeight` +
+             目标元素高度折半：
+
+                 top = y - (可见高度 - 元素高) / 2
+
+          ⚠️ 头部条目（文章标题）会被 `Math.max(0, ...)` 夹住 ——
+             文档开头本来就没法再往上滚，此时贴顶是正确的，
+             用户也说了「类似头部的文章标题可能没法做到位于中间无所谓」。
+
+          ⚠️ 居中会让"不能滚到底"的文末条目自动贴底，
+             这也是浏览器的天然行为，不需要额外处理。
         */
-        bodyEl.scrollTo({ top: Math.max(0, y - 24), behavior: 'smooth' });
+        var viewH = bodyEl.clientHeight || global.innerHeight || 0;
+        var elH = best.offsetHeight || 0;
+        var centered = Math.max(0, y - Math.max(0, (viewH - elH) / 2));
+
+        bodyEl.scrollTo({ top: centered, behavior: 'smooth' });
         trace('reader:jump', 'line=' + want + ' -> ' + best.tagName +
-              ' data-line=' + best.getAttribute('data-line') + ' y=' + y);
+              ' data-line=' + best.getAttribute('data-line') + ' y=' + y +
+              ' top=' + Math.round(centered) + ' viewH=' + viewH);
     }
 
     // --- 设置面板 -----------------------------------------------------------
