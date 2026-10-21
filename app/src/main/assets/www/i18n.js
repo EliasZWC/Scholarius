@@ -202,75 +202,21 @@
             'reader.tocEmpty': 'No Headings Found In This Document.',
             'reader.abstract': 'Abstract',
 
-            /*
-              视图切换按钮的**无障碍标签**。
-
-              ⚠️ 写的是「点了会切到哪个视图」，不是「当前是哪个视图」——
-                 按钮标签应该描述**动作的后果**。
-                 当前状态由 aria-pressed 表达，不靠 label 重复。
-
-              ⚠️ 术语（用户 2026-09-24 定）：
-                 reading = 重排后的正文，用来**读**；
-                 raw     = 出版方原始版面，用来**核对**。
-                 英文不用 "PDF View" —— 那是文件格式，不是用户的意图。
-            */
-            'reader.rawView': 'Raw View',
-            'reader.readingView': 'Reading View',
-            'reader.pageUnavailable': 'Page Unavailable.',
-
-            /*
-              标注（v0.1.17）。
-
-              ⚠️ 文案风格遵守项目约定：
-                 · **短语**（按钮/标签）→ 每个词首字母大写：`Edit Regions`
-                 · **句子**（完整主谓）→ 只句首大写：`Tap A Box To Remove It.`
-                 判据是「有没有主语+谓语」。
-
-              ⚠️ annotateDone 是**按钮**（短语）→ 首字母大写。
-                 annotateTip 是**句子**（祈使句，有动词）→ 只句首大写。
-            */
-            'reader.annotate': 'Annotate',
-            'reader.annotateDone': 'Finish',
-            'reader.annotateTip': 'Drag on the page to mark a region; tap a box to remove it.',
+            // 未命名的正文区（原生没认出任何一级标题时的兜底名）
             'reader.untitledSection': 'Section',
-            'reader.annotateTextTip': 'Tap a text region to reclassify it.',
-            'reader.pickTextType': 'Reclassify As',
-            'reader.annotateNoLine': 'This Region Has No Line Data.',
-            'reader.annotatePickTip': 'Pick An Option Below To Start.',
 
-            // 标注类型（全是短语 → 首字母大写）
-            'reader.typeText': 'Text',
-            'reader.typeFormula': 'Formula',
-            'reader.typeTable': 'Table',
-            'reader.typeFigure': 'Figure',
+            /*
+              首页区的小标签文案（阅读视图里“这段是标题 / 作者 / 摘要 / 关键词”）。
+
+              ⚠️ 这四个**不属于**标注功能 —— 它们是阅读视图自己画区域头用的，
+                 删标注时千万不要一起删（删了界面上会直接露出原始 key）。
+
+              ⚠️ 都是短语 → 每个词首字母大写。
+            */
             'reader.typeTitle': 'Title',
             'reader.typeAuthor': 'Author',
             'reader.typeAbstract': 'Abstract',
-            'reader.typeBody': 'Body',
-            'reader.typeHeading': 'Heading',
-            'reader.typeFootnote': 'Footnote',
-            'reader.typeReference': 'Reference',
             'reader.typeKeyword': 'Keyword',
-
-            // 章节标题的层级（二级选择弹层）
-            'reader.pickHeadingLevel': 'Heading Level',
-            'reader.headingLevel1': 'Level 1',
-            'reader.headingLevel2': 'Level 2',
-            'reader.headingLevel3': 'Level 3',
-
-            // 区间选择（长按起块，再点终点）
-            'reader.rangeArmed': 'Range Start Set. Tap The End Region.',
-            'reader.selectTextTip': 'Drag Across The Text To Select A Range.',
-            'reader.editMark': 'Edit',
-            'reader.deleteNoMark': 'Already Body Text.',
-
-            // 清空（按类型整体清除）
-            'reader.clear': 'Clear',
-            'reader.clearAllKinds': 'All Kinds',
-            'reader.clearNothing': 'Nothing To Clear.',
-            'reader.clearConfirmTitle': 'Clear Regions?',
-            'reader.clearConfirmBody': 'This Removes {n} "{what}" Region(s). Your PDF Is Not Affected.',
-            'reader.clearDone': 'Cleared.',
 
             // 阅读设置：字体
             'reader.font': 'Font',
@@ -552,55 +498,14 @@
             'reader.tocEmpty': '未能从本文中识别出标题。',
             'reader.abstract': '摘要',
 
-            // 视图切换（无参标签，写「点了会切到哪个视图」）
-            'reader.rawView': '原始视图',
-            'reader.readingView': '阅读视图',
-            'reader.pageUnavailable': '无法显示该页。',
-
-            // 标注（v0.1.17）
-            'reader.annotate': '标注',
-            'reader.annotateDone': '完成',
-            'reader.annotateTip': '在页面上拖拽即可框选；点框可删除。',
+            // 未命名的正文区（原生没认出任何一级标题时的兜底名）
             'reader.untitledSection': '本节',
-            'reader.annotateTextTip': '点一下文字区域即可重新归类。',
-            'reader.pickTextType': '改为哪一类',
-            'reader.annotateNoLine': '该区域没有行号数据，无法标注。',
-            'reader.annotatePickTip': '选一个下方选项开始。',
 
-            // 标注类型
-            'reader.typeText': '文本',
-            'reader.typeFormula': '公式',
-            'reader.typeTable': '表格',
-            'reader.typeFigure': '图片',
+            // 首页区的小标签文案（阅读视图画区域头用，不属于标注功能）
             'reader.typeTitle': '标题',
             'reader.typeAuthor': '作者',
             'reader.typeAbstract': '摘要',
-            'reader.typeBody': '正文',
-            'reader.typeHeading': '章节标题',
-            'reader.typeFootnote': '脚注',
-            'reader.typeReference': '参考文献',
             'reader.typeKeyword': '关键词',
-
-            // 章节标题的层级（二级选择弹层）
-            'reader.pickHeadingLevel': '标题层级',
-            'reader.headingLevel1': '一级',
-            'reader.headingLevel2': '二级',
-            'reader.headingLevel3': '三级',
-
-            // 区间选择（长按起块，再点终点）
-            'reader.rangeArmed': '起点已设，请点终点区域。',
-            'reader.selectTextTip': '在文字上横向拖动，划选一段文字。',
-            'reader.editMark': '编辑',
-            'reader.deleteNoMark': '本来就是正文，无需删除。',
-
-            // 清空（按类型整体清除）
-            'reader.clear': '清空',
-            'reader.clearAllKinds': '全部类型',
-            'reader.clearNothing': '没有可清空的标注。',
-            'reader.clearConfirmTitle': '清空这些框？',
-            'reader.clearConfirmBody': '将清除 {n} 个「{what}」区域。PDF 本身不受影响。',
-            'reader.clearDone': '已清空。',
-
 
             // 阅读设置：字体
             'reader.font': '字体',

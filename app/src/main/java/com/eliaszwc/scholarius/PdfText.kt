@@ -60,72 +60,6 @@ object PdfText {
     @Volatile
     private var initialised = false
 
-    /*
-      ══ 提取结果缓存（2026-09-26）══
-
-      `pageLines` 要给文字层补全文行号（见 [Line.globalLine]），
-      而那需要**整篇**的 `merged.lines` —— 也就是 `extract()` 的产物。
-
-      `extract()` 要解析整个 PDF（实测 11 页约 2~4 秒），
-      而 `pageLines` 是**逐页**调用的（11 页就 11 次）。
-      不缓存的话每翻一页都要重跑一遍整篇提取 —— 完全不可接受。
-
-      ⚠️ 只用**一个**槽位（最近一篇）：同一时刻用户只会打开一篇文献，
-         缓存多篇等于白占内存（一篇正文可达 2MB）。
-         换文献时自动失效。
-
-      ⚠️ 用文件的 `absolutePath + lastModified + length` 当 key ——
-         同一路径换了内容（用户重新导入）时要能识别出来。
-         只比路径的话会拿到旧行号。
-
-      ⚠️ `synchronized`：`pageLines` 可能在渲染线程被多页并发调用
-         （IntersectionObserver 一次可能触发好几页）。
-         不加锁会重复解析甚至撞坏结果。
-    */
-    private val cacheLock = Any()
-    private var cacheKey: String? = null
-    private var cacheBlocks: List<Block>? = null
-
-    /**
-     * 取某一页的块，**连同它在全文块序列里的全局下标**。
-     *
-     * ⚠️⚠️ 必须带全局下标（2026-09-26 第四次修正）
-     *
-     * 前端 `block.line` 是"该块在**全文** `blocks` 数组里的下标"
-     * （实测 0..623）。所以给文字层补行号时，
-     * 不能给"页内序号"（0..151），必须给**全局序号**（第 2 页从 53 起）。
-     *
-     * 我上一版给了页内序号，于是 `g=0` 被前端当成全文第 0 块 ——
-     * 标到了文章标题上（实测落笔「Attention Is All You Need Ashish」）。
-     *
-     * @return 每项是 (全文下标, Block)
-     */
-    private fun indexedBlocksOfPage(pdf: File, page: Int): List<Pair<Int, Block>> {
-        val key = try {
-            pdf.absolutePath + "|" + pdf.lastModified() + "|" + pdf.length()
-        } catch (t: Throwable) {
-            pdf.absolutePath
-        }
-        val all = synchronized(cacheLock) {
-            if (cacheKey == key && cacheBlocks != null) {
-                cacheBlocks!!
-            } else {
-                val doc = extract(pdf)
-                val b = doc?.blocks ?: emptyList()
-                if (b.isNotEmpty()) {
-                    cacheKey = key
-                    cacheBlocks = b
-                }
-                b
-            }
-        }
-        val out = ArrayList<Pair<Int, Block>>()
-        for (i in all.indices) {
-            if (all[i].page == page) out.add(Pair(i, all[i]))
-        }
-        return out
-    }
-
     /** 大纲条目。level 从 1 开始（1 = 顶层） */
     data class OutlineEntry(
         val level: Int,
@@ -198,51 +132,6 @@ object PdfText {
         val y0: Float = 0f,
         val x1: Float = 0f,
         val y1: Float = 0f,
-        /**
-         * 该行在**全文文本行号**里的下标 —— 即 `text.split('\n')` 的下标，
-         * 与前端 `textMarks[].from/to`、`Block.line` **同一套编号**。
-         *
-         * ══ ⚠️⚠️ 为什么必须由原生给（2026-09-26 血的教训）══
-         *
-         * 前端要支持「在 PDF 页图上划选文字 → 标成标题/作者/摘要」，
-         * 落笔时必须把"选中的那几个词"换算成 `textMarks` 的行号。
-         *
-         * 试过三种换算，前两种都**不可靠**：
-         *
-         *  ① `页首块行号 + 页内视觉行号`
-         *     ❌ 前提就错：`data-row` 是**视觉行**（前端按 y 聚类），
-         *        而 `block.line` 是**文本行**（按 `text.split('\n')` 累加）。
-         *        PDF 会把同一视觉行切成好几个块（实测 `#7/#8/#9`
-         *        y 完全相同、文本却不同），所以「块数 ≠ 行数」。
-         *        实测症状：用户在正文处划选，落笔却到了**第 0 行**
-         *        （用户原话「似乎跳到了最开头」）。
-         *
-         *  ② 用 `y` 坐标反查块
-         *     ❌ 只能定位到**段落**：`mergeBox` 取的是整段的外接矩形，
-         *        一个段落块纵向覆盖它内部的**所有**排版行。
-         *        实测落笔偏到段首，差一行。
-         *
-         *  ③ 用词的文字去 `block.text` 里搜
-         *     ❌ PDF 提取出的**块文本与页面上看到的词对不上**：
-         *        实测 `sequences.` `Aligning` 在**任何**块的文本里都不存在
-         *        （合并时被重排/丢了标点），搜不到就只能退化成 ②。
-         *
-         * ✅ 正解：**别再事后换算，让原生在给文字层时就带上行号。**
-         *
-         * 这里在做的事：对每一页重新跑一次 `mergeParagraphs`，
-         * 得到该页每行的文本，再按 (page, text) 与 `pageLines` 的原始行
-         * **逐行配对**，把配对上的行号写进 `globalLine`。
-         *
-         * ⚠️ 配对是**近似**的（合并会改变行数），所以规则要保守：
-         *    · 只在**同一页**内配对；
-         *    · 按顺序**贪心**推进游标（两边都按阅读顺序排列）；
-         *    · 文本相等才算命中；命不中就用**上一条成功值 + 顺序偏移**兜底
-         *      （宁可给一个略偏的行号，也不要给 null ——
-         *        null 会让用户完全标不上，那是更差的体验）。
-         *
-         * ⚠️ 取不到时为 -1，前端必须判 `>= 0` 再用。
-         */
-        val globalLine: Int = -1
     )
 
     /**
@@ -310,17 +199,11 @@ object PdfText {
         /**
          * 本块在**全文块序列**里的下标（0 起）。
          *
-         * ══ ⚠️⚠️ 用途（2026-09-27）══
+         * ⚠️ 用途：目录跳转时前端要按 `textLines[block.line]` 定位；
+         *    同时作为块 ↔ 文本行的**唯一编号**，避免前端再估算。
          *
-         * 前端阅读视图要把用户标注（`TextMark.from/to`）套到块上。
-         * 那些行号来自 `getPdfPageLines` 的 `globalLine`，
-         * 而 `globalLine` **就是本下标**（见 PdfText 里 globalLine 的说明：
-         * `indexedBlocksOfPage` 返回的 `first` = `outBlocks` 下标）。
-         *
-         * ⚠️ 所以两端必须共享同一编号。之前前端靠"累计块内行数"估算，
-         *    实测偏 2 行 → 「标了 A，阅读视图里变成 B 是标题」。
-         *
-         * ⚠️ 默认 -1 表示"未计算"（前端会退化成估算，行为与旧版一致）。
+         * ⚠️ 默认 -1 表示"未计算"。前端的 `buildRegions` 会兜底：
+         *    遇到 -1 时按"块内行数"累加估算，行为与旧版一致。
          *
          * ⚠️ 必须放在**最后**（带默认值）—— 上面的位置参数调用
          *    （`Block("formula", t, 0, page, x0, y0, x1, y1)`）才不会被挤位。
@@ -875,184 +758,6 @@ object PdfText {
         }
     }
 
-    /**
-     * 取**某一页**的文字行布局（含每行的归一化包围盒与字号）。
-     *
-     * ══ ⚠️⚠️ 为什么需要它：让 PDF 上的文字**可以被选中**（2026-09-25）══
-     *
-     * 用户从 v0.1.22 起反复反馈，最终说清：
-     *   「字体根本无法选中啊」「都是只能识别点击」
-     *   「面对任何形式的拖拽都没有办法识别啊」
-     *   「我说的是原始视图」
-     *
-     * 真因：原始视图的页面是 `PdfRenderer` 渲染出的 **JPEG 位图**，
-     * 网页那边就是一个 `<img>` —— **位图里没有文字对象**，
-     * 手指划过它，浏览器不知道该"选中"什么。
-     *
-     * 内置 PDF 查看器（PDFium）能选，但它**必须在顶层文档**渲染，
-     * 会盖掉我们的顶栏/底栏（见 MainActivity 里三次失败尝试的记录）。
-     *
-     * ✅ 唯一可行的路（也是 Chrome/Adobe 阅读器的做法）：
-     *    在页图**上面**叠一层**透明的真实文字**，按坐标逐行定位。
-     *      · 视觉上还是原始版面（文字 `color: transparent`）
-     *      · 但文字真实存在 → 手指划过能选中、能高亮、能复制
-     *
-     * 这个方法提供那一层所需的全部数据。
-     *
-     * ══ 为什么按**行**而不是按字 ══
-     *
-     * 按字定位最准，但：
-     *   · 一篇论文几万字，每字一个元素 → DOM 爆炸，滚动卡顿；
-     *   · PDF 里同一行内字号可能混杂（正文里插一个数学符号），
-     *     逐字要各自算字号；
-     *   · 而"选中"这个操作**本来就以行为单位**才自然
-     *     （手指划过的是一行或几行）。
-     * 所以给整行一个盒子 + 行文字，让浏览器自己排版那一行 ——
-     * 选中的粒度就是行，足够用且性能可接受。
-     *
-     * ⚠️ 只读**一页**：一篇 11 页的论文有上千行，
-     *    全量序列化进 JS 会卡。网页按需（滚动到哪页取哪页）调用。
-     *
-     * ⚠️ 坐标系与 [Line] 完全一致（归一化 0..1、屏幕方向左上原点）
-     *    —— 网页直接用百分比定位即可，不需要知道页面尺寸。
-     *
-     * @param page 页码，**从 1 开始**
-     * @return 该页的文字行；PDF 不存在/加密/页码越界/扫描件都返回空列表
-     */
-    fun pageLines(pdf: File, page: Int): List<Line> {
-        if (!pdf.exists() || !pdf.isFile || page < 1) return emptyList()
-
-        return try {
-            PDDocument.load(pdf).use { document ->
-                if (page > document.numberOfPages) return emptyList()
-
-                val collector = LineCollector()
-                collector.startPage = page
-                collector.endPage = page
-                collector.lineSeparator = "\n"
-                /*
-                  ⚠️ 必须 sortByPosition —— 不设的话按内容流顺序输出，
-                     双栏论文会左右栏交错，叠出来的文字层与位图**对不上**，
-                     点选会选到隔壁栏的字。
-                */
-                collector.sortByPosition = true
-
-                val buffer = java.io.StringWriter()
-                collector.writeText(document, buffer)
-                /*
-                  ⚠️ 必须调 finish() —— 同 extractHead 处的理由：
-                     最后一个视觉行还留在累积缓冲里，不吐就丢。
-                */
-                collector.finish()
-
-                /*
-                  ⚠️ 过滤掉退化行（无文字 / 零尺寸盒子）。
-                     零尺寸的盒子叠到页面上是个点，会挡住相邻文字的选择，
-                     而且它自己选不中任何东西 —— 纯噪音。
-                */
-                val lines = collector.raw.filter { l ->
-                    l.text.isNotBlank() && l.x1 > l.x0 && l.y1 > l.y0
-                }
-
-                /*
-                  ══ ⚠️⚠️ 行号必须用「**块序号**」而不是 `textLines` 下标 ══
-                     （2026-09-26 第三次修正 —— 前两版都栽在这里）
-
-                  前端的 `textMarks[].from/to` 用的**不是** `textLines` 下标，
-                  而是 `block.line`，它由 JS 的 `buildRegions` 现算：
-
-                      var row = 0;
-                      for (每个块) { b.line = row; row += b.text.split('\n').length; }
-
-                  而 `b.text` 里**没有 `\n`**（每个块就是一段），
-                  所以 **`block.line` 严格等于"该块在 blocks 数组里的下标"**。
-                  实测：624 个块 → `block.line` = 0..623。
-
-                  但 `text`（= `textLines` 的来源）有 **1351** 行 ——
-                  因为 `mergeParagraphs` 在某些 `flush()` 时 `paraMeta == null`，
-                  那时**只往 `outText` 追加、不往 `outBlocks` 追加**。
-                  所以：
-
-                      textLines 行数 (1351)  ≠  blocks 数 (624)
-
-                  ⚠️ 我第一版直接把 `merged.lines` 的下标当行号发给前端，
-                     于是"第 2 页第 1 行"发出去是 `g=100`，而前端要的是 `53`。
-                     实测落笔位置全错（标到「a」「2048.」「Networks In」）。
-
-                  ✅ 正解：在原生侧**同样按块计数**。
-                     重跑一遍 `mergeParagraphs`，但这次数
-                     **只统计有 meta 的 flush**（那就是 `outBlocks` 的元素序号），
-                     把这个序号作为 `globalLine`。
-                */
-                try {
-                    val pageBlocks = indexedBlocksOfPage(pdf, page)
-                    if (pageBlocks.isNotEmpty()) {
-                        /*
-                          配对：`block.text` 是**合并后的段落文本**，
-                          `lines` 是**排版行原文**。
-                          一个段落由若干排版行拼成，所以：
-                            · 若段落只占 1 个排版行 → 两边完全相等
-                            · 若段落占多个 → 段落文本以首行开头（去空格后）
-
-                          按阅读顺序双游标贪心推进。
-
-                          ⚠️⚠️ 命中必须严格 —— 上一版用 `startsWith` 太宽，
-                             导致游标一路漂移（实测 "symbol" 配到了 116）。
-                             改成：**相等** 或 **段落文本以该行开头且
-                             长度差不超过 3 倍**（防止短碎片匹配到长段落）。
-
-                          ⚠️ 配对失败时**沿用上一条命中值的下一个**，
-                             不要一路 +1 累加（那会线性漂移到页尾）。
-                        */
-                        var cursor = 0
-                        var lastHit = -1
-                        val out = ArrayList<Line>(lines.size)
-                        for (l in lines) {
-                            val target = l.text.trim()
-                            var hit = -1
-                            if (target.isNotEmpty()) {
-                                var probe = cursor
-                                while (probe < pageBlocks.size) {
-                                    val bt = pageBlocks[probe].second.text.trim()
-                                    if (bt == target) { hit = probe; break; }
-                                    /*
-                                      ⚠️ 段落文本可能以该行开头（多行段落），
-                                         但要限制长度差 —— 否则一个 3 字的
-                                         碎片会匹配到 300 字的段落，
-                                         游标立刻跳走。
-                                    */
-                                    if (bt.isNotEmpty() &&
-                                        bt.startsWith(target) &&
-                                        bt.length <= target.length * 3 + 40
-                                    ) { hit = probe; break; }
-                                    probe++
-                                }
-                            }
-                            if (hit >= 0) {
-                                cursor = hit
-                                lastHit = hit
-                            } else if (lastHit >= 0) {
-                                /* 没命中就用上一条命中的同一条（同一段落内） */
-                                hit = lastHit
-                            } else {
-                                hit = 0
-                            }
-                            out.add(l.copy(globalLine = pageBlocks[hit].first))
-                        }
-                        return out
-                    }
-                } catch (t: Throwable) {
-                    /* 补行号失败不影响主功能 —— 前端会退化成 y 反查 */
-                    Log.w(TAG, "globalLine mapping failed: page=$page", t)
-                }
-
-                lines
-            }
-        } catch (t: Throwable) {
-            Log.w(TAG, "pageLines failed: ${pdf.name} page=$page", t)
-            emptyList()
-        }
-    }
 
     /**
      * 从首页行里猜标题与作者。
@@ -1481,23 +1186,11 @@ object PdfText {
                          有没有普通词，而不是某一行）。
                     */
                     /*
-                      ⚠️⚠️ `line` = 本块在 `outBlocks` 里的**下标**
-                         （2026-09-27 新增，修用户问题 3）。
+                      ⚠️ `line` = 本块在 `outBlocks` 里的**下标**。
 
-                          前端阅读视图要把"用户标注（mark.from/to）"
-                          套到块上，而 mark 的行号来自
-                          `getPdfPageLines` 的 `globalLine` ——
-                          那个值就是 `indexedBlocksOfPage` 返回的
-                          `outBlocks` 下标（见上面 globalLine 的长说明）。
-
-                          ⚠️ 所以两端必须是**同一个编号**：
-                             这里写 outBlocks.size（= 即将 push 的下标），
-                             与 `pageBlocks[hit].first` 天然一致。
-
-                          ⚠️ 之前前端用"累计块内行数"**估算**行号，
-                             实测偏 2（Transformer 论文，见前端注释），
-                             导致"标了 A 却变成 B"。
-                             有了这个字段就不必再估。
+                          前端 `buildRegions` 用它做目录定位
+                          （`textLines[block.line]`），也用它当块与文本行
+                          之间的唯一编号 —— 前端不必再按"块内行数"估算。
                     */
                     outBlocks.add(classifyBlock(meta, blockText, bodySize)
                         .copy(line = outBlocks.size))

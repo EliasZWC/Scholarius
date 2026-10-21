@@ -4,6 +4,82 @@
 
 ---
 
+## [0.1.37] - 2026-10-21
+
+### 移除「原始视图」整块功能
+
+用户决定（逐字）：
+
+> 「算了，直接清除原视图这个设计吧，我发现你是永远无法做好的，
+> 随之清除相关的图标和选项」
+
+原始视图从 v0.1.17 起经过 5 个版本的反复修补仍未稳定 ——
+页图 + 透明文字层 + 手画框 + 选字改类型 + 清空，每一层都在互相牵制。
+与其继续打补丁，不如整体移除，**只保留阅读视图**，类型完全由原生识别。
+
+### 删除的内容
+
+**阅读器 UI**
+
+- 顶栏「阅读 / 原始」视图切换按钮（`visibility` / `visibility_off`）
+- 顶栏「标注」按钮（编辑模式开关）
+- 编辑栏（文本 / 公式 / 表格 / 图片四项）、类型选择弹层、标题层级弹层
+- 「清空」悬浮按钮与确认弹层、各种提示浮层（`anno-tip`）
+- 选中文字后的类型浮层、区间选择（长按起块）机制
+
+**前端代码**
+
+- `reader.js`：**8973 → 2095 行**。删掉视图切换（`setView`）、
+  PDF 连续滚动（`showPdfScroll` + 懒加载观察器）、透明文字层
+  （`mountTextLayer`）、划选手势（`bindTextLayerSelect` /
+  `bindTextLayerPan`）、标注层与块命中（`mountAnnotateLayer` /
+  `blockAtPoint` / `pageAtPoint`）、全部标注增删改（`applyTextType` /
+  `clearTextMarkFor` / `clearTextMarksByType` / `countTextMarks` …）
+- `styles.css`：**6788 → 5257 行**。删掉 `.pdf-*`、`.anno-*`、
+  `.reader-editbar`、`.reader-view-toggle`、`.is-raw` / `.is-annotating`
+  / `.is-drawing` / `.is-text-mode` 等全部相关规则
+- `i18n.js`：删掉 36 个相关文案键（`reader.rawView` / `reader.annotate*`
+  / `reader.type*` / `reader.clear*` / `reader.rangeArmed` 等）
+- `dev-library.js`：删掉预览用的 `getPdfPage` / `getPdfPageCount` /
+  标注读写 shim
+
+**原生代码**
+
+- `PdfPages.kt`（整文件删除）：页图渲染
+- `AnnotationStore.kt`（整文件删除）：标注持久化 ——
+  用户明确要求「已有标注数据一并删掉」
+- `WebAppBridge.kt`：删掉 `getPdfPage` / `getPdfPageCount` /
+  `getPdfPageLines` / `getAnnotations` / `setAnnotations` 及对应构造参数
+- `MainActivity.kt`：删掉 `pdfPageFor` / `pdfPageCountFor` /
+  `pdfPageLinesFor` / `annotationsFor` / `saveAnnotationsFor` /
+  `parseAnnotations` / `annotationsToJson`
+- `PdfText.kt`：删掉 `pageLines`（只给文字层用）、
+  `indexedBlocksOfPage`、`Line.globalLine`、提取结果缓存
+
+### 保留的内容
+
+- 阅读视图本身：`buildRegions` 的区域划分（标题 / 作者 / 摘要 / 关键词
+  首页区 + 递归章节区）、目录、字号 / 颜色 / 字体 / 主题设置
+- `PdfText.extract()` 的块识别与 `Block.line`（目录跳转要用）
+
+### `buildRegions` 的简化
+
+原实现有 `marks` 参数与三层「用户标注优先」逻辑
+（`markFor` / `byUser` 陈旧覆盖自愈 / `frontHeuristicsOff` 全局信号）——
+全是为标注服务的。现在输入只剩原生的 `blocks`：
+
+```
+guessKind(blk, frontDone)       ← 摘要 / 关键词 / 标题 / 正文
+  ↓ 首页位置判据（题目 = 第一块；作者 = 题目之后）
+  ↓ 首页区：title / author / abstract / keyword
+  ↓ 章节区：openRegion(level) 递归
+```
+
+`frontDone` 与 `sawBody` **仍然分开** —— 那是 v0.1.35 修的真实 bug
+（两者混用会让摘要识别永远不生效），与标注无关。
+
+---
+
 ## [0.1.36] - 2026-09-28
 
 ### 修「清除了所有区域之后，阅读视图没变」

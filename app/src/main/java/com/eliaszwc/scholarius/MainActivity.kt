@@ -156,262 +156,6 @@ class MainActivity : AppCompatActivity() {
             .build()
     }
 
-    /**
-     * 取某篇文献某页的图片（阅读页的「原始视图」）。
-     *
-     * ══ 演进过程：前两种做法都失败了，别再走回头路 ══
-     *
-     * ① 网页里放 `<iframe src=".../pdf/<id>">`
-     *    实测（用户反馈「看不见 pdf」）：iframe 尺寸正常、URL 也真的
-     *    发出去了，但**画面是空的**。
-     *    根因：Android WebView 的内置 PDF 查看器是为**顶层文档**设计的，
-     *    在子框架里不渲染。这是查看器的行为，不是我们的代码错。
-     *
-     * ② 让 WebView 自己 loadUrl(PDF)（顶层文档）
-     *    确实能渲染，但**整块界面被替换掉** ——
-     *    顶栏消失、切不回来（用户反馈「没有成功转换视图」）。
-     *
-     * ②′ 再套一个覆盖层 WebView 装 PDF
-     *    **直接黑屏**，且依然盖住了我们自己的菜单
-     *    （用户反馈「转换视图直接黑屏了」+「但唤起菜单应该在 pdf 上面啊」）。
-     *    根因：内置查看器要发 **Range 请求**才能渲染，
-     *    而 `shouldInterceptRequest` 只能给一条整段流，给不出 206 分片。
-     *
-     * ③ 本方案（当前）：**原生把页渲染成图片**，网页只显示图片。
-     *    PDF 于是只是网页里的**一块内容** ——
-     *    顶栏、底栏、面板天然在它**上面**，这正是用户要的结构。
-     *    渲染在 [PdfPages] 里（系统 `PdfRenderer`，不引入第三方依赖）。
-     *
-     * ⚠️ **同步返回**，理由同缩略图：网页 `img.src` 要立即拿到值。
-     *    本方法在 JavaBridge 线程上被调用，不阻塞主线程；
-     *    首次渲染一页约 100-300ms，之后命中文件缓存。
-     *
-     * @param page 页码，**从 1 开始**
-     * @return 图片 data URL；PDF 不存在/加密/页码越界都返回空串
-     */
-    private fun pdfPageFor(id: String, page: Int): String {
-        if (!DOC_ID_PATTERN.matches(id)) {
-            Log.w(TAG, "原始视图请求的 id 非法：$id")
-            return ""
-        }
-        return PdfPages.pageImageDataUrl(this, id, page)
-    }
-
-    /** 取文献总页数（网页据此显示页码并限制翻页范围） */
-    private fun pdfPageCountFor(id: String): Int {
-        if (!DOC_ID_PATTERN.matches(id)) {
-            Log.w(TAG, "原始视图请求的 id 非法：$id")
-            return 0
-        }
-        return PdfPages.pageCount(this, id)
-    }
-
-    /**
-     * 取**某一页的文字行布局**（JSON 数组字符串），供网页叠透明文字层用。
-     *
-     * ══ ⚠️⚠️ 为什么需要：让 PDF 上的文字可以被选中（2026-09-25）══
-     *
-     * 用户反复反馈（v0.1.22 起，最终说清）：
-     *   「字体根本无法选中啊」「面对任何形式的拖拽都没有办法识别」
-     *   「我说的是原始视图」
-     *
-     * 原始视图的页面是 `PdfRenderer` 渲染出的 **JPEG 位图** ——
-     * 位图里没有文字对象，手指划过它浏览器不知道要选什么。
-     *
-     * ✅ 正解（Chrome/Adobe 阅读器也是这么做的）：
-     *    在页图上面叠一层**透明的真实文字**，按坐标逐行定位。
-     *    视觉上还是原始版面，但文字真实存在 → 能选中/高亮/复制。
-     *
-     * 本方法提供那一层的数据（见 [PdfText.pageLines]）。
-     *
-     * ⚠️ **同步返回**，理由同 [pdfPageFor]：网页渲染页图时要立刻把
-     *    文字层一起铺上，异步会让页图先出现、文字层后到 —— 中间那一帧
-     *    用户划不动任何东西，正是要修的症状。
-     *    实测单页 300~600 行，序列化 + 跨桥约 10~40ms，可接受。
-     *
-     * @param page 页码，**从 1 开始**
-     * @return JSON 数组字符串；PDF 不存在/加密/越界/扫描件都返回 `[]`
-     *         （不是空串 —— 网页可以直接 `JSON.parse` 不判 null）
-     */
-    private fun pdfPageLinesFor(id: String, page: Int): String {
-        if (!DOC_ID_PATTERN.matches(id)) {
-            Log.w(TAG, "文字层请求的 id 非法：$id")
-            return "[]"
-        }
-        val file = LibraryStore.pdfFile(this, id)
-        if (!file.exists()) return "[]"
-
-        val lines = PdfText.pageLines(file, page)
-        if (lines.isEmpty()) return "[]"
-
-        /*
-          ⚠️ 只带**叠字层需要的字段**，不带 font/size 之外的元数据。
-
-             每个行对象会被序列化进 JS，而一篇论文单页可能有 600 行 ——
-             多带一个字段就是多 600 个值跨桥。这里保留：
-               t  = 文本
-               x0/y0/x1/y1 = 归一化包围盒（0..1，屏幕方向）
-               s  = 主字号（磅）—— 用来估行高，让文字层与位图对齐
-               g  = **全文行号**（textLines 下标；-1 表示没算出来）
-                    —— 划选后落笔时用它换算标注区间，
-                       见 PdfText.Line.globalLine 的长注释。
-             其余（font / paragraphStart）叠字层用不到，省掉。
-        */
-        val arr = org.json.JSONArray()
-        for (l in lines) {
-            val o = org.json.JSONObject()
-            o.put("t", l.text)
-            o.put("x0", l.x0.toDouble())
-            o.put("y0", l.y0.toDouble())
-            o.put("x1", l.x1.toDouble())
-            o.put("y1", l.y1.toDouble())
-            o.put("s", l.size.toDouble())
-            o.put("g", l.globalLine)
-            arr.put(o)
-        }
-        return arr.toString()
-    }
-
-    /**
-     * 取用户标注（json 对象字符串）。
-     *
-     * ⚠️ **同步**，理由同 [pdfPageFor]：网页进编辑模式/渲染文本视图时
-     *    要立刻拿到，异步会让界面先按「无标注」渲染一帧再跳变。
-     *    标注文件只有几 KB，同步读是可接受的。
-     *
-     * ⚠️ 读不到时返回**空对象的 JSON**（不是空串）——
-     *    网页可以无条件 `JSON.parse`，少一处判空。
-     */
-    private fun annotationsFor(id: String): String {
-        if (!DOC_ID_PATTERN.matches(id)) {
-            Log.w(TAG, "标注请求的 id 非法：$id")
-            return EMPTY_ANNOTATIONS
-        }
-        return try {
-            val doc = AnnotationStore.load(this, id)
-            annotationsToJson(doc)
-        } catch (t: Throwable) {
-            Log.w(TAG, "标注读取异常：$id", t)
-            EMPTY_ANNOTATIONS
-        }
-    }
-
-    /**
-     * 保存用户标注（整份覆盖）。
-     *
-     * ⚠️ 在这里把网页来的 JSON **解析成模型再落盘**，而不是原样转发字符串。
-     *    理由：网页侧的数据是不可信输入（用户可以改 localStorage、
-     *    也可能是我自己前端写错）。过一遍 [AnnotationStore.save] 的
-     *    校验/夹取，落盘的才一定是干净的。
-     *    代价是解析两次（这里一次、save 里拼一次），对几 KB 的数据无所谓。
-     *
-     * @return 是否成功；网页据此决定要不要提示"保存失败"
-     */
-    private fun saveAnnotationsFor(id: String, json: String): Boolean {
-        if (!DOC_ID_PATTERN.matches(id)) {
-            Log.w(TAG, "标注保存的 id 非法：$id")
-            return false
-        }
-        return try {
-            val doc = parseAnnotations(json)
-            AnnotationStore.save(this, id, doc)
-        } catch (t: Throwable) {
-            Log.w(TAG, "标注解析/保存异常：$id", t)
-            false
-        }
-    }
-
-    /** 把标注序列化成给网页的 JSON。空文档也要返回合法结构 */
-    private fun annotationsToJson(doc: AnnotationStore.Doc): String {
-        val regions = StringBuilder()
-        regions.append('[')
-        for ((i, m) in doc.regions.withIndex()) {
-            if (i > 0) regions.append(',')
-            regions.append("{\"x0\":").append(box4(m.x0))
-            regions.append(",\"y0\":").append(box4(m.y0))
-            regions.append(",\"x1\":").append(box4(m.x1))
-            regions.append(",\"y1\":").append(box4(m.y1))
-            regions.append(",\"page\":").append(m.page)
-            regions.append(",\"type\":").append(quote(m.type))
-            regions.append('}')
-        }
-        regions.append(']')
-
-        val texts = StringBuilder()
-        texts.append('[')
-        for ((i, m) in doc.texts.withIndex()) {
-            if (i > 0) texts.append(',')
-            texts.append("{\"from\":").append(m.fromLine)
-            texts.append(",\"to\":").append(m.toLine)
-            texts.append(",\"type\":").append(quote(m.type))
-            if (m.level > 0) {
-                texts.append(",\"level\":").append(m.level)
-            }
-            texts.append('}')
-        }
-        texts.append(']')
-
-        return "{\"regions\":$regions,\"texts\":$texts}"
-    }
-
-    /**
-     * 解析网页传来的标注 JSON。
-     *
-     * ⚠️ 逐字段 `optXxx` + 默认值，**不抛** —— 网页可能传来
-     *    缺字段的对象（比如只画了个框还没选类型）。宁可少收几条，
-     *    也不要因为一条坏数据整份保存失败。
-     *
-     * ⚠️ 非法类型在这里就丢掉（用 [AnnotationStore.isValidRegionType] /
-     *    [AnnotationStore.isValidTextType]）—— 落盘前的最后一道闸。
-     */
-    private fun parseAnnotations(json: String): AnnotationStore.Doc {
-        val root = org.json.JSONObject(json)
-
-        val regions = ArrayList<AnnotationStore.RegionMark>()
-        root.optJSONArray("regions")?.let { arr ->
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                val type = o.optString("type", "")
-                if (!AnnotationStore.isValidRegionType(type)) continue
-                regions.add(
-                    AnnotationStore.RegionMark(
-                        x0 = o.optDouble("x0", 0.0).toFloat(),
-                        y0 = o.optDouble("y0", 0.0).toFloat(),
-                        x1 = o.optDouble("x1", 0.0).toFloat(),
-                        y1 = o.optDouble("y1", 0.0).toFloat(),
-                        page = o.optInt("page", 0),
-                        type = type
-                    )
-                )
-            }
-        }
-
-        val texts = ArrayList<AnnotationStore.TextMark>()
-        root.optJSONArray("texts")?.let { arr ->
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                val type = o.optString("type", "")
-                if (!AnnotationStore.isValidTextType(type)) continue
-                texts.add(
-                    AnnotationStore.TextMark(
-                        fromLine = o.optInt("from", -1),
-                        toLine = o.optInt("to", -1),
-                        type = type,
-                        level = o.optInt("level", 0)
-                    )
-                )
-            }
-        }
-
-        return AnnotationStore.Doc(regions, texts)
-    }
-
-    /** 归一化坐标保留 4 位小数（理由见 AnnotationStore.round4） */
-    private fun box4(v: Float): String =
-        (Math.round(v * 10000f) / 10000.0).toString()
-
-    /** 读不到标注时的返回值：合法空结构，网页可直接 JSON.parse */
-    private val EMPTY_ANNOTATIONS = "{\"regions\":[],\"texts\":[]}"
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -532,14 +276,6 @@ class MainActivity : AppCompatActivity() {
          */
         backCallback = object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                /*
-                  ⚠️ 没有「原始视图」的特殊分支了。
-
-                     PDF 现在是网页里的**一块内容**（原生渲染成图片，
-                     见 pdfPageFor），不再离开网页、也不再占用历史栈，
-                     所以“先关覆盖层”这件事由网页自己在这一句里处理完。
-                     曾经的「先判 isShowingRawPdf()」已随覆盖层方案一起删掉。
-                */
                 if (!::webView.isInitialized || !pageReady) {
                     // 网页还没就绪：没有覆盖层可言，直接放行
                     passThroughBack()
@@ -662,22 +398,6 @@ class MainActivity : AppCompatActivity() {
                 },
                 onRequestLibrary = { runOnUiThread { pushLibraryToWeb() } },
                 onRequestDocText = { id -> requestDocText(id) },
-                /*
-                  ⚠️ 这两个都**必须同步返回**，不能包 runOnUiThread ——
-                     网页 `img.src` 要立即拿到值。
-                     它们在 JavaBridge 线程上执行，不阻塞主线程。
-                     见 pdfPageFor 的注释。
-                */
-                onGetPdfPage = { id, page -> pdfPageFor(id, page) },
-                onGetPdfPageCount = { id -> pdfPageCountFor(id) },
-                /*
-                  ⚠️ 文字层同样**必须同步** —— 网页铺页图时要立刻
-                     把透明文字层一起铺上，异步会出现中间那一帧
-                     "页图看得见但划不动"，正是要修的症状。
-                */
-                onGetPdfPageLines = { id, page -> pdfPageLinesFor(id, page) },
-                onGetAnnotations = { id -> annotationsFor(id) },
-                onSetAnnotations = { id, json -> saveAnnotationsFor(id, json) },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,
@@ -766,10 +486,9 @@ class MainActivity : AppCompatActivity() {
                 /*
                   assetLoader 同时负责 assets/www 下的静态资源。
 
-                  ⚠️ 这里**不再有 PDF 分支了**。原始视图改成「原生渲染成图片 +
-                     桥同步返回 base64」（见 pdfPageFor），不再走 HTTP 通道 ——
-                     因为内置 PDF 查看器要发 Range 请求才能渲染，
-                     而这条通道给不出 206 分片（覆盖层方案黑屏的真因）。
+                  ⚠️ 这里**没有 PDF 通道**。阅读页的正文由
+                     `requestDocText` → `PdfText` 提取后推给网页，
+                     网页负责重排 —— 不向 WebView 提供原始 PDF 文件。
                 */
                 return assetLoader.shouldInterceptRequest(request.url)
             }
@@ -1339,11 +1058,9 @@ class MainActivity : AppCompatActivity() {
      *    [thumbnailFor] 单独取。
      *
      * ⚠️ **PDF 文件路径也不推**。网页拿不到应用私有目录（WebView 的
-     *    `allowFileAccess = false`），阅读页需要原生代取 ——
-     *    现在由 [pdfPageFor] 实现：网页按 (id, 页码) 同步取一张
-     *    base64 的 JPEG（原生用系统 PdfRenderer 渲染）。
-     *    **不推路径也不推图**：路径只有原生知道；页图按需取，
-     *    避免把几十页图片一次性塞进桥里。
+     *    `allowFileAccess = false`），阅读页的正文由原生提取后
+     *    通过 `ScholariusShell.readerText(id, text)` 推给网页 ——
+     *    网页只拿到重排好的文本与块，拿不到也不需要有原始文件。
      */
     private fun pushLibraryToWeb() {
         if (!::webView.isInitialized || !pageReady) return

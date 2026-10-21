@@ -43,14 +43,38 @@ def adb(*args, timeout=60):
     return (p.stdout or b'').decode('utf-8', 'replace')
 
 
+APP_ID = 'com.eliaszwc.scholarius.debug'
+
+
+def app_pid():
+    """取我们应用的进程号（应用没在前台时返回 None）。"""
+    out = adb('shell', 'pidof ' + APP_ID)
+    txt = out.strip()
+    if not txt or not txt.split()[0].isdigit():
+        return None
+    return txt.split()[0]
+
+
 def devtools_socket():
-    """找 WebView 的 devtools socket 名。"""
+    """找 **我们应用** 的 WebView devtools socket 名。
+
+    ⚠️ 机器上同时可能有系统 Chrome / WebView 的 socket
+       （实测一次能列出 2 个）。按字典序取第一个会**连到别人的进程**，
+       表现为「没有 type=page 的 target」或拿到无关页面。
+       所以必须按本应用的 pid 精确匹配。
+    """
+    pid = app_pid()
     out = adb('shell', 'cat /proc/net/unix')
     names = re.findall(r'@(webview_devtools_remote_\d+)', out)
     if not names:
         return None
-    # 去重；若有多个 WebView 取第一个
-    return sorted(set(names))[0]
+    names = sorted(set(names))
+    if pid:
+        want = 'webview_devtools_remote_%s' % pid
+        if want in names:
+            return want
+        return None
+    return names[0]
 
 
 def forward(name):

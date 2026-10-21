@@ -776,39 +776,6 @@
                 </svg>
             </button>
             <!--
-              「阅读 / 原始」视图切换按钮：在详情按钮**左边**（用户要求）。
-
-              语义是「切换视图」而不是「打开某个东西」，所以用
-              toggle 语义（aria-pressed）而不是 aria-haspopup。
-              图标与 aria-label 由 JS 按当前视图切换
-              （见 reader.js syncViewToggle）。
-
-              ⚠️ 图标用 visibility / visibility_off（用户选定），两只由 JS 注入 ——
-                 图标路径只在 components.js 定义一处。
-            -->
-            <button class="icon-button reader-view-toggle" type="button"
-                id="reader-view-toggle" aria-pressed="false"
-                aria-label="Raw View"></button>
-            <!--
-              标注按钮（v0.1.17）：**只在原始视图（PDF）里出现**。
-
-              ⚠️ 它不在这里写死「隐藏」——
-                 用 `hidden` 属性，由 reader.js 的 syncViewToggle 统一管。
-                 与 view-toggle 同一条顶栏，且位置在它**右边**：
-                 左→右 = 返回 / 切视图 / 标注 / 详情。
-                 「切视图」比「标注」更常点，所以更靠外。
-
-              ⚠️ 图标是 **960 体系**的 `edit`（去 ICON_PATHS.annotateEdit 看
-                 为什么不用 24 体系的 editPencil）。由 JS 注入，
-                 路径只在 components.js 一处定义。
-
-              ⚠️ 语义是 toggle（进入/退出编辑模式），所以用 aria-pressed，
-                 不是 aria-haspopup。
-            -->
-            <button class="icon-button reader-annotate-btn" type="button"
-                id="reader-annotate" aria-pressed="false" hidden
-                aria-label="Annotate" data-i18n-aria-label="reader.annotate"></button>
-            <!--
               详情按钮。只在菜单展开时可见（与返回按钮同一条顶栏）。
               图标由 JS 用 ScholariusUI.icon('moreHoriz') 填 ——
               这样图标路径只有 components.js 一处定义，不在这里重复一遍。
@@ -821,12 +788,9 @@
         <!--
           正文区：点它中间的 1/3 区域切换菜单。
 
-          ⚠️ 这里**只有**阅读视图（重排正文）。
-
-             原始视图（PDF）不在这里 —— 它由原生把 PDF 装入
-             WebView 本身（顶层导航），因为 Android WebView 的
-             内置 PDF 查看器只为顶层文档工作，塞进 iframe 会是空白。
-             详见 reader.js setView 的长注释。
+          ⚠️ 这里只有阅读视图（由原生识别出的块重排而成）。
+             早期的「原始视图（PDF 位图）」已整体移除 ——
+             见 CHANGELOG 0.1.37。
         -->
         <div class="reader-body" id="reader-body">
             <div class="reader-content" id="reader-content"></div>
