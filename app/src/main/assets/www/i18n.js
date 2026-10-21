@@ -202,6 +202,18 @@
             'reader.tocEmpty': 'No Headings Found In This Document.',
             'reader.abstract': 'Abstract',
 
+            /*
+              文本选中的操作条（v0.1.40）。
+
+              ⚠️ `selectCopy` 是**按钮**（短语）→ Title Case。
+              ⚠️ `selectCount` 带 {n} 占位符，由 reader.js 的 t(key, vars)
+                 做插值 —— ScholariusI18n.t() 本身**不插值**。
+            */
+            'reader.selectCopy': 'Copy',
+            'reader.selectCopied': 'Copied.',
+            'reader.selectCopyFailed': 'Could Not Copy.',
+            'reader.selectCount': '{n} Characters Selected',
+
             // 阅读设置：字体
             'reader.font': 'Font',
             'reader.fontSize': 'Font Size',
@@ -481,6 +493,12 @@
             'reader.settingsLabel': '设置',
             'reader.tocEmpty': '未能从本文中识别出标题。',
             'reader.abstract': '摘要',
+
+            // 文本选中的操作条（v0.1.40）
+            'reader.selectCopy': '复制',
+            'reader.selectCopied': '已复制。',
+            'reader.selectCopyFailed': '复制失败。',
+            'reader.selectCount': '已选中 {n} 字',
 
             // 阅读设置：字体
             'reader.font': '字体',

@@ -117,6 +117,15 @@
     --danger: #C0392B;
     /* 确认操作专用：与 --danger 同一色系（同明度、同饱和度水平）的绿 */
     --success: #15803D;
+    /*
+      文本选中的高亮底色（v0.1.40）。
+
+      ⚠️ 用暖色淡黄而不是蓝色：蓝色在阅读页的灰色纸底上
+         显得比正文还抢眼，而选中的目的是“让用户看清选的是哪段”，
+         不是“把视线从内容上引开”。
+      ⚠️ 必须带主题值 —— 日间的淡黄铺到暗色底上会刺眼。
+    */
+    --sel-bg: #F2E7C4;
     /* 悬浮按钮 / 主按钮：反色，跟随当前主题最强的前景色 */
     --fab-bg: var(--nav-active);
     --fab-fg: var(--bg);
@@ -138,6 +147,8 @@
         /* 夜间要用亮一点的红，否则在黑底上发黑看不清 */
         --danger: #E06C5E;
         --success: #7EE2A8;
+        /* 暗色下的选中高亮：深棕黄，与 #1E1E1E 明显区分又不刺眼 */
+        --sel-bg: #4A3F24;
     }
 }
 
@@ -155,6 +166,7 @@
     --nav-inactive: #7E7E7C;
     --danger: #E06C5E;
     --success: #7EE2A8;
+    --sel-bg: #4A3F24;
 }
 
 /* 让原生表单控件（如下拉框）的配色也跟随手动主题 */
@@ -1336,6 +1348,141 @@ body {
     /* 段内换行按原样保留（公式对齐、列表缩进都依赖它） */
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+
+    /*
+      ══ ⚠️⚠️ 只有正文段落允许被选中（v0.1.40）══
+
+      全局在 `body` 上写了 `user-select: none` —— 那是为了保证
+      这是个 App，不是一个网页：随便拖一下不该拖出一片蓝选区。
+
+      但「长按选中文本」需要选择能力。不需要真的让浏览器管选区
+      （我们自己在 JS 里用 Range 做），但**必须**把
+      `user-select` 放开，否则 `document.caretRangeFromPoint`
+      在部分 WebView 上返回 null。
+
+      ⚠️ 只开 `.reader-para`，不开 `body` —— 否则文库列表、
+         设置面板等所有文字都会变成可拖选的，整个 App 手感会变。
+      ⚠️ `-webkit-touch-callout: none` 必须留着：
+         否则长按会额外弹出系统那个“拷贝/词典/分享”的原生菜单，
+         与我们自己的操作条叠在一起（实测两层菜单同时出现）。
+      ⚠️ 原生 `::selection` 也一并去掉颜色 —— 高亮由 `.is-sel` 画
+         （原因：Android WebView 的 `::selection` 手指一抬就不画了）。
+    */
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: none;
+}
+
+.reader-para::selection {
+    background: transparent;
+}
+
+/*
+  选中高亮。
+
+  ⚠️ 用真实背景色而不是 `::selection`：
+     Android WebView 的 `::selection` 只在“触摸激活期间”绘制，
+     手指一抬就没了 —— 而我们需要它常驻到用户点复制为止。
+
+  ⚠️ 颜色用主题变量，不在暗色下闪白。
+*/
+.reader-para.is-sel {
+    background: var(--sel-bg);
+    border-radius: 4px;
+    /* 负外边距让底色包住文字、又不推动布局 */
+    box-shadow: 0 0 0 4px var(--sel-bg);
+}
+
+/*
+  ══ 选中操作条（v0.1.40）══
+
+  ⚠️ 挂在 `.reader`（阅读页根）上，**不挂在 `.reader-body` 里** ——
+     否则会跟着正文滚动，长按处滚出视野后操作条就没了。
+
+  ⚠️ 位置：距底部选项栏上方一档，水平居中。
+     不跟在手指位置：手指会把按钮遮住，而且长按处可能在屏幕边缘。
+*/
+.sel-bar {
+    position: absolute;
+    left: 50%;
+    /* 64px 是底栏内容高 + 一点呼吸空间，与 .reader-bottom 同源 */
+    bottom: calc(64px + var(--safe-bottom) + 16px);
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 6px 6px 14px;
+    background: var(--nav-bg);
+    border-radius: 999px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    transform: translate(-50%, 12px);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), opacity 200ms linear;
+}
+
+.sel-bar.is-open {
+    transform: translate(-50%, 0);
+    opacity: 1;
+    pointer-events: auto;
+    /* 按钮的点按反馈才会显示 */
+}
+
+/*
+  ⚠️ `[hidden]` 必须自己兜底 ——
+     上面的 `display: flex` 会盖掉 UA 的 `[hidden] { display: none }`。
+     这个坑项目里犯过两次（见 tools/check_hidden_display.py）。
+*/
+.sel-bar[hidden] {
+    display: none;
+}
+
+.sel-count {
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--on-surface-variant);
+    white-space: nowrap;
+}
+
+/*
+  操作条上的按钮。
+
+  ⚠️ 尺寸与 `.reader-action`（底栏按钮）同一套图标尺寸，
+     但这里是**胶囊内的小按钮**，所以用横排（图标 + 文字）、
+     内边距更小。
+*/
+.sel-action {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 36px;
+    padding: 0 14px 0 10px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--on-surface);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.sel-action-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.sel-action-icon svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+}
+
+/* 按下只降透明度，与全站按钮一致（不做阴影/缩放） */
+.sel-action:active {
+    opacity: 0.6;
 }
 
 /* 第一个段落不要上边距 —— 否则正文顶部会多出一块空白 */
