@@ -1496,70 +1496,52 @@ body {
 .reader-para.is-body-para {
     position: relative;
     /*
-      ⚠️ flex 让编号成为**参与布局的 flex 项** —— 它必然计入段落高度，
-         这正是浮动/绝对定位做不到的事。
+      ══ 三个并排元素：编号 │ 竖线 │ 正文（v0.1.68）══
+
+      用户要求：
+        「不是，这么复杂吗？直接定义三个并排的元素，
+          然后中间加间隔不就行了吗？」
+
+      ✅ 对，就这么做。之前绕了一大圈：
+         · `border-left` 画竖线 → 竖线固定在段落盒最左边，
+           编号只能靠负 margin 挤出盒子，一挤出就容易和正文重叠；
+         · 又试过 float、min-height、绝对定位，都不对。
+
+      现在段落是 flex 容器，里面三个子项，顺序就是视觉顺序：
+
+          [编号 ::before] [竖线 .reader-rule] [正文文字]
+
+      每个子项之间用 `gap` 给间隔，谁也不用负 margin、
+      谁也不用脱离文档流。编号多高，段落就多高 —— 天然成立。
+
+      ⚠️ 竖线必须是**真实元素**（`.reader-rule`），不能再用
+         `border-left`：border 永远贴着盒子边缘，没法排到编号右边。
+      ⚠️ 正文也不用包 span —— 文本节点会成为匿名 flex 项，
+         自动占据剩下的一整列。
     */
     display: flex;
-    /*
-      ⚠️ flex-start 而不是 center：多行段落里 center 会把正文浮到
-         垂直中间，行距节奏被破坏。flex-start 让正文贴顶，
-         只有装不下编号的单行短段才会被撑高。
-    */
     align-items: flex-start;
+    gap: 6px;
     /*
-      ⚠️ 20px = 编号区 12px + 间隙 6px + border 2px。
-         编号用负 margin 移进这块 padding 里。
+      ⚠️ 左边距 0：编号直接排在页面留白里。
+         以前这里靠 padding-left 给编号腾位，现在交给 flex 布局。
     */
-    padding-left: 20px;
-    border-left: 2px solid var(--outline);
+    padding-left: 0;
 }
 
 .reader-para.is-body-para::before {
     content: attr(data-body-no);
     /*
-      ⚠️ 作为 flex 项（而不是绝对定位/浮动）——
-         它自己的高度会把段落撑到至少装得下它。
+      ⚠️ flex 项：不伸不缩，宽度固定。
+         竖排编号宽度只有 12px，所以这一列就是 12px。
     */
-    flex: 0 0 12px;
+    flex: 0 0 auto;
     /*
-      ══ ⚠️⚠️ 编号必须在竖线**左侧**（v0.1.67 修）══
-
-      用户反馈：
-        「怎么回事？编号从提示条左边变到右边了？」
-
-      真因：flex 子项的起点是**内容盒**起点（border 之内、
-      padding 之内）—— 也就是正文文字的左边缘。
-      段落 `padding-left: 20px`，编号从正文左边缘起算，
-      要越过 20px 才能到达 border 外侧：
-
-          需要 左移量 = padding-left + 编号宽 + 间隙 = 20 + 12 + 6
-
-      ❌ v0.1.65 写的是 `margin-left: -18px`（只算了 12 + 6，
-         漏掉 padding-left 的 20）→ 编号只退到 border 内侧 2px 处，
-         视觉上就落在竖线**右边**、紧贴正文。
-
-      ⚠️ 区分 box 模型：
-         · 绝对定位 `right: calc(100% + 6px)` 相对的是
-           **padding box**，所以以前 -18px 式的算法成立；
-         · flex 子项在**内容盒**里排列，必须把 padding 也算进去。
-         换成 flex 后忘了改这个偏移，是本次问题的根源。
-    */
-    margin-left: -38px;
-    /*
-      ⚠️ 垂直方向不居中于整个段落，只对齐到**首行**：
+      ⚠️ 垂直方向只对齐到**首行**：
          正文首行行高 1.75 × 17px ≈ 29.75px，数字首行约占 14px，
          差 ≈ 15.75px，取一半 ≈ 8px 让数字落在首行中线上。
     */
     margin-top: 8px;
-    /*
-      ⚠️⚠️ 负 `margin-bottom` 抵消编号自身高度对段落高度的贡献：
-         编号比正文行高**高**的时候（三位数 36px > 29.75px）
-         需要它撑高段落；但撑高后底部会多出一块空白 ——
-         用 `margin-bottom: -8px` 只把"超出的那部分"收回来，
-         让段落高度刚好等于编号高度，不额外留白。
-         与上面的 `margin-top: 8px` 对称，两者相加为 0。
-    */
-    margin-bottom: -8px;
     font-size: 12px;
     line-height: 1;
     font-weight: 400;
@@ -1576,6 +1558,37 @@ body {
     text-align: center;
     color: var(--on-surface-variant);
     opacity: 0.7;
+    -webkit-user-select: none;
+    user-select: none;
+    pointer-events: none;
+}
+
+/*
+  竖线（提示条）—— 三列中的第二列（v0.1.68）。
+
+  ⚠️ 必须是一个**真实元素**，不能再用 `border-left`：
+     border 永远贴着段落盒子的边缘，无法排在编号右侧。
+     既然要「编号 │ 竖线 │ 正文」三列并排，
+     竖线就得和它们一样是 flex 子项。
+
+  ⚠️ `align-self: stretch` 让竖线撑满段落高度：
+     默认 `align-items: flex-start` 会让它只有 0 高
+     （没有内容），所以这里单独覆盖。
+     段落多行时竖线跟着变长，单行时就是一行高 —— 正是要的效果。
+*/
+.reader-para.is-body-para .reader-rule {
+    flex: 0 0 2px;
+    align-self: stretch;
+    background: var(--outline);
+    /*
+      ⚠️ 竖线的起始位置与正文首行对齐：
+         若不偏移，竖线会从段落顶部一直画到编号下端，
+         看起来比正文高出一截。
+    */
+    margin-top: 8px;
+    /*
+      ⚠️ 它只是装饰，不可选中、不可点击。
+    */
     -webkit-user-select: none;
     user-select: none;
     pointer-events: none;

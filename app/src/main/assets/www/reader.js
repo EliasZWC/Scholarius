@@ -3359,7 +3359,7 @@
     }
 
     /**
-     * 给一个**正文段**挂上编号 + 左侧提示条（v0.1.57）。
+     * 给一个**正文段**挂上编号 + 左侧提示条（v0.1.57 / v0.1.68 重做）。
      *
      * 用户要求：
      *   「正文段计数，左边加提示条和正文段编号。编号在提示条左边。」
@@ -3371,39 +3371,41 @@
      *      │ └ 提示条（竖线）
      *      └ 编号（在竖线左边）
      *
-     * ⚠️ 编号用 `data-body-no` 挂到段落上，由 CSS 的 `::before` 绘制 ——
-     *    不用额外的 DOM 元素：
-     *      · `::before` 不参与选中（`user-select: none` 也省了），
-     *        复制正文不会带上编号；
-     *      · 不占内容流，段落文字的对齐不受影响。
+     * ══ ⚠️⚠️ 三个并排元素（v0.1.68）══
      *
-     * ⚠️ 竖线用 `border-left` 还是 `::before`：
-     *    这里用 `::before` 画编号、`border-left` 画竖线。
-     *    用 border 而不是 box-shadow，因为要的就是"提示条"那种明确的线。
+     * 用户要求：
+     *   「不是，这么复杂吗？直接定义三个并排的元素，
+     *     然后中间加间隔不就行了吗？」
+     *
+     * 段落是 flex 容器，DOM 里就是三样东西：
+     *
+     *   [::before 编号]  [.reader-rule 竖线]  [正文文本节点]
+     *
+     * · 编号：CSS `::before` + `attr(data-body-no)`，不占额外节点；
+     * · 竖线：**真实元素** `<span class="reader-rule">` ——
+     *         不能用 `border-left`，border 只能贴盒子边缘，
+     *         没法排到编号右边；
+     * · 正文：直接是文本节点，会自动成为匿名 flex 项。
+     *
+     * 三者之间用 `gap: 6px` 拉开，谁也不用负 margin、
+     * 谁也不用脱离文档流。编号多高，段落就多高 —— 天然成立。
+     *
+     * ⚠️ 竖线要插在**编号之后、正文之前**，所以只能 `prepend` 到
+     *    段落里（此时段落里只有文本节点）。
      */
     function attachBodyMarker(el, no) {
         el.classList.add('is-body-para');
         el.setAttribute('data-body-no', String(no));
 
         /*
-          ══ ⚠️⚠️ 编号改由 CSS 浮动撑高段落（v0.1.64）══
-
-          用户反馈：
-            「还是不对，一位数和两位数的都撑起来了，三位数的又缩了，
-              只能撑起两位数」
-
-          ⚠️⚠️ 真因不是算错了值 —— 实测 min-height = 36px 完全正确。
-             问题在于编号是 `position: absolute`，**脱离文档流**：
-             绝对定位元素溢出时不会撑高父元素，
-             父元素的 `min-height` 也管不到它。
-             超出的部分被下一个段落的背景盖住 → 看起来像"缩了"。
-
-             一位数(12px)/两位数(24px) 都小于行高 29.75px，
-             本就不需要撑，所以只有三位数才暴露问题。
-
-          ✅ 现在编号用 `float: left`，**参与高度计算**：
-             段落自然被撑到"至少装得下编号"，无需任何 JS 计算。
+          ⚠️ 竖线作为第二个 flex 项插入。
+             它本身无文字，纯装饰，必须 `aria-hidden` +
+             `user-select: none`，否则复制正文时可能带出一个空白。
         */
+        var rule = document.createElement('span');
+        rule.className = 'reader-rule';
+        rule.setAttribute('aria-hidden', 'true');
+        el.insertBefore(rule, el.firstChild);
     }
 
     /**
