@@ -1376,7 +1376,7 @@
      */
     function syncSelectionFromNative() {
         var s = global.getSelection();
-        var text = s ? String(s) : '';
+        var text = (s && s.rangeCount) ? extractSelectedText(s.getRangeAt(0)) : '';
 
         /*
           ⚠️ 选区里可能只有空白（用户从段落间隙开始拖）。
@@ -1392,7 +1392,7 @@
 
         if (selCountEl) {
             selCountEl.textContent = t('reader.selectCount', {
-                n: String(countSelectionChars(text))
+                n: String(countSelectionChars(selectedText))
             });
         }
     }
@@ -1690,11 +1690,16 @@
              ⚠️ 但不能用 `syncSelectionFromNative()` 的宽松版本：
                 它遇到全空白会清空 `selectedText`，那样下面就会直接 return
                 而不给任何提示。这里只在**非空**时采纳。
+
+          ⚠️ 用 `extractSelectedText` 而不是 `String(selection)`（v0.1.49）——
+             否则复制出去的文本里会带上「文章标题」这类**界面文字**。
         */
         var live = '';
         try {
             var s = global.getSelection();
-            live = s ? String(s) : '';
+            if (s && s.rangeCount) {
+                live = extractSelectedText(s.getRangeAt(0));
+            }
         } catch (e) { live = ''; }
         if (live.replace(/\s+/g, '')) {
             selectedText = live.replace(/\r\n/g, '\n').replace(/\n/g, ' ');
@@ -1863,10 +1868,83 @@
         try {
             var s = global.getSelection();
             if (!s || !s.rangeCount) return '';
-            return stripLabelTags(String(s));
+
+            /*
+              ══ ⚠️⚠️ 按节点过滤，而不是靠 CSS 的 `user-select: none` ══
+
+              用户要求：「前置说明文本这个可不能选中啊」
+
+              `.reader-label-head` 上已经写了 `user-select: none`，
+              但**不能只依赖它**：
+                · Android WebView 的原生选择器并不严格遵守
+                  `user-select: none` —— 长按拖动时仍会把整个标签段
+                  框进选区，文字照样进 `toString()`；
+                · 用户跨段选中（从标签段上方拖到内容段下方）时，
+                  标签段必然落在 Range 内部。
+
+              ✅ 所以在取"选中文本"这最后一关做过滤：
+                 逐节点遍历 Range，**跳过**标签段里的文本。
+                 这样无论选区怎么框出来的，送进编辑区/剪贴板的
+                 永远只有正文。
+            */
+            return extractSelectedText(s.getRangeAt(0));
         } catch (e) {
             return '';
         }
+    }
+
+    /**
+     * 从 Range 里取出**正文文本**，跳过标签段（v0.1.49）。
+     *
+     * ⚠️ 用 TreeWalker 遍历 Range 覆盖的节点：
+     *    · 落在 `.reader-label-head` 里的文本一律跳过；
+     *    · 只取 Range 与节点**实际相交**的那部分
+     *      （用 `Range.intersectsNode` 判断不够，边界节点要截断）。
+     *
+     * ⚠️ 跨块时保持原有的"换行变空格"语义 —— 与 syncSelectionFromNative
+     *    的约定一致（PDF 抽取的换行是排版折行，不是语义换行）。
+     */
+    function extractSelectedText(range) {
+        var parts = [];
+
+        var root = range.commonAncestorContainer;
+        if (root.nodeType === 3) root = root.parentNode;
+        if (!root) return '';
+
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+        var cur = walker.nextNode();
+
+        while (cur) {
+            var inRange = false;
+            try {
+                inRange = range.intersectsNode(cur);
+            } catch (e) {
+                inRange = false;
+            }
+
+            if (inRange && !isInsideLabelTag(cur, root)) {
+                /* 截出 Range 与该文本节点实际重叠的那一段 */
+                var value = cur.nodeValue || '';
+                var start = 0;
+                var end = value.length;
+
+                if (cur === range.startContainer) start = range.startOffset;
+                if (cur === range.endContainer) end = range.endOffset;
+
+                if (end > start) parts.push(value.slice(start, end));
+            }
+
+            cur = walker.nextNode();
+        }
+
+        /*
+          ⚠️ 换行统一成空格 —— 与历史行为一致（见 syncSelectionFromNative）。
+             TreeWalker 是按节点拼接的，跨段落时天然没有分隔符，
+             这里补一个空格，避免两段文字粘在一起。
+        */
+        return parts.join(' ').replace(/\s+/g, ' ').trim() ||
+            /* 全空时返回空串，让调用方当作"没有选中" */
+            '';
     }
 
     /**
@@ -1874,17 +1952,18 @@
      *
      * ══ ⚠️ 为什么需要 ══
      *
-     * 标注之后段落里会渲染出 `.reader-label-tag`（比如 "Article Title "）。
-     * 它是**界面文字**，不是正文内容，但 `Range.toString()` 会把它一起
-     * 包进来。于是用户选中已标注区间的字时，编辑区会显示
-     * "Article Title .pol" 这种混合内容，确认后还会把它写进正文。
+     * 标签文字（「文章标题」这类）是**界面文字**，不是正文内容，
+     * 但 `Range.toString()` 会把它一起包进来。于是用户选中已标注
+     * 区间的字时，编辑区可能显示 "文章标题 .pol" 这种混合内容，
+     * 确认后还会把它写进正文。
      *
-     * ⚠️ 这里按"标签文字 + 一个空格"的模式剥离 ——
-     *    CSS 里 `.reader-label-tag::after { content: " " }` 追加了一个空格，
-     *    所以实际串是 "Article Title .pol"。
+     * ⚠️ v0.1.48 起标签已经**独占一段**（`.reader-label-head`），
+     *    正常情况下不会再混进内容段。这个函数是**防御性兜底** ——
+     *    万一将来渲染方式又变，或者用户跨段选中把标签段也框进去，
+     *    仍然不会污染内容。
      *
-     * ⚠️ 只有在**选区起点落在标签文字之前**时才会带上它，
-     *    所以剥离是安全的方向性操作，不会误删正文里的同名文字。
+     * ⚠️ 只剥掉**开头**一处：标签永远在标注内容的最前面。
+     *    用 `indexOf === 0` 判断，避免误伤正文中间的同名文字。
      */
     function stripLabelTags(text) {
         if (!text) return text;
@@ -1898,11 +1977,13 @@
             if (!name) continue;
 
             /*
-              ⚠️ 只剥掉**开头**的一处：标签永远在标注区间的最前面。
-                 `indexOf === 0` 判断，避免误伤正文中间的同名文字。
+              ⚠️ 标签后面可能跟一个换行（独占一段时）或一个空格。
+                 两种都要处理，否则会残留一个前导空白。
             */
-            if (text.indexOf(name + ' ') === 0) {
-                text = text.slice(name.length + 1);
+            if (text.indexOf(name) === 0) {
+                var rest = text.slice(name.length);
+                rest = rest.replace(/^[ \t]*\n?/, '');
+                text = rest;
             }
         }
 
@@ -2074,11 +2155,13 @@
         return found ? total : -1;
     }
 
-    /** 这个文本节点是否属于前置标签文字（「文章标题」那一小段） */
+    /** 这个文本节点是否属于前置标签文字 */
     function isInsideLabelTag(node, root) {
         var el = node.parentNode;
         while (el && el !== root) {
-            if (el.classList && el.classList.contains('reader-label-tag')) {
+            if (el.classList && (
+                el.classList.contains('reader-label-tag') ||
+                el.classList.contains('reader-label-head'))) {
                 return true;
             }
             el = el.parentNode;
@@ -2744,7 +2827,15 @@
         var frag = document.createDocumentFragment();
         for (var i = 0; i < blocks.length; i++) {
             var el = makeBlockEl(blocks[i]);
-            if (el) frag.appendChild(el);
+
+            /*
+              ⚠️ `makeBlockEl` 现在可能返回**一个元素**，也可能返回
+                 **DocumentFragment**（带标注的块会拆成"标签段 + 内容段"
+                 多个元素，见 makeLabeledBlock），还可能返回 null
+                 （标注区间全部越界）。三种情况都要接住。
+            */
+            if (!el) continue;
+            frag.appendChild(el);
         }
         contentEl.appendChild(frag);
     }
@@ -2798,27 +2889,35 @@
         el.textContent = (edited != null) ? edited : b.text;
 
         /*
-          ══ 应用标注（v0.1.47）══
+          ══ 应用标注（v0.1.48）══
 
           用户要求原话：
-            「主要是标注的区域并非是选中的区域，而也是类似选中了一个词
-              作为标题，结果整个句子都变成了标题这样的。」
+            「我说的前置文本是新开一段，这段前面是前置文本，
+              这段的所有内容就是前置文本所包含的内容。
+              类似于先给个"文章标题"这样的字样，提示下面是文章标题。
+              然后下面单独成一段是选中的文章标题。」
 
-            「我希望不要用颜色来突出这是标题，而是除了正文外，
-              给个淡色的前置文本，比如文章标题的就前置一个文章标题的
-              文本，后面一段才是标题的内容，这样比较直观。」
+          所以标注不再做成行内混排，而是拆成**两段**：
+              <p class="reader-label-tag">文章标题</p>   ← 标签段
+              <p class="reader-para">Attention Is…</p>    ← 内容段
 
-          所以标注的数据结构改成**按字符区间**：
-              labels[line] = [{start, end, label}, ...]
+          ⚠️ 这与 v0.1.47 的行内方案不同：标签自己占一行，
+             下面才是它管辖的内容，视觉上是"标题 + 正文"的关系，
+             比夹在文字中间更直观。
 
-          ⚠️ 不是整段 —— 用户可能只把标题里的一个词标成标题。
-          ⚠️ 视觉上用"淡色前置文本"而不是背景色，见 applyLabelSpans。
+          ⚠️ 数据仍是按**字符区间**存的（labels[line] = [{start,end,label}]）——
+             只有渲染形式变了。这样用户只标了段落里某几个字时，
+             内容段里也只显示那几个字。
         */
-        if (typeof b.line === 'number') {
-            var spans = labels[b.line];
-            if (spans && spans.length) {
-                applyLabelSpans(el, b.line, spans);
-            }
+        var spans = (typeof b.line === 'number') ? labels[b.line] : null;
+
+        if (spans && spans.length) {
+            /*
+              ⚠️ 有标注 → 换个造法：标签段 + 内容段。
+                 这里直接返回一个 DocumentFragment，
+                 由 renderFlat 追加（调用方已经不假设它是单个元素）。
+            */
+            return makeLabeledBlock(b, el, spans);
         }
 
         if (b.page) el.setAttribute('data-page', String(b.page));
@@ -2837,104 +2936,135 @@
     }
 
     /**
-     * 把一个段落里被标注的**字符区间**渲染出来。
+     * 造一个「带标注」的块：**标签段 + 内容段**（v0.1.48）。
      *
-     * ══ 视觉：淡色前置文本 + 原内容（v0.1.47）══
+     * ══ 用户要求（原话）══
      *
-     * 用户要求原话：
-     *   「我希望不要用颜色来突出这是标题，而是除了正文外，
-     *     给个淡色的前置文本，比如文章标题的就前置一个文章标题的
-     *     文本，后面一段才是标题的内容，这样比较直观。」
+     *   「我说的前置文本是新开一段，这段前面是前置文本，
+     *     这段的所有内容就是前置文本所包含的内容。
+     *     类似于先给个"文章标题"这样的字样，提示下面是文章标题。
+     *     然后下面单独成一段是选中的文章标题。」
      *
-     * 效果（以"一级标题"为例）：
+     * 效果（以"文章标题"标在 "Attention Is All You Need" 上为例）：
      *
-     *   一级标题  Attention Is All You Need
-     *   ^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^
-     *   淡色小字   正常大小的原文
+     *   ┌──────────────────────────────┐
+     *   │ 文章标题                       │  ← 淡色小字，单独一段
+     *   │ Attention Is All You Need     │  ← 被标注的内容，单独一段
+     *   └──────────────────────────────┘
      *
-     * ⚠️ 为什么比背景色好：
-     *    · 背景色只说明"这里被标了"，看不出**标成了什么**；
-     *    · 前置文字直接写出标签名，一眼可读，不用去目录对照；
-     *    · 也不改动原文本身的字号字重 —— v0.1.39 的
-     *      「无等级、不要模板」依然成立。
+     * ⚠️⚠️ v0.1.47 做的是**行内**混排（「文章标题 Attention Is…」挤在
+     *     同一行），用户否掉了：标签应该独占一行，作为下面内容的说明。
      *
      * ══ 实现 ══
      *
-     * 一个 `<p>` 原本只有一个文本节点。要在中间插入 `<span>`，
-     * 必须把文本节点**按区间切开**，依次追加：
+     * 返回一个 DocumentFragment，含：
+     *   ① `<p class="reader-label-head">标签名</p>`
+     *   ② 一个或多个 `<p class="reader-para">内容</p>`
      *
-     *   [前缀文字 before][普通文本][标注span+标签][普通文本]...
+     * ⚠️ 如果有多个不连续的标注区间，会产出**多组** ①+②。
+     *    这是刻意的：每个标签管辖自己那一段内容，视觉上不会混淆。
      *
-     * ⚠️ 区间可能有多个且不重叠 —— 先按 start 排序再依次处理。
-     * ⚠️ 区间越界要夹住：编辑过的段落长度可能变了，
-     *    旧标注的 end 可能超出当前文本，不夹会抛异常。
+     * ⚠️ 未标注的部分仍按普通段落渲染，保持原样（v0.1.39 的"无等级"）。
      */
-    function applyLabelSpans(el, line, spans) {
-        var text = el.textContent || '';
-        if (!text) return;
+    function makeLabeledBlock(b, baseEl, spans) {
+        var frag = document.createDocumentFragment();
+        var text = (baseEl.textContent != null) ? baseEl.textContent : '';
 
         /*
-          规范化：排序 + 夹边界 + 丢掉空区间。
-          ⚠️ 必须**复制**一份再排序 —— 直接排序会改到存储里的数组顺序。
+          规范化区间：排序 + 夹边界 + 丢掉空区间。
+          ⚠️ 必须复制一份再排序 —— 直接排序会改到存储里的数组。
+          ⚠️ 必须夹边界：段落被编辑过之后长度可能变了，
+             旧标注的 end 可能超出当前文本长度。
         */
         var list = [];
         for (var i = 0; i < spans.length; i++) {
             var sp = spans[i];
-            if (!sp || typeof sp.start !== 'number' || typeof sp.end !== 'number') {
+            if (!sp || typeof sp.start !== 'number' ||
+                typeof sp.end !== 'number' || !sp.label) {
                 continue;
             }
             var a = Math.max(0, Math.min(sp.start, text.length));
-            var b = Math.max(0, Math.min(sp.end, text.length));
-            if (b <= a) continue;
-            list.push({ start: a, end: b, label: sp.label });
+            var bb = Math.max(0, Math.min(sp.end, text.length));
+            if (bb <= a) continue;
+            list.push({ start: a, end: bb, label: sp.label });
         }
-        if (!list.length) return;
+
+        if (!list.length) return null;
 
         list.sort(function (p, q) { return p.start - q.start; });
 
-        el.textContent = '';
-
         var pos = 0;
+
         for (var j = 0; j < list.length; j++) {
             var item = list[j];
 
             /*
-              ⚠️ 与前一个区间重叠时，跳过重叠部分 ——
-                 否则会重复输出同一段文字。
+              ⚠️ 与前一个区间重叠时跳过重叠部分 ——
+                 否则同一段文字会渲染两次。
             */
             var s = Math.max(item.start, pos);
             if (item.end <= s) continue;
 
-            /* 区间之前的普通文本 */
+            /* ① 区间之前的**未标注**文字：普通段落，原样保留 */
             if (s > pos) {
-                el.appendChild(document.createTextNode(text.slice(pos, s)));
+                var plain = document.createElement('p');
+                plain.className = 'reader-para';
+                plain.textContent = text.slice(pos, s);
+                copyBlockAttrs(plain, baseEl);
+                frag.appendChild(plain);
             }
 
-            var span = document.createElement('span');
-            span.className = 'reader-label';
-            span.setAttribute('data-label', item.label);
+            /* ② 标签段：独占一行，淡色小字 */
+            var head = document.createElement('p');
+            head.className = 'reader-label-head';
+            head.setAttribute('data-label', item.label);
+            head.textContent = t('reader.label.' + item.label);
 
             /*
-              ⚠️ 前置标签文本：直接是 i18n 里的标签名（一级标题/作者信息…）。
-                 用 `<span>` 而不是伪元素 —— 伪元素无法被选中、
-                 也无法在无障碍里读出，而这段文字是**内容**不是装饰。
+              ⚠️ 标签段**不带** `data-line` —— 它不是正文块，
+                 带上会让目录跳转/块查找把它当成真正的段落，
+                 导致"跳转跳到标签上"、块数量统计错误。
             */
-            var tag = document.createElement('span');
-            tag.className = 'reader-label-tag';
-            tag.textContent = t('reader.label.' + item.label);
-            span.appendChild(tag);
 
-            var body = document.createElement('span');
-            body.className = 'reader-label-body';
+            frag.appendChild(head);
+
+            /* ③ 内容段：被标注的那几个字 */
+            var body = document.createElement('p');
+            body.className = 'reader-para is-labeled-body';
+            body.setAttribute('data-label', item.label);
             body.textContent = text.slice(s, item.end);
-            span.appendChild(body);
 
-            el.appendChild(span);
+            /*
+              ⚠️ 每组都带 `data-line`（v0.1.48）——
+                 同一行被拆成多组时，如果只有第一组带，
+                 `blockElOf` 找不到后续组里的文字，用户在那上面
+                 编辑/标注时会取不到块。
+                 `blockElOf` 只返回第一个匹配，行为仍然是确定的。
+            */
+            copyBlockAttrs(body, baseEl);
+
+            frag.appendChild(body);
             pos = item.end;
         }
 
+        /* ④ 末尾剩余未标注的文字 */
         if (pos < text.length) {
-            el.appendChild(document.createTextNode(text.slice(pos)));
+            var tail = document.createElement('p');
+            tail.className = 'reader-para';
+            tail.textContent = text.slice(pos);
+            frag.appendChild(tail);
+        }
+
+        return frag;
+    }
+
+    /** 把原块的 data-page / data-line 等属性复制到新元素上 */
+    function copyBlockAttrs(dst, src) {
+        if (!src || !src.attributes) return;
+        for (var i = 0; i < src.attributes.length; i++) {
+            var at = src.attributes[i];
+            if (at.name === 'class') continue;
+            dst.setAttribute(at.name, at.value);
         }
     }
 
@@ -3864,15 +3994,42 @@
             btn.type = 'button';
             btn.className = 'toc-item';
             btn.setAttribute('data-level', String(entry.level));
-            btn.textContent = entry.title;
 
             /*
-              ⚠️ 标注条目加一个类 —— 仅用于视觉区分（左侧竖线，
-                 与正文里被标注段落的竖线呼应）。
-                 不加字号差异，避免又变成"模板化层级"。
+              ══ ⚠️⚠️ 标注条目渲染成**两行**（v0.1.48）══
+
+              用户要求原话：
+                「点击去目录，我们不靠颜色来标记，而是一栏分两行，
+                  第一行是标签的种类，比如文章标题，第二行就是标签的内容，
+                  比如"attention is all you need"。然后那个标签种类和
+                  阅读视图的淡色一样，总之二者一看就能呼应相对。」
+
+              所以：
+                第一行  `.toc-label-kind`  —— 标签种类，淡色小字
+                第二行  `.toc-label-text`  —— 标注的内容，正常大小
+
+              ⚠️ 去掉了 v0.1.47 的 `.is-labeled`（左侧彩色竖线）——
+                 用户明确说「目录中左边怎么还有颜色标记？这个要去掉」。
+                 两行结构本身已经足够区分来源，不需要颜色。
             */
             if (entry.labeled) {
-                btn.classList.add('is-labeled');
+                btn.classList.add('is-labeled-entry');
+
+                var kind = document.createElement('span');
+                kind.className = 'toc-label-kind';
+                kind.textContent = entry.labelKind || '';
+                btn.appendChild(kind);
+
+                var text = document.createElement('span');
+                text.className = 'toc-label-text';
+                text.textContent = entry.title;
+                btn.appendChild(text);
+            } else {
+                /*
+                  ⚠️ 自动识别的条目保持单行纯文本 —— 它们没有"种类"，
+                     强行凑两行会造出一个空的第一行。
+                */
+                btn.textContent = entry.title;
             }
 
             btn.addEventListener('click', function () {
@@ -3948,6 +4105,12 @@
                 byLine[dictKey] = {
                     level: labelLevel(sp.label),
                     title: tocTitleFrom(slice, sp.label),
+                    /*
+                      ⚠️ 标签种类（中文/英文的标签名），供目录两行结构的
+                         第一行用（v0.1.48）。与阅读视图里标签段的
+                         文字完全相同 —— 用户要求"二者一看就能呼应"。
+                    */
+                    labelKind: t('reader.label.' + sp.label),
                     line: line,
                     /*
                       ⚠️ 同一行有多个标注时必须能稳定排序（v0.1.47）——
@@ -3987,31 +4150,30 @@
     }
 
     /**
-     * 从一个段落的文本生成目录标题。
-     *
-     * ⚠️ 必须截断：用户可能把一整段摘要标成「摘要」，
-     *    原文几十上百字塞进目录项会把弹层撑破、也无法阅读。
-     * ⚠️ 摘要/作者这类**没有短标题**的段落，用标签名本身作标题
-     *    （「摘要」比「We propose a new simple network…」更像目录项）。
-     */
-    function tocTitleFrom(text, key) {
-        /*
-          ⚠️ 标题类标签直接用原文（它本身就是标题），
-             但要压成单行 —— PDF 抽出的标题偶尔带换行。
-        */
-        var oneLine = String(text).replace(/\s+/g, ' ').trim();
-
-        if (key === 'title' || key === 'h1' || key === 'h2' || key === 'h3') {
-            return clip(oneLine, 60);
-        }
-
-        /*
-          ⚠️ 摘要 / 作者 / 参考文献：文本通常很长，用「标签名」作标题，
-             后面接一小段内容作提示会显得杂乱 —— 所以只留标签名。
-             这样目录里一眼就能看到「摘要」「参考文献」在哪一节。
-        */
-        return t('reader.label.' + key);
-    }
+ * 从标注的文本生成目录**内容行**（第二行）。
+ *
+ * ══ ⚠️ v0.1.48：统一返回内容本身 ══
+ *
+ * 旧版对摘要/作者等“没有短标题”的标签返回**标签名**，
+ * 因为那时目录只有一行，需要靠它说明这是什么。
+ *
+ * 现在目录是两行：第一行已经是标签种类（「摘要」），
+ * 第二行再返回「摘要」就重复了。
+ *
+ * ✅ 所以这里一律返回**被标注的内容**（压成单行 + 截断）。
+ *    用户要求第二行就是「tag 的内容，比如 attention is all you need」。
+ *
+ * ⚠️ 必须截断：用户可能把一整段摘要标成「摘要」，
+ *    原文几十上百字塞进目录项会把弹层撑破、也无法阅读。
+ */
+function tocTitleFrom(text) {
+    /*
+      ⚠️ 压成单行 —— PDF 抽出的标题偶尔带换行，
+         目录项里出现断行会显得比其它项矮一截。
+    */
+    var oneLine = String(text).replace(/\s+/g, ' ').trim();
+    return clip(oneLine, 60);
+}
 
     /** 这个弹层当前是否可见（供返回键逐层退出判断用） */
     function isSheetOpen(el) {

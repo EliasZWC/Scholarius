@@ -1405,63 +1405,69 @@ body {
 */
 
 /*
-  ══ 段落标注的视觉（v0.1.47 重做）══
+  ══ 段落标注的视觉（v0.1.48 改为独立段落）══
 
-  ⚠️⚠️ 不用背景色，改用**淡色前置文本**。
+  ⚠️⚠️ 标签**自己独占一段**，内容是另一段。
 
      用户要求原话：
-       「我希望不要用颜色来突出这是标题，而是除了正文外，
-         给个淡色的前置文本，比如文章标题的就前置一个文章标题的
-         文本，后面一段才是标题的内容，这样比较直观。」
+       「我说的前置文本是新开一段，这段前面是前置文本，
+         这段的所有内容就是前置文本所包含的内容。
+         类似于先给个"文章标题"这样的字样，提示下面是文章标题。
+         然后下面单独成一段是选中的文章标题。」
 
-     旧版是一条背景色/左侧竖线，只能看出"这里被标了"，
-     却看不出**标成了什么** —— 用户还得跑去目录对照。
-     前置文字直接写出标签名，一眼可读。
+     v0.1.47 做的是行内混排（「文章标题 Attention Is…」挤在一行），
+     用户否掉了。现在标签是一段说明文字，内容是它下面的独立段落。
 
-  ⚠️ 只加在**被标注的那几个字**上（区间标注），不是整段。
-
-  ⚠️ 不改变原文的字号字重 —— v0.1.39「无等级、不要模板」的约束
-     依然成立。标签文字自己小一号、淡一点，与正文形成层次，
-     但正文本身不因标注而变大变小。
+  ⚠️ 标签段用淡色小字，内容段就是普通正文样式 ——
+     不改变内容本身的字号字重，v0.1.39「无等级、不要模板」依然成立。
 */
-.reader-label {
+.reader-label-head {
+    margin: 1.1em 0 0;
     /*
-      ⚠️ inline 而不是 inline-block：inline-block 会在换行时
-         把整块当作一个不可分割单元，长标题可能整块被推到下一行，
-         产生大段空白。
+      ⚠️ 字号比正文小一档（0.78em）+ 次要文字色：
+         它是**说明**，不该和正文抢注意力。
     */
-    display: inline;
-}
-
-/*
-  前置标签文字。
-  ⚠️ 字号比正文小一档（0.78em），颜色用 --on-surface-variant ——
-     它是**辅助信息**，不该和正文抢注意力。
-  ⚠️ 后面留一点间距（0.35em）与正文分开。
-  ⚠️ `user-select: none` 之外还要 `-webkit-touch-callout: none`：
-     否则长按标签文字会弹出系统菜单，而它不是可复制的内容。
-  ⚠️ 但**不要**从选区里排除它 —— 用户复制时应该拿到完整文本。
-     所以这里只用样式区分，不改 select 行为。
-*/
-.reader-label-tag {
     font-size: 0.78em;
     font-weight: 600;
+    line-height: 1.4;
     color: var(--on-surface-variant);
     /*
-      ⚠️ 不换行：像「文章标题」这样的四个字被拆到两行会很零碎。
-    */
-    white-space: nowrap;
-    /*
-      ⚠️ 用 letter-spacing 代替 "：" 之类的分隔符 ——
-         文案里加符号没法 i18n（中文习惯冒号、英文习惯空格）。
+      ⚠️ 稍微加一点字距，与正文形成肉眼可辨的节奏差异 ——
+         不加 background / border，用户明确要求不要靠颜色标记。
     */
     letter-spacing: 0.3px;
+    /*
+      ⚠️ 不允许选中 —— 它是界面文字，不是正文内容。
+         否则用户长按复制时会把它一起带走。
+
+         ⚠️⚠️ 这里写了三层保护，因为**单靠 CSS 不够**：
+           ① `user-select: none` —— 标准写法，桌面/新版 WebView 认；
+           ② `-webkit-user-select: none` —— 老 WebView 只有这个；
+           ③ `-webkit-touch-callout: none` —— 压掉长按弹出的系统菜单。
+
+         即便如此，Android WebView 的**原生选择器**在长按拖动时
+         仍可能把标签段框进选区。所以真正的兜底在 JS：
+         `extractSelectedText()` 会逐节点遍历并跳过标签段，
+         复制 / 字数 / 编辑 / 标注全部走它。
+    */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    /*
+      ⚠️ `touch-action: auto` 保持默认 —— 标签段很短，
+         禁掉触摸反而会让它变成滚动/选区的"死区"。
+    */
+    touch-action: auto;
 }
 
-/* 标签与正文之间留一点空隙 */
-.reader-label-tag::after {
-    content: " ";
-    white-space: pre;
+/* 标签段与紧跟的内容段挨得紧一点，形成"说明 + 内容"的成对感 */
+.reader-label-head + .reader-para {
+    margin-top: 0.15em;
+}
+
+/* 被标注的内容段（保留普通正文样式，这里只给一个可辨识的钩子） */
+.reader-para.is-labeled-body {
+    /* 无视觉差异 —— 刻意不加任何装饰 */
 }
 
 /*
@@ -3541,17 +3547,57 @@ body {
 }
 
 /*
-  ══ 用户标注出来的目录条目（v0.1.47）══
+  ══ 用户标注出来的目录条目（v0.1.48）══
 
-  ⚠️ 改成"淡色前置标签"后，目录里也用同样的语言 ——
-     一条来自标注的条目会带上它自己的标签名（由 JS 拼进 title）。
+  ⚠️⚠️ **去掉颜色标记**。
 
-  ⚠️ 这里保留一个很轻的竖线作"来源"提示（自动识别 vs 手动标注），
-     因为目录项的文字已经被 `tocTitleFrom` 处理过了，
-     不再额外拼前缀 —— 否则会出现「一级标题 一级标题 ...」。
+     用户要求原话：
+       「再者就是目录中左边怎么还有颜色标记？这个要去掉。」
+
+     旧版用 `box-shadow: inset 3px 0 0 var(--sel-bg)` 画了条彩色竖线，
+     现在完全移除。
+
+  ⚠️ 改为**两行**结构，靠排版而非颜色区分来源：
+       第一行 `.toc-label-kind` 标签种类（淡色小字，与正文标签段同款）
+       第二行 `.toc-label-text` 标签内容
+
+     用户要求：「一栏分两行，第一行是标签的种类……第二行就是标签的内容。
+     然后那个标签种类和阅读视图的淡色一样，总之二者一看就能呼应相对。」
+
+  ⚠️ 两行的行高要压紧（1.25 / 1.35）—— 目录项本身间距较大，
+     如果两行都松，一条标注项会比自动项高出一倍，列表节奏就乱了。
 */
-.toc-item.is-labeled {
-    box-shadow: inset 3px 0 0 var(--sel-bg);
+.toc-item.is-labeled-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding-top: 9px;
+    padding-bottom: 9px;
+}
+
+.toc-label-kind {
+    /*
+      ⚠️ 与正文标签段（.reader-label-head）同款视觉：
+         0.78em + 次要色 + 字距。用户要求"一看就能呼应"。
+    */
+    font-size: 0.78em;
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: 0.3px;
+    color: var(--on-surface-variant);
+}
+
+.toc-label-text {
+    font-size: inherit;
+    line-height: 1.35;
+    /*
+      ⚠️ 内容可能很长（整段摘要被标成摘要）——
+         最多两行后省略，否则单条目录项会撑满整个弹层。
+    */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
 }
 
 .toc-empty {
