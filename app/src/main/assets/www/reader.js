@@ -3165,7 +3165,34 @@
      */
     function attachBodyMarker(el, no) {
         el.classList.add('is-body-para');
-        el.setAttribute('data-body-no', String(no));
+        var s = String(no);
+        el.setAttribute('data-body-no', s);
+
+        /*
+          ══ ⚠️⚠️ 编号竖排后的总高必须让段落撑得住（v0.1.62）══
+
+          用户反馈：
+            「但是这样单行的段怎么办？放不开啊」
+            「如果编号高度高于段，就让段高度不小于这个最小高度好了，
+              然后正文内容再段高度中居中位置就行」
+
+          ⚠️ 为什么不能在 CSS 里算：
+             编号总高 = 编号字号 × **数字个数**，
+             而 CSS 拿不到"个数"（竖排下 `ch` 度量的是字符高度，
+             不是字符数）。所以由这里算好写成自定义属性。
+
+          ⚠️ 为什么用 `max()` 而不是直接定 36px：
+             编号只占 12px 的 1 位数段落不该被拉高到 36px，
+             否则整篇文档的段间距全被撑松。
+             `max(1em 行距, 编号总高)` —— 取大者，多的不留。
+
+          ⚠️ 这里只写高度，**不写居中对齐**：
+             单行段上方的少量留白由 `min-height` 自然产生；
+             若给段落加 `display:flex; align-items:center`，
+             多行段落会把整块文字浮到垂直中间，反而破坏行距节奏。
+        */
+        var noH = 12 * s.length;
+        el.style.setProperty('--no-min-h', 'max(1.75em, ' + noH + 'px)');
     }
 
     /**
