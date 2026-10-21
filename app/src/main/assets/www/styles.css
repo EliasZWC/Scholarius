@@ -1287,9 +1287,21 @@ body {
 
        底部同理：菜单收起时不留空，文字可以滚到屏幕最下沿。
        滚动是连续的，用户滚到哪读到哪，中间不会有一块永远空着的带。
+
+       ══ ⚠️ 文章末尾留白（v0.1.73）══
+
+       用户要求：「增加文章末尾空白」
+
+       ⚠️ 原来是 `--safe-bottom + 16px`，滚到底时最后一行几乎贴着
+          屏幕下沿（还有手势条压着），读完有种"被切断"的感觉。
+          改成 `+ 96px`（约 3 行），滚到底时末尾下方有留白，
+          视觉上明确"文章到此结束"。
+
+       ⚠️ 只加在**底部**，顶部不动 —— 顶部已经贴着状态栏了，
+          再加会让首屏浪费掉一截阅读空间。
     */
     padding: calc(var(--safe-top) + 12px) calc(24px + var(--safe-right))
-        calc(var(--safe-bottom) + 16px) calc(24px + var(--safe-left));
+        calc(var(--safe-bottom) + 96px) calc(24px + var(--safe-left));
     font-size: 17px;
     line-height: 1.75;
     color: var(--on-surface);
