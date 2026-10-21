@@ -345,6 +345,25 @@
     };
 
     /**
+     * 作者信息区域的「项名」预设（v0.1.74）。
+     *
+     * ══ 用户要求（原话）══
+     *
+     *   「当正文段被标注成作者信息区域时，此时再选中作者信息区域的文本
+     *     应该为其设置项，项名左对齐，但没有添加设置项的时候不显示。
+     *     这个功能主要是为了区分作者信息的不同项，
+     *     比如作者名、单位、联系方式什么的。」
+     *
+     * ⚠️ 项名存在**现有** `labels` 记录的 `field` 字段上：
+     *
+     *      {start, end, label: 'author', field: 'name'}
+     *
+     *    不新建存储表 —— 项名本来就是"这个标注是哪一类"，
+     *    与 `cite` 用 `ref` 记住引用目标是同一个思路。
+     */
+    var AUTHOR_FIELDS = ['name', 'affiliation', 'email', 'contact'];
+
+    /**
      * 取文案，可选做 `{name}` 插值。
      *
      * ⚠️ `ScholariusI18n.t()` **只做查表，不做插值** ——
@@ -2885,6 +2904,12 @@
     /** 选中的目标文献的 `line`（null = 未选） */
     var citeTarget = null;
 
+    /** 作者项选择器（v0.1.74） */
+    var fieldPickerEl = null;
+    var fieldListEl = null;
+    /** 选中的作者项键（null = 不设置） */
+    var fieldDraft = null;
+
     function mountLabelSheet() {
         if (labelSheetEl) return;
 
@@ -2892,6 +2917,8 @@
         labelListEl = document.getElementById('sheet-label-list');
         citePickerEl = document.getElementById('sheet-cite-picker');
         citeListEl = document.getElementById('sheet-cite-list');
+        fieldPickerEl = document.getElementById('sheet-field-picker');
+        fieldListEl = document.getElementById('sheet-field-list');
         if (!labelSheetEl || !labelListEl) return;
 
         var cancel = document.getElementById('sheet-label-cancel');
@@ -2941,6 +2968,13 @@
         */
         citeTarget = findExistingCiteTarget(labelSpan);
 
+        /*
+          ⚠️ 作者项也要预选（v0.1.74）——
+             用户再次打开同一段作者信息的标注时，
+             应该看到它现在是「单位」还是「未设置」。
+        */
+        fieldDraft = findExistingAuthorField(labelSpan);
+
         renderLabelOptions();
 
         hideSelectBarOnly();
@@ -2973,6 +3007,30 @@
 
         /* 起点没落在任何区间里，但有标注 → 用第一个作提示 */
         return list[0].label || null;
+    }
+
+    /**
+     * 找出覆盖选区起点的作者标注所带项名（v0.1.74）。
+     *
+     * @return {string|null} 没有项名 → null（表单里显示「不设置」）
+     */
+    function findExistingAuthorField(span) {
+        var line = span.single ? span.line : (span.lines || [])[0];
+        if (typeof line !== 'number') return null;
+
+        var list = labels[line];
+        if (!list || !list.length) return null;
+
+        var probe = span.single ? span.start : 0;
+
+        for (var i = 0; i < list.length; i++) {
+            var sp = list[i];
+            if (!sp || sp.label !== 'author') continue;
+            if (probe >= sp.start && probe < sp.end) {
+                return sp.field || null;
+            }
+        }
+        return null;
     }
 
     /**
@@ -3027,6 +3085,66 @@
         });
 
         renderCitePicker();
+        renderFieldPicker();
+    }
+
+    /**
+     * 渲染「作者项」选择器（v0.1.74）。
+     *
+     * 用户要求：
+     *   「再选中作者信息区域的文本应该为其设置项，项名左对齐，
+     *     但没有添加设置项的时候不显示。」
+     *
+     * ✅ 只在 `labelDraft === 'author'` 时显示；
+     *    首项是「不设置」（对应 `fieldDraft === null`）。
+     *
+     * ⚠️ 项名可选 —— 用户把一段话标成作者信息但不想细分时，
+     *    直接确认即可，不强迫他选一项。
+     */
+    function renderFieldPicker() {
+        if (!fieldPickerEl || !fieldListEl) return;
+
+        if (labelDraft !== 'author') {
+            fieldPickerEl.hidden = true;
+            return;
+        }
+
+        fieldPickerEl.hidden = false;
+        fieldListEl.textContent = '';
+
+        /* 首项：“不设置” */
+        var nullLi = document.createElement('li');
+        var nullBtn = document.createElement('button');
+        nullBtn.type = 'button';
+        nullBtn.className = 'sel-cite-item';
+        nullBtn.setAttribute('role', 'radio');
+        nullBtn.setAttribute('aria-checked', fieldDraft == null ? 'true' : 'false');
+        if (fieldDraft == null) nullBtn.classList.add('is-active');
+        nullBtn.textContent = t('reader.fieldNone');
+        nullBtn.addEventListener('click', function () {
+            fieldDraft = null;
+            renderFieldPicker();
+        });
+        nullLi.appendChild(nullBtn);
+        fieldListEl.appendChild(nullLi);
+
+        AUTHOR_FIELDS.forEach(function (key) {
+            var li = document.createElement('li');
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'sel-cite-item';
+            btn.setAttribute('role', 'radio');
+            btn.setAttribute('data-field', key);
+            btn.setAttribute('aria-checked', key === fieldDraft ? 'true' : 'false');
+            if (key === fieldDraft) btn.classList.add('is-active');
+            btn.textContent = t('reader.field.' + key);
+            btn.addEventListener('click', function () {
+                fieldDraft = key;
+                renderFieldPicker();
+            });
+            li.appendChild(btn);
+            fieldListEl.appendChild(li);
+        });
     }
 
     /**
@@ -3205,6 +3323,13 @@
                 if (labelDraft === 'cite' && citeTarget != null) {
                     newSpan.ref = citeTarget;
                 }
+                /*
+                  ⚠️ 作者信息的「项名」写在同一条记录的 `field` 上（v0.1.74）——
+                     不新建存储表。用户选「不设置」时不写这个字段。
+                */
+                if (labelDraft === 'author' && fieldDraft) {
+                    newSpan.field = fieldDraft;
+                }
                 kept.push(newSpan);
             }
 
@@ -3231,6 +3356,9 @@
                     if (labelDraft === 'cite' && citeTarget != null) {
                         rec.ref = citeTarget;
                     }
+                    if (labelDraft === 'author' && fieldDraft) {
+                        rec.field = fieldDraft;
+                    }
                     labels[ln] = [rec];
                 } else {
                     delete labels[ln];
@@ -3240,10 +3368,110 @@
             trace('reader:label', 'multi lines=' + lines.join(',') + ' = ' + labelDraft);
         }
 
+        /*
+          ⚠️ 标注完成后再同步作者（v0.1.74）——
+             必须在 `labels` 已经更新之后跑，否则读不到新标注。
+        */
+        if (labelDraft === 'author' && fieldDraft === 'name') {
+            syncAuthorToDetail();
+        }
+
         saveLabels();
         closeLabelSheet();
         clearSelection();
         rerenderKeepingScroll();
+    }
+
+    /**
+     * 把「姓名」项的作者同步到文章详细信息（v0.1.74）。
+     *
+     * ══ 用户要求（原话）══
+     *
+     *   「当检测到一个作者信息区域增加了作者姓名项的时候，
+     *     自动和目前的文章信息中的作者进行配对，如果存在则无操作；
+     *     如果不存在则加逗号后增加不存在的作者到文章详细信息项中。」
+     *
+     * 规则：
+     *   · 只处理 `field === 'name'` 的作者区域；
+     *   · 把 `doc.author` 按逗号拆开，逐段 trim；
+     *   · 新姓名若已存在（忽略大小写）→ 什么也不做；
+     *   · 否则追加到末尾，用 `, ` 连接。
+     *
+     * ⚠️ 分隔符用**英文逗号**：
+     *     作者列表是元数据，不跟随界面语言 ——
+     *     中文编辑符 `，` 会让以后的解析（按逗号拆分）出问题。
+     *
+     * ⚠️ 写回走原生桥 `updateDoc`，与详情页保存是同一条通路。
+     *     不能只改内存里的 `currentDoc.author` —— 那样重启就丢。
+     */
+    function syncAuthorToDetail() {
+        if (!currentDoc) return;
+
+        var bridge = global.ScholariusNative;
+        if (!bridge || typeof bridge.updateDoc !== 'function') {
+            trace('reader:author', 'no updateDoc bridge');
+            return;
+        }
+
+        /*
+          收集所有「姓名」项的作者名。
+          ⚠️ 用 `labels` 全量扫描而不是只看本次标注的那一段 ——
+             用户可能先标了别处，这次标的是第二个人，
+             两个人都该进元数据。
+        */
+        var names = [];
+        for (var key in labels) {
+            if (!Object.prototype.hasOwnProperty.call(labels, key)) continue;
+            var list = labels[key];
+            if (!list || list.length !== 1) continue;
+            var sp = list[0];
+            if (!sp || sp.label !== 'author' || sp.field !== 'name') continue;
+
+            var text = String(blockTextOf(parseInt(key, 10)) || '').trim();
+            if (text) names.push(text.replace(/\s+/g, ' '));
+        }
+        if (!names.length) return;
+
+        var existing = String(currentDoc.author || '');
+        var parts = existing.split(',');
+        var seen = {};
+        for (var i = 0; i < parts.length; i++) {
+            var p = parts[i].trim();
+            if (p) seen[p.toLowerCase()] = true;
+        }
+
+        var added = [];
+        for (var n = 0; n < names.length; n++) {
+            var nm = names[n];
+            var lc = nm.toLowerCase();
+            if (seen[lc]) continue;
+            seen[lc] = true;
+            added.push(nm);
+        }
+
+        if (!added.length) {
+            trace('reader:author', 'all names already present');
+            return;
+        }
+
+        var next = existing.replace(/\s+$/, '');
+        next = next ? (next + ', ' + added.join(', '))
+                    : added.join(', ');
+
+        /*
+          ⚠️ 先更新内存副本，再走桥 ——
+             这样即使桥回调还没到，界面上的详情页也已经是新值。
+          ⚠️ 桥调用要防异常：某些调试环境没有实现 updateDoc。
+        */
+        currentDoc.author = next;
+
+        try {
+            bridge.updateDoc(currentDoc.id, JSON.stringify({ author: next }));
+        } catch (e) {
+            trace('reader:author', 'updateDoc threw: ' + e.message);
+        }
+
+        trace('reader:author', 'added "' + added.join(', ') + '"');
     }
 
     // --- 菜单 ---------------------------------------------------------------
@@ -3775,7 +4003,6 @@
             }
             return;
         }
-
         /*
           ⚠️ 一个块里可能有多个不同标签（虽然少见）。此时无法只用一个
              标签段表达整个区域，退化为"逐块带标签"——
@@ -4007,8 +4234,34 @@
             var whole = document.createElement('p');
             whole.className = 'reader-para is-labeled-body';
             whole.setAttribute('data-label', sp.label);
-            whole.textContent = body;
             copyBlockAttrs(whole, null, b);
+
+            /*
+              ══ ⚠️ 作者信息的项名要**先插入**（v0.1.74）══
+
+              ⚠️ 顺序反了的话，`textContent = body` 会先建好一个文本节点，
+                 后 `appendChild` 的项名就落在内容**后面**，
+                 而不是用户要求的"左边的项名"。
+                 所以这里先 append 项名，再 append 内容文本。
+            */
+            if (sp.label === 'author' && sp.field) {
+                whole.classList.add('is-author-body');
+
+                var fieldEl = document.createElement('span');
+                fieldEl.className = 'reader-author-field';
+                fieldEl.textContent = t('reader.field.' + sp.field);
+                whole.appendChild(fieldEl);
+
+                var valEl = document.createElement('span');
+                valEl.className = 'reader-author-value';
+                valEl.textContent = body;
+                whole.appendChild(valEl);
+            } else {
+                whole.textContent = body;
+                if (sp.label === 'author') {
+                    whole.classList.add('is-author-body');
+                }
+            }
 
             /*
               ══ ⚠️⚠️ 文献 / 作者区域带前缀编号（v0.1.72）══

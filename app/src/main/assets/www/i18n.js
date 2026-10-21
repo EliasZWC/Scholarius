@@ -232,6 +232,12 @@
             'reader.label.cite': 'Citation',
             'reader.citePick': 'Cite Reference',
             'reader.citeEmpty': 'No references yet. Label some paragraphs as References first.',
+            'reader.fieldPick': 'Author Field',
+            'reader.fieldNone': 'Not Set',
+            'reader.field.name': 'Name',
+            'reader.field.affiliation': 'Affiliation',
+            'reader.field.email': 'Email',
+            'reader.field.contact': 'Contact',
 
             // 阅读设置：字体
             'reader.font': 'Font',
@@ -537,6 +543,12 @@
             'reader.label.cite': '引用',
             'reader.citePick': '引用哪条文献',
             'reader.citeEmpty': '还没有文献。先把几段标注为「参考文献」。',
+            'reader.fieldPick': '作者项',
+            'reader.fieldNone': '不设置',
+            'reader.field.name': '姓名',
+            'reader.field.affiliation': '单位',
+            'reader.field.email': '邮箱',
+            'reader.field.contact': '联系方式',
 
             // 阅读设置：字体
             'reader.font': '字体',

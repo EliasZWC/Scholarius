@@ -1832,6 +1832,66 @@ body {
 }
 
 /*
+  ══ 作者信息区域：左项名 + 右对齐内容（v0.1.74）══
+
+  用户要求：
+    「对于作者区域，文本右对齐。那么除了编号和提示条位置在左边，
+      还有什么文本在左边呢？应该是作者信息项。……
+      项名左对齐，但没有添加设置项的时候不显示。」
+
+  视觉：
+
+      A1 ┃ 单位              清华大学计算机系
+      ^^  ^  ^^^^              ^^^^^^^^^^^^^^^^
+      编号 竖线 项名（左）        内容（右对齐）
+
+  ⚠️ 用 flex + `justify-content: space-between` 而不是 `text-align: right`：
+     只写 `text-align: right` 的话，项名和内容会连成一行一起被推到右边，
+     项名就跑到内容右边去了。flex 才能"一个贴左、一个贴右"。
+*/
+.reader-para.is-author-body {
+    /*
+      ⚠️ 覆盖 `.is-body-para` 的 `align-items: flex-start` 吗？
+         不 —— 那是交叉轴对齐，这里要改的是主轴，用 justify-content。
+         （作者段未必带 is-body-para，但两者可能同时存在）
+    */
+    justify-content: space-between;
+}
+
+/* 项名：贴左，不参与右推 */
+.reader-author-field {
+    /*
+      ⚠️ `flex: 0 0 auto` + 靠左：
+         `space-between` 会在两个可见子项之间分配空隙，
+         项名在前自然贴左、内容在后自然贴右。
+    */
+    flex: 0 0 auto;
+    text-align: left;
+    /*
+      ⚠️ 与内容用同一字号（用户要求"不改变字重和字号"），
+         只靠淡色 + 略小一点的字距区分。
+         这里**不能**写 font-size，否则会与正文不一致。
+    */
+    letter-spacing: 0.2px;
+    /*
+      ⚠️ 项名与内容之间至少留一点空隙，
+         否则长内容会把项名挤扁。
+    */
+    padding-right: 12px;
+}
+
+/* 内容：贴右、可换行 */
+.reader-author-value {
+    flex: 1 1 auto;
+    text-align: right;
+    /*
+      ⚠️ 作者单位/邮箱可能很长，必须允许换行，
+         否则会把整行撑破。
+    */
+    overflow-wrap: anywhere;
+}
+
+/*
   ══ 引用标记（cite）（v0.1.71）══
 
   用户要求：

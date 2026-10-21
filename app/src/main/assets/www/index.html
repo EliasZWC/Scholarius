@@ -1371,6 +1371,24 @@
             <ul class="sel-cite-list" id="sheet-cite-list" role="radiogroup"></ul>
         </div>
 
+        <!--
+          ══ ⚠️ 作者项选择器（v0.1.74）══
+
+          用户要求：
+            「当正文段被标注成作者信息区域时，此时再选中作者信息区域的文本
+              应该为其设置项，项名左对齐，但没有添加设置项的时候不显示。
+              这个功能主要是为了区分作者信息的不同项，
+              比如作者名、单位、联系方式什么的。」
+
+          ⚠️ 与上面的引用选择器互斥 —— 只有选「作者信息」时显示。
+          ⚠️ 可选「不设置」—— 用户说了「没有添加设置项的时候不显示」，
+             所以项名是**可选**的，不是必填。
+        -->
+        <div class="sel-cite-picker" id="sheet-field-picker" hidden>
+            <p class="sel-cite-title" data-i18n="reader.fieldPick">Author Field</p>
+            <ul class="sel-cite-list" id="sheet-field-list" role="radiogroup"></ul>
+        </div>
+
         <div class="form-actions">
             <button class="btn" type="button" id="sheet-label-cancel"
                 data-i18n="action.cancel">Cancel</button>
