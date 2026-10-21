@@ -4,6 +4,51 @@
 
 ---
 
+## [0.1.39] - 2026-10-21
+
+### 去掉全部结构化模板：阅读视图只输出无等级的文本
+
+用户原话：
+
+> 「不允许有任何模板，我导入一个新的 pdf 进来，
+> 我看到的应该是无等级的全部文本才对」
+
+之前阅读视图会**替用户判断结构**，这些判断全部撤掉：
+
+| 撤掉的 | 原来会做什么 |
+|---|---|
+| 区域划分 | 把正文切成 Title / Author / Abstract / 各章节区 |
+| 位置硬套 | 第一个块=题目、题目之后=作者、`Abstract` 行=摘要锚点 |
+| 区域小标签 | 在页面上画 TITLE / AUTHOR / ABSTRACT 三行灰色大写字 |
+| 标题分级 | 按 level 渲染 h2 / h3 / h4，字号层级不同 |
+| 公式样式 | 判成公式的块用等宽字体 + 底纹 |
+| 类型样式 | 按 `reader-text-<type>` 给脚注/参考文献等不同字号 |
+
+现在**每个块都渲染成同一个 `<p class="reader-para">`**，
+335 个段落全部 17px / 400 字重，视觉上完全等价 ——
+与 PDF 里原来是不是标题、标题几级无关。
+
+删除的代码：
+- `reader.js` 2148 → 1692 行：`buildRegions`、`pushFrontRegion`、
+  `openRegion`、`appendToStack`、`guessKind`、`renderRegions`、
+  `makeRegionEl`、`makeRegionHeader`、`FRONT_LABEL_KEY`
+- `styles.css` 5257 → 4976 行：`.reader-heading`、`.reader-formula`、
+  `.reader-figure`、全部 `.rd-region-*`、`.reader-text-*`
+- `i18n.js`：删 `reader.untitledSection` 与 `reader.typeTitle/Author/
+  Abstract/Keyword`
+
+### 保留的（不是模板）
+
+- **分块渲染**：原生按段落切好，一段一个 `<p>`。退回整段
+  `textContent` 会让 `white-space: pre-wrap` 把 PDF 原始换行一起保留，
+  窄行排版下每句都断在半截（v0.1.6 修过的问题）。
+- **`dropContainedBlocks`**：去掉原生重复输出的块（同一行既有整块
+  又有逐词块），不去会看到内容重复两遍。这是数据清洗。
+- **`data-line` / `data-page`**：目录跳转靠 `data-line` 定位，
+  是数据不是视觉。
+
+---
+
 ## [0.1.38] - 2026-10-21
 
 ### 转换引擎：确保 PDF 正文全部进入阅读视图

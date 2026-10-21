@@ -535,522 +535,50 @@
     }
 
     /**
-     * 把结构化块渲染成 DOM。
+     * 渲染正文。
      *
-     * ══ ⚠️ 从这里开始是「文本分级」（v0.1.17）══
+     * ══ ⚠️⚠️ v0.1.39：**不做任何结构化模板** ══
      *
-     * 用户的要求（原话）：
-     *   「文本分级，先分作者、标题、摘要和各个一级大纲标题所表示的区域，
-     *     然后每个一级章节区域可以再分」
-     *   「分到哪一层由用户决定（可手动折叠/展开）」
+     * 用户原话：「不允许有任何模板，我导入一个新的 pdf 进来，
+     *           我看到的应该是无等级的全部文本才对」
      *
-     * 于是渲染分两步：
-     *   ① [buildRegions] 把平坦的 blocks 切成**有层级的区域树**；
-     *   ② [renderRegions] 把它渲染成可折叠的 DOM。
+     * 所以这里**不再**调 `buildRegions` —— 那会：
+     *   · 把块切成「Title / Author / Abstract / 各章节」区域
+     *   · 靠**位置**硬套（第一个块=题目、题目后=作者、`Abstract` 行=摘要锚点）
+     *   · 给区域加 TITLE / AUTHOR / ABSTRACT 小标签
+     *   · 按 level 分出 h2/h3/h4 三种字号
      *
-     * ⚠️ 为什么必须两步而不是边遍历边渲染：
-     *    折叠/展开要能作用于"整棵子树"，
-     *    而 DOM 一旦生成就成了树，再想按层级折叠就得反查父节点。
-     *    先在纯数据上把层级算清，渲染只是照着画。
+     * 这些都撤掉了。现在每篇文献渲染出来就是**一串等价的段落**，
+     * 与论文原来有没有标题、标题几级完全无关。
      *
-     * ══ 为什么要分块（v0.1.6）══
+     * ⚠️ 但**保留分块**（不退回整段 `textContent`）。
+     *    分块不是"模板"，是"换行"：原生按段落切好，
+     *    我们照着一段一个 `<p>`。退回整段文本会让
+     *    `white-space: pre-wrap` 把 PDF 的原始换行一起保留，
+     *    窄行排版下每句都断在半截（这正是 v0.1.6 修掉的问题）。
      *
-     * 纯文本流无法表达「这是标题 / 这是段落 / 这是公式」，
-     * 所以整篇看起来是一团字。分块之后每类元素有自己的
-     * 标签与样式，层次才立得起来。
+     * ⚠️ `dropContainedBlocks` 仍然要在渲染前跑 ——
+     *    它去掉的是原生**重复输出**的块（同一行既有整块又有逐词块），
+     *    不去掉会看到内容重复两遍。那是数据清洗，不是模板。
      *
-     * ⚠️ 一律用 `document.createElement` + `textContent`，
-     *    **绝不**用 innerHTML 拼字符串。
-     *    正文来自 PDF，可能含 `<` `>` `&` —— 拼字符串会破坏
-     *    页面结构（甚至注入）。这是本项目一贯的硬约束。
-     *
-     * ⚠️ 段落内的换行用 CSS `white-space: pre-wrap` 处理，
-     *    不在这里手工插 <br>。理由：pre-wrap 能正确保留
-     *    连续空格与制表符（公式对齐要用），手工插 <br> 会丢。
-     *
-     * ⚠️ `page` 记在 `data-page` 上：将来做「跳到原页」要用，
-     *    现在只存不用（不加可见 UI，避免引入没做完的功能）。
-     *
-     * @param {Array} blocks [{kind,text,level,page}]
+     * @param {Array} blocks [{kind,text,level,page,line}]
      */
     function renderBlocks(blocks) {
-        var regions = buildRegions(blocks);
-        if (!regions.length) {
-            // 没有任何可分区的内容：退回平坦渲染（保持旧行为，别白屏）
-            renderFlat(blocks);
-            return;
-        }
-        renderRegions(regions);
+        if (!blocks || !blocks.length) return;
+        renderFlat(blocks);
     }
 
     /**
-     * 把平坦的块序列切成**区域树**。类型**完全由原生识别**决定。
+     * 平坦渲染：一段一个 `<p>`，没有区域、没有等级。
      *
-     * ══ 区域类型 ══
-     *
-     * 首页区（各成一块）：
-     *     标题 / 作者 / 摘要 / 关键词
-     * 正文区：
-     *     一级章节开头 → 开一个 level 1 区域
-     *     其下遇到 level 2 标题 → 嵌一个 level 2 区域
-     *     再下 level 3 → 继续嵌
-     *
-     * ══ ⚠️ 用户标注已整体移除（v0.1.37）══
-     *
-     * 早期版本允许在「原始视图（PDF 位图）」里画框/选字改类型，
-     * 再把结果覆盖到这里。那套机制已被**整体删除** ——
-     * 用户 2026-10-21 的决定：
-     *   「算了，直接清除原视图这个设计吧…随之清除相关的图标和选项」
-     *
-     * 所以这里不再有 `marks` 参数，也不再读 `mark / byUser /
-     * frontHeuristicsOff` 这一类"用户表态优先"的分支。
-     * 唯一的输入是原生给的 `blocks`（kind / level / line / text）。
-     *
-     * ⚠️ 想恢复"人工纠正"能力时，**不要**去翻旧的 marks 代码 ——
-     *    那套东西的问题不在实现，在交互载体（位图上画框）。
-     *    先重新设计一个不依赖位图的做法（例如在阅读视图里直接
-     *    长按段落改类型），再接回来。
-     *
-     * @param  {Array} blocks [{kind,text,level,page,line}]
-     * @return {Array} 区域树 [{type, level, heading, blocks, children}]
+     * ⚠️ v0.1.39 起这是**唯一**的正文渲染路径（`renderBlocks` 直接调它）。
+     *    早期它是"分区失败时的兜底"，现在成了主路径 ——
+     *    因为用户要求「不允许有任何模板」。
      */
-    function buildRegions(blocks) {
-        var out = [];
-        if (!blocks || !blocks.length) return out;
-
-        /*
-          ⚠️ 兜底：原生没给行号时按"块内行数"累加估算。
-             目录跳转用的 `textLines[block.line]` 需要这个字段。
-
-          ⚠️ 有原生行号时**原样保留**，不要覆盖 ——
-             原生行号与 `textLines` 是同一套编号
-             （见 Kotlin 侧 globalLine 的说明）。
-        */
-        var row = 0;
-        for (var i = 0; i < blocks.length; i++) {
-            var b0 = blocks[i];
-            if (!b0 || !b0.text) continue;
-            if (typeof b0.line === 'number' && b0.line >= 0) continue;
-            var n = b0.text.split('\n').length;
-            b0.line = row;
-            row += n;
-        }
-
-        /*
-          ⚠️ 首页区只在**文章开头**认。
-             正文中间也可能出现 "Abstract" 字样（引用别人的摘要），
-             那时已经进入章节区了，不该再开一个"摘要区"。
-        */
-        var sawBody = false;
-        var stack = []; // 当前打开的章节区域栈（level 递增）
-        /*
-          ⚠️ 用来认「标题区」和「作者区」：
-             题目 = 首页的第一个块（无论它被判成什么）；
-             作者 = 紧随题目之后的那一段。
-        */
-        var sawTitle = false;
-        var authorPending = false;
-        /**
-         * 首页区是否**真的**结束了（v0.1.35 引入，v0.1.37 保留）。
-         *
-         * ⚠️ 与 `sawBody` 是**两件事**，不要再混用：
-         *    `sawBody`   = 章节栈开了没有（决定要不要补无标题兜底区）
-         *    `frontDone` = 首页区结束了没有（决定还能不能认标题/摘要）
-         *
-         * 历史：早期这两件事共用一个 `sawBody`，而它在**第一个块**上
-         * 就被正文兜底置 true 了 —— 于是摘要检查永远不生效。
-         */
-        var frontDone = false;
-        /*
-          ⚠️ 当前"敞开着的"首页区（title/author/abstract/keyword）。
-             摘要标题之后的正文要靠它归位。
-             null = 首页已结束或还没开始。
-        */
-        var frontOpen = null;
-
-        for (var j = 0; j < blocks.length; j++) {
-            var blk = blocks[j];
-            if (!blk || !blk.text) continue;
-
-            var type = guessKind(blk, frontDone);
-            var level = blk.level;
-
-            /*
-              ══ ⚠️⚠️ 把最终类型写回块上，供渲染读取 ══
-
-              渲染侧 `makeRegionEl` / `makeBlockEl` 读的是 `b.textType`。
-              不写的话它永远是 undefined，只能退回 `b.kind`（原生判定），
-              而 `b.kind` 里没有 abstract / keyword 这两类。
-            */
-            blk.textType = type;
-            if (type === 'heading' && !(level > 0)) blk.level = 1;
-
-            /*
-              ⚠️ 标题区是**位置**判据：文章的**第一个块**就是题目。
-                 （不用"内容像不像标题"，因为封面页整页字号都大、
-                   而题目有时被判成 paragraph。）
-            */
-            if (!frontDone && !sawTitle &&
-                type !== 'abstract' && type !== 'keyword') {
-                type = 'title';
-                blk.textType = type;
-            }
-
-            /*
-              ⚠️ 作者区同样是**位置**判据：题目后面紧跟的就是作者。
-                 单位/邮箱也要并进作者区（靠"遇到摘要/关键词就关窗"收口）。
-            */
-            if (!frontDone && authorPending && type === 'body') {
-                type = 'author';
-                blk.textType = type;
-            }
-
-            /*
-              ══ 首页区：标题 / 作者 / 摘要 / 关键词 ══
-            */
-            if (!frontDone && (type === 'title' || type === 'author' ||
-                              type === 'abstract' || type === 'keyword')) {
-                pushFrontRegion(out, type, blk);
-                frontOpen = type;
-                if (type === 'title') {
-                    sawTitle = true;
-                    authorPending = true;
-                } else if (type === 'abstract' || type === 'keyword') {
-                    authorPending = false;
-                }
-                continue;
-            }
-
-            /*
-              ⚠️ 首页区还没结束时的**正文块**（摘要正文、关键词列表）
-                 要并进刚开的那个首页区，不能去开章节。
-            */
-            if (!frontDone && frontOpen && type === 'body') {
-                pushFrontRegion(out, frontOpen, blk);
-                continue;
-            }
-
-            /*
-              ⚠️ 一旦出现章节标题，首页就结束了 —— 关掉首页窗口，
-                 后面所有内容都走章节流程。
-            */
-            if (type === 'heading') {
-                frontOpen = null;
-                authorPending = false;
-            }
-
-            /*
-              ══ 走到这里 = 可以认定首页区结束了 ══
-              能落到这一点，说明它没被任何前区分支接住。
-            */
-            if (frontOpen !== null || type === 'heading') {
-                frontDone = true;
-            }
-
-            /*
-              ══ 章节区 ══
-
-              ⚠️ 只看 `type`，**不再**额外挂 `blk.kind === 'heading'` 这个后门。
-
-                 早期写法是 `if (type === 'heading' || blk.kind === 'heading')`，
-                 本意是"原生判定的 heading 兜底开区"。但实际上
-                 `guessKind` 在首页之外**已经**返回 `blk.kind === 'heading'`
-                 的结果，这个 `||` 完全冗余 —— 而在首页之内它反而是**有害**的：
-                 它会让首页里被原生误判成 heading 的作者行/单位行
-                 强行开出一个章节区，把摘要整段吞进去
-                 （2026-10-21 真机实测的症状，见 guessKind 里的说明）。
-
-                 所以删掉它：`type` 是唯一判据，语义只有一处。
-            */
-            if (type === 'heading') {
-                var lv = (level > 0) ? level : 1;
-                sawBody = true;
-                stack = openRegion(out, stack, lv, blk);
-                continue;
-            }
-
-            /*
-              ⚠️ 正文的第一块若还没开章节区（有的 PDF 直接从正文开始，
-                 没有一级标题），补一个"无标题的一级区"，
-                 否则这些内容会挂在顶层、无法折叠。
-            */
-            if (!sawBody) {
-                sawBody = true;
-                stack = openRegion(out, stack, 1, null);
-            }
-
-            appendToStack(stack, out, blk, type);
-        }
-
-        return out;
-    }
-    /** 把一个首页块并进 out 里对应的前区（没有就新建） */
-    function pushFrontRegion(out, type, blk) {
-        for (var i = 0; i < out.length; i++) {
-            if (out[i].type === type && out[i].level === 0) {
-                out[i].blocks.push(blk);
-                return;
-            }
-        }
-        out.push({ type: type, level: 0, heading: null, blocks: [blk], children: [] });
-    }
-
-    /**
-     * 开一个新的章节区并正确嵌套。
-     *
-     * ⚠️ 嵌套规则：level 比栈顶**大**就嵌进去；**小于等于**就先把
-     *    栈顶及更深的一路弹出，直到找到比自己浅的那一层。
-     *    这是解析标题层级的标准做法（与建目录树同理）。
-     */
-    function openRegion(out, stack, lv, headingBlock) {
-        // 弹出所有 >= 本层级的（它们已经结束了）
-        while (stack.length && stack[stack.length - 1].level >= lv) {
-            stack.pop();
-        }
-
-        var region = {
-            type: 'section',
-            level: lv,
-            heading: headingBlock,
-            blocks: [],
-            children: []
-        };
-
-        if (stack.length) {
-            stack[stack.length - 1].children.push(region);
-        } else {
-            out.push(region);
-        }
-
-        stack.push(region);
-        return stack;
-    }
-
-    /** 把内容块追加到当前最深的那一层区域里 */
-    function appendToStack(stack, out, blk, type) {
-        var target = stack.length
-            ? stack[stack.length - 1]
-            : (out[out.length - 1] || null);
-        if (!target) return;
-
-        /*
-          ⚠️ 把这个块被判定的文本类型带上（textType），
-             渲染时给不同样式 —— 脚注/参考文献不该混在正文段落里。
-        */
-        target.blocks.push({
-            kind: blk.kind,
-            text: blk.text,
-            page: blk.page,
-            /*
-              ⚠️⚠️ 必须带上 **level**（2026-09-25 补）。
-                 原来只带 kind —— 于是 `makeBlockEl` 里
-                 `var lv = (b.level >= 3) ? 4 : (...)`
-                 读到 undefined → 恒为 h2，用户标的 L2/L3 全部丢失。
-                 在 `makeBlockEl` 从 `textType` 推导 kind 之后，
-                 level 也必须一起传，否则层级依然错。
-            */
-            level: blk.level,
-            textType: type
-        });
-    }
-
-    /**
-     * 猜一个块属于哪个文本类型（用户没标过时用）。
-     *
-     * ⚠️ 这里**故意只认首页那几类**，不去猜"脚注 / 参考文献"这类
-     *    需要语义理解的东西 —— 猜错比不猜更糟
-     *    （用户看到摘要被标成"参考文献"会完全不信任这个功能）。
-     *    猜不出的统一当正文。
-     *
-     * ══ ⚠️ 为什么摘要/关键词的检查要**先于** kind==='heading' ══
-     *
-     * 原生侧把 `Abstract` 判成 heading 是**对的** ——
-     * 它确实是标题（字号大、全大写、独立成行），
-     * 而且标题层级也是对的（它确实是一级）。
-     *
-     * 但在**区域划分**这个语境下，"Abstract 这一行"属于
-     * **首页的摘要区**，而不是一个正文章节。两者的区别是
-     * "它在文章结构里的位置"，不是"它长得像不像标题"。
-     *
-     * 实测症状：先判 heading 的话，摘要会变成一个
-     * 与 "1 Introduction" 平级的章节区，用户看到的是
-     * 一个"Abstract"章节 + 一段内容，而不是一个"摘要区"。
-     *
-     * ══ ⚠️⚠️ 第二个参数是 `frontDone`，**不是 `sawBody`**（2026-09-28 修）══
-     *
-     * 原来传的是 `sawBody`，而 `sawBody` 在**第一个块**上就被
-     * 正文兜底 `openRegion(lv=1, null)` 置 true 了
-     * （见 buildRegions 里"正文的第一块若还没开章节区"那段）。
-     *
-     * 后果：**摘要检查永远不生效** —— j=5 那一行 `"Abstract"`
-     * 明明是行首且是纯标题词，却因为 `sawBody` 已 true
-     * 而跳过了摘要判据 → 落成 `heading` → 摘要变成一个章节区。
-     *
-     * 实测（reader:fb 日志）：修复前**没有** `PRE j=5 type=abstract`
-     * 这一条，只有 `FLIP j=18 line=20 type=heading`；
-     * 修复后 j=5 正确判出 `abstract`。
-     *
-     * ⚠️ `frontDone` 与 `sawBody` 的区别见它在 buildRegions 里的定义：
-     *    `sawBody`   = "章节栈开了没有"（决定要不要补兜底区）
-     *    `frontDone` = "首页区结束了没有"（决定还能不能认标题/摘要）
-     *    这是**两件事**，之前混用导致了本 bug。
-     */
-    /**
-     * 这一行的文本是不是**首页结构锚点**（摘要 / 关键词）。
-     *
-     * ⚠️ 唯一来源：`guessKind` 用它把「Abstract」这一行认成摘要。
-     *    抽成常量的理由是**正则细节容易改错** ——
-     *    为什么不用 `\b`、为什么显式列分隔符，见下面 guessKind 里的说明。
-     *    将来要放宽/收紧只改这里一处。
-     *
-     * ⚠️ 正则的细节（为什么不用 `\b`、为什么显式列分隔符）
-     *    见下面 guessKind 里那段长注释，这里只做搬运、不改语义。
-     *    若将来要放宽/收紧，改这里一处即可，两个调用点同步生效。
-     */
-    var FRONT_ANCHOR_ABSTRACT = /^(abstract|摘要)(\s|$|[:：—–-])/i;
-    var FRONT_ANCHOR_KEYWORD =
-        /^(keywords?|index terms|关键词)(\s|$|[:：—–-])/i;
-
-    /**
-     * **真章节标题**的编号前缀：`1` / `3.1` / `4.2.1`，后面跟空白再跟标题文字。
-     *
-     * ⚠️ 只给「首页里判原生 heading」那一处用（见 guessKind）。
-     *    首页里有大量字号较大、被原生判成 heading 的**非标题行**
-     *    （作者、单位、邮箱、会议名），必须靠编号把它们区分开，
-     *    否则首页永远关不掉、摘要区会吞掉整篇。
-     *
-     * ⚠️ 要求编号后**必须**跟空白 —— 否则 `3D` / `2017` 这种
-     *    以数字开头的正文也会命中。
-     */
-    var SECTION_NUMBER_RE = /^\d+(?:\.\d+)*\.?\s+\S/;
-
-    /** 这一行是不是摘要/关键词锚点（见上） */
-    function isFrontAnchorText(text) {
-        if (text == null) return false;
-        var txt = String(text).trim();
-        return FRONT_ANCHOR_ABSTRACT.test(txt) ||
-               FRONT_ANCHOR_KEYWORD.test(txt);
-    }
-
-    function guessKind(blk, frontDone) {
-        if (!frontDone) {
-            var txt = blk.text.trim();
-            /*
-              ⚠️ 摘要 / 关键词的提示词。中英文都列 ——                 两种写法在真实论文里都常见。
-
-              ⚠️ 用 `^`（行首）而不是 `contains` ——
-                 正文里引用别人的摘要也会出现 "abstract"，
-                 但不会在行首。行首匹配大幅降低误判。
-
-              ⚠️⚠️ **不能用 `\b` 收尾**。这条踩过坑：
-                   · `\b` 在中文后面**不成立**（中文字符在 JS 里
-                     算 word character），所以 `^(摘要)\b` 永远匹配不上
-                     `摘要：本文…`；
-                   · `Keywords` 后面是 `:`，而 `\b` 在 `s` 与 `:` 之间
-                     确实成立 —— 但 `^(keywords?)\b` 对
-                     `Keywords`（整行就这一个词，行尾即字符串尾）
-                     在 `s` 后面没有字符，`\b` 仍然成立，
-                     所以那条其实是对的；
-                     真正坏掉的是中文那条。
-
-                 改成**显式列举可接受的分隔符**：空白、行尾、
-                 中英文冒号、各种破折号。这样中英文都覆盖，
-                 且不会把 "Abstracting away..." 这类词误判
-                 （它后面是字母，不在分隔符集合里）。
-            */
-            if (FRONT_ANCHOR_ABSTRACT.test(txt)) return 'abstract';
-            if (FRONT_ANCHOR_KEYWORD.test(txt)) return 'keyword';
-
-            /*
-              ══ ⚠️⚠️ 首页里**不能**直接用原生的 `kind === 'heading'` ══
-                 （2026-10-21 真机实测的真因）
-
-              ══ 症状 ══
-
-              真机上打开 Transformer 论文，阅读视图首屏是：
-
-                  READER.TYPETITLE
-                  Attention Is All You Need Ashish Vaswani∗…
-                  ┃ Vaswani∗Noam Shazeer∗Niki Parmar∗Jakob Uszkoreit∗
-                  ┃ Google Brain Google Brain … avaswani@google.com …
-                  ┃ Google Research University of Toronto … aidan@cs…
-                  Abstract
-                  The dominant sequence transduction models are based on …
-
-              作者、单位、邮箱全被**吞进一个叫「Vaswani∗Noam Shazeer∗…」
-              的二级章节区**里 —— 摘要区没建出来，摘要标题变成那个假章节里的正文。
-
-              ══ 真因 ══
-
-              原生 `PdfText.classifyBlock` 把作者行
-
-                  "Vaswani∗Noam Shazeer∗Niki Parmar∗Jakob Uszkoreit∗"
-
-              判成了 `heading`（level 2）—— 它字号确实比正文大、
-              独立成行、没有句末标点，三条启发式全部命中。
-
-              而这个函数原来无条件信任它：
-
-                  if (blk.kind === 'heading') return 'heading';
-
-              → `buildRegions` 走 `openRegion(out, stack, 2, blk)` 开章节 →
-              **作者行成了区域头**，后续单位/邮箱按"章节正文"appendToStack
-              进同一个区 → 直到遇到 `Abstract`（标题）才又开一个区。
-              所以摘要区被整个吃掉了。
-
-              ⚠️ 这个 bug 与标注无关，是**一直存在**的 ——
-                 早期版本里作者区判据会把它改写成 `author`，恰好挡住；
-                 v0.1.37 删掉标注后作者区判据只剩位置判据，
-                 而位置判据要求 `type === 'body'`，heading 进不去，
-                 于是问题首次暴露。
-
-              ══ ✅ 修法 ══
-
-              首页（`!frontDone`）里，原生判的 heading **默认不当章节标题** ——
-              降级成 `body`，交给 `buildRegions` 的位置判据去归位
-              （题目 → title，题目之后 → author）。
-
-              ⚠️ 但**必须有例外**，否则首页永远关不掉（2026-10-21 第二次实测）：
-
-                 第一次修完只做了"降级"，于是 `1 Introduction` 也成了 body，
-                 `frontOpen` 再也遇不到 heading → 永远不关
-                 → 摘要区把**后面全部 326 个块**吞进去。
-                 真机日志：`#2 type=abstract blocks=326`（应为 12）。
-
-              ✅ 例外判据：**带章节编号的**才算真章节标题。
-                 摘要是 `Abstract` 这种纯词，作者行是 `Vaswani∗Noam…`，
-                 单位/邮箱不带编号 —— 只有 `1 Introduction` / `3.1 Encoder`
-                 这类"数字 + 空格 + 标题文字"才是正文的开始。
-
-                 ⚠️ 只认**行首的数字编号**，不认 `Abstract`。
-                     `Abstract` 在上面的锚点判断里已经返回了，走不到这里。
-                 ⚠️ 也不认罗马数字 —— 首页的 `I` / `II` 更可能是版式符号，
-                     而真章节标题几乎都有阿拉伯数字编号。
-            */
-            if (blk.kind === 'heading' && SECTION_NUMBER_RE.test(txt)) {
-                return 'heading';
-            }
-
-            /*
-              ⚠️ 摘要/关键词之后的正文（摘要正文、关键词列表）
-                 仍返回 body，由 `frontOpen` 收编 —— 见 buildRegions。
-            */
-            return 'body';
-        }
-
-        if (blk.kind === 'heading') return 'heading';
-        return 'body';
-    }
-
-    /** 平坦渲染（无区域时兜底，行为与 v0.1.16 一致） */
     function renderFlat(blocks) {
         var frag = document.createDocumentFragment();
         for (var i = 0; i < blocks.length; i++) {
-            /*
-              ⚠️ 传 `blocks[i].textType` 而不是 null ——
-                 兜底路径也要反映用户标注（见 buildRegions 里写回 textType 的说明）。
-            */
-            var el = makeBlockEl(blocks[i], blocks[i].textType);
+            var el = makeBlockEl(blocks[i]);
             if (el) frag.appendChild(el);
         }
         contentEl.appendChild(frag);
@@ -1059,108 +587,35 @@
     /**
      * 造一个块的 DOM 元素。
      *
-     * ⚠️ 这是**唯一**决定"某种块长什么样"的地方 ——
-     *    平原渲染与区域渲染都调它，避免两套样式各自演化。
+     * ══ ⚠️⚠️ v0.1.39：**所有块一律是 `<p>`，没有等级** ══
      *
-     * @param {Object} b        块 [{kind,text,level,page,textType}]
-     * @param {string|null} ttype 文本类型（用户标注或猜出来的）
+     * 用户原话：「不允许有任何模板……我看到的应该是无等级的全部文本才对」
+     *
+     * 所以这里不再看 `b.kind` / `b.level` / `b.textType`：
+     *   · 原生判成 heading 的块，**也渲染成普通段落**
+     *   · 不再产出 `<h2>/<h3>/<h4>`（也就没有字号差异）
+     *   · 公式块不再走等宽+底纹（那是"我们认出了这是公式"，
+     *     属于模板性判断）
+     *   · 不再加 `reader-text-<type>` 这类按类型命名的 class
+     *
+     * ⚠️ 但**保留 `data-page` 与 `data-line`** —— 它们是数据，
+     *    不是视觉模板：目录跳转靠 `data-line` 定位，
+     *    `data-page` 供将来"跳到原页"用。都不影响显示。
+     *
+     * ⚠️ **不要**在这个函数里加任何按内容分支的样式 ——
+     *    一旦这里出现 `if (kind === 'heading')` 之类的判断，
+     *    "模板"就又回来了。要改样式请在 CSS 里改 `.reader-para`。
+     *
+     * @param {Object} b 块 [{text, page, line}]
      * @return {Element|null}
      */
-    function makeBlockEl(b, ttype) {
+    function makeBlockEl(b) {
         if (!b || !b.text) return null;
 
-        /*
-          ══ ⚠️⚠️ `kind` 的判据：**用户标注（ttype）优先于原生判定（b.kind）** ══
-
-          用户 2026-09-25：「阅读视图并没有按照更改后的框重新排版。」
-
-          原来这里只读 `b.kind` —— 那是**原生自动识别**的结果，
-          不含用户标注。于是用户把一段正文标成「章节标题」之后，
-          阅读视图里它**仍然是 <p>**，看起来标注毫无作用。
-
-          ⚠️ 映射关系：
-             ttype === 'heading'      → 当标题渲染（h2/h3/h4）
-             ttype === 'formula'      → 当公式渲染（等宽 + 底纹）
-             其它 / 未标注            → 沿用原生 kind
-             ⚠️ 逆向不需要：用户把原生的标题标成「正文」时，
-                `ttype === 'body'` 会让它落到 else 分支 → <p> ——
-                正是期望的行为（用户有权把误判的标题降为正文）。
-        */
-        var kind;
-        if (ttype === 'heading') {
-            kind = 'heading';
-        } else if (ttype === 'formula') {
-            kind = 'formula';
-        } else if (ttype) {
-            /*
-              ⚠️ 用户明确标了某个**非标题/非公式**的类型
-                 （body / abstract / author / title / keyword / …）→
-                 不再当作 heading。
-                 理由：用户去编辑模式里改它，就是要推翻原生判断；
-                 这里若还沿用 `b.kind === 'heading'`，改了就白改。
-                 ⚠️ 但 formula 由原生判成 formula 时仍要保留等宽样式 ——
-                    所以只在"用户标了东西"时覆盖，不标时才信原生。
-            */
-            kind = 'paragraph';
-        } else {
-            kind = b.kind || 'paragraph';
-        }
-        var el;
-
-        if (kind === 'heading') {
-            /*
-              ⚠️ 标题层级映射到 h2 / h3 / h4，**不用 h1** ——
-                 页面本身已有 h1 语义（应用标题），
-                 正文里再出 h1 会破坏文档大纲。
-
-             层级来源（原生侧 PdfText.classifyBlock）：
-                1 = 章（`3` / `Abstract`，字号最大）
-                2 = 节（`3.1`，字号次之或粗体）
-                3 = 更深层（`3.1.1`），原生侧封顶到 3
-
-             ⚠️ 三档全部保留 —— 早先这里把 level>=2 一律压到 h3，
-                于是「章」与「节」在视觉上分不出来，
-                而 CSS 里本来就为三档各写了字号（见 styles.css）。
-                 映射：level 1 → h2，2 → h3，>=3 → h4
-            */
-            var lv = (b.level >= 3) ? 4 : ((b.level === 2) ? 3 : 2);
-            el = document.createElement('h' + lv);
-            el.className = 'reader-heading';
-
-        } else if (kind === 'formula') {
-            /*
-              ⚠️ 公式块用等宽字体 + 独立背景。
-                 虽然不是真正的 LaTeX（那需要数学 OCR），
-                 但「单独成块 + 等宽」已经能让用户把它
-                 与正文区分开，不再混在一句话里。
-            */
-            el = document.createElement('div');
-            el.className = 'reader-formula';
-
-        } else if (kind === 'figure') {
-            /*
-              ⚠️ 目前**不会**产出 figure（抽取 PDF 图片是独立一项）。
-                 但这里先把渲染路径写好 —— 原生侧将来只要开始
-                 产出 figure，前端立刻就能正确显示，不用再改这里。
-            */
-            el = document.createElement('div');
-            el.className = 'reader-figure';
-
-        } else {
-            el = document.createElement('p');
-            el.className = 'reader-para';
-        }
-
-        /*
-          ⚠️ 文本类型还要表达在 class 上（脚注/参考文献/关键词等），
-             这样各类可以有不同样式。CSS 里对应 .reader-text-<type>。
-             正文（body）不加 class —— 那是绝大多数，加了只是噪声。
-        */
-        if (ttype && ttype !== 'body' && ttype !== 'heading') {
-            el.className += ' reader-text-' + ttype;
-        }
-
+        var el = document.createElement('p');
+        el.className = 'reader-para';
         el.textContent = b.text;
+
         if (b.page) el.setAttribute('data-page', String(b.page));
         /*
           ⚠️ `data-line` 是**目录跳转的锚点**（见 jumpTo）。
@@ -1174,196 +629,6 @@
             el.setAttribute('data-line', String(b.line));
         }
         return el;
-    }
-
-    /**
-     * 把区域树渲染成可折叠的 DOM。
-     *
-     * ══ 折叠 / 展开（用户要求「分到哪一层由用户决定」）══
-     *
-     * 每个章节区渲染成一个 `<section class="rd-region">`，
-     * 里面：
-     *   · 一个可点的头部（章节标题 + 展开箭头）
-     *   · 一个内容容器（下面直接的内容块 + 更深层的子区域）
-     *
-     * ⚠️ 折叠状态**不持久化**。理由：用户折叠多半是为了
-     *    "跳过这段看看后面"，不是长期偏好；存起来反而
-     *    会出现"我明明展开过怎么又是收着的"。
-     *    默认全展开 —— 用户的要求是"能手动折叠/展开"，
-     *    没说默认收起。
-     *
-     * ⚠️ 折叠只改 `hidden`，**不重建 DOM** ——
-     *    重建会让滚动位置跳到顶部，用户折叠一个远处的章节
-     *    结果视线被拽走，很烦。
-     */
-    function renderRegions(regions) {
-        var frag = document.createDocumentFragment();
-        trace('reader:regions', 'count=' + regions.length);
-        for (var i = 0; i < regions.length; i++) {
-            /*
-              ⚠️ 每建一个区域都记一条 —— 排查"某个区域凭空消失"时，
-                 这能立刻看出是"没建出 region"还是"建了但渲染抛异常"。
-            */
-            try {
-                var el = makeRegionEl(regions[i]);
-                trace('reader:region-el', '#' + i + ' type=' + regions[i].type +
-                      ' lv=' + regions[i].level +
-                      ' head=' + (regions[i].heading ? String(regions[i].heading.text).slice(0, 24) : 'null') +
-                      ' blocks=' + regions[i].blocks.length +
-                      ' el=' + (el ? el.tagName : 'null'));
-                if (el) frag.appendChild(el);
-            } catch (e) {
-                trace('reader:region-err', '#' + i + ' ' + (e && e.message));
-            }
-        }
-        contentEl.appendChild(frag);
-    }
-
-    /** 首页区的区域小标签文案（与 TEXT_TYPES 的前四类对应） */
-    var FRONT_LABEL_KEY = {
-        title: 'reader.typeTitle',
-        author: 'reader.typeAuthor',
-        abstract: 'reader.typeAbstract',
-        keyword: 'reader.typeKeyword'
-    };
-
-    /** 造一个区域（首页区或章节区）的 DOM */
-    function makeRegionEl(region) {
-        var sec = document.createElement('section');
-        sec.className = 'rd-region rd-region-' + (region.type || 'section');
-        if (region.level) {
-            sec.className += ' rd-region-lv' + Math.min(region.level, 3);
-        }
-
-        /*
-          ⚠️ 首页区（标题/作者/摘要/关键词）**没有可折叠的头部** ——
-             它们本身就是一小段内容，折叠没意义，
-             多一个可点的标题反而让人以为漏了内容。
-
-          ⚠️ 但**要有一个小标签**说明"这段是摘要" ——
-             否则用户看到一段独立成块的文字，不知道它是被识别出来的
-             区域还是排版巧合。标签是纯视觉的，不接手势。
-
-          ⚠️ 标签用 .rd-region-titletext，
-             与论文题目（.rd-region-title 容器）区分开，见我 CSS 里的说明。
-        */
-        if (region.type === 'section') {
-            /*
-              ⚠️ makeRegionHeader 可能返回 null（无真标题的兜底区，
-                 见它的说明）—— 不能无条件 appendChild，否则
-                 `appendChild(null)` 会抛 TypeError，
-                 整个区域渲染失败（症状：阅读视图一片空白）。
-            */
-            var head = makeRegionHeader(region);
-            if (head) {
-                sec.appendChild(head);
-            }
-        } else if (FRONT_LABEL_KEY[region.type]) {
-            var label = document.createElement('div');
-            label.className = 'rd-region-titletext';
-            label.textContent = t(FRONT_LABEL_KEY[region.type]);
-            sec.appendChild(label);
-        }
-
-        var body = document.createElement('div');
-        body.className = 'rd-region-body';
-
-        // 直接内容
-        for (var i = 0; i < region.blocks.length; i++) {
-            var b = region.blocks[i];
-            /*
-              ⚠️ 调试：确认渲染侧拿到的 textType 与 line。
-                 排查「buildRegions 命中了标注、但视图没变」时，
-                 这一条能立刻区分：
-                   · 这里 textType 为空 → buildRegions 写的不是同一个对象
-                   · 这里 textType 有值 → 问题在 makeBlockEl 的分支
-            */
-            if (b && b.textType && b.textType !== 'body') {
-                trace('reader:render-block', 'line=' + b.line + ' textType=' +
-                      b.textType + ' kind=' + b.kind);
-            }
-            var el = makeBlockEl(b, b.textType);
-            if (el) body.appendChild(el);
-        }
-
-        // 更深层的子区域
-        for (var j = 0; j < region.children.length; j++) {
-            body.appendChild(makeRegionEl(region.children[j]));
-        }
-
-        sec.appendChild(body);
-        return sec;
-    }
-
-    /**
-     * 造章节区的头部。
-     *
-     * ══ ⚠️ 这里**故意没有折叠功能**（用户 2026-09-24 明确要求）══
-     *
-     * 用户原话：「阅读视图不许折叠，无法修改，想修改必须去原始视图（pdf）中修改分区」
-     *
-     * 道理：阅读视图是**结果**，不是编辑界面。
-     * 它显示的是「我们（或用户）判定出来的分区」，
-     * 用户在这里唯一该做的是**读**。要改分区就去原始视图，
-     * 那里能看到版面、能画框、能选中文本 —— 那才是改的地方。
-     *
-     * ⚠️ 所以上一版做的这些全部**删掉**，不要加回来：
-     *    · `<button class="rd-region-head">` + aria-expanded
-     *    · 点击折叠逻辑
-     *    · 左侧那个旋转三角（CSS 的 .rd-region-head::before）
-     *    留一个可点的标题会让用户以为"点一下能改什么"，
-     *    而点了没反应比没有这个交互更让人困惑。
-     *
-     * ⚠️ 因此这里返回的是**纯 `<h2>/<h3>/<h4>`**，
-     *    不带任何交互语义（不是按钮、没有 tabindex、没有 cursor:pointer）。
-     */
-    function makeRegionHeader(region) {
-        var lv = region.level >= 3 ? 4 : (region.level === 2 ? 3 : 2);
-        var title = document.createElement('h' + lv);
-        title.className = 'reader-heading rd-region-title';
-        /*
-          ══ ⚠️⚠️ 没有真标题时**不出这个头部**（2026-09-25 用户实测）══
-
-          用户原话（关于「清空」的预期）：「**全部拍平成纯正文**」。
-
-          清空后所有块的 textType 都成了 body → buildRegions 里
-          没有任何块走"首页区"或"章节区"的判据 → 整篇落进那条
-          兜底分支 `openRegion(out, stack, 1, null)`（headingBlock = null）。
-
-          旧行为：给这个无标题区起个占位文案
-                  `t('reader.untitledSection')` = **"Section"**，
-                  于是阅读视图顶上凭空出现一个 `H2 "Section"`。
-
-          真机实测（tools/emu_clear_why.py）清空后的阅读视图：
-              H2 21.25px  "Section"              ← 这个是伪标题
-              P  17px     "Attention Is All You N"
-              P  17px     "Uszkoreit∗Google Brain"
-              …
-
-          用户要的是"拍平成纯正文"，而这个 H2 "Section" 把正文
-          又切出了一个区、凭空造了一个不存在的章节名 ——
-          它**没有任何信息量**（既不是论文里的词，也不表示任何结构），
-          纯粹是内部数据结构的产物泄漏到了界面上。
-
-          ✅ 修法：没有 heading 就不出头部。
-             区域本身仍然存在（DOM 结构、CSS 都照旧），
-             只是不渲染那行标题文字 —— 正文照样拍平，
-             且不会出现凭空的 "Section"。
-        */
-        if (!region.heading || !region.heading.text) {
-            return null;
-        }
-        title.textContent = region.heading.text;
-        /*
-          ⚠️ 区域头也要带 `data-line` —— 目录里绝大多数条目是
-             **章节标题**，它们只存在于区域头里，正文块列表里没有。
-             漏了这一步，点目录就只能靠"跳到下一个正文块"的兜底，
-             位置会差一行（落在标题下面那段的第一行）。
-        */
-        if (typeof region.heading.line === 'number' && region.heading.line >= 0) {
-            title.setAttribute('data-line', String(region.heading.line));
-        }
-        return title;
     }
 
     /**
@@ -1500,33 +765,24 @@
         }
 
         /*
-          ══ 渲染：优先用结构化块（v0.1.6）══
+          ══ 渲染：一块一个段落，**不分等级、不加标签**（v0.1.39）══
 
-          ⚠️ 为什么必须分块渲染（用户 2026-09-24 的反馈）：
-             「阅读内容仍然无法阅读 …… 所有文本也挤在了一起，
-              总之非常难以辨认」。
+          用户原话：「不允许有任何模板，我导入一个新的 pdf 进来，
+                     我看到的应该是无等级的全部文本才对」
 
-             纯文本 + pre-wrap 的问题是**结构信息为零** ——
-             标题、段落、公式在视觉上完全一样，
-             于是整篇看起来是一大团字。而 PDF 里它们本来是
-             可以区分的（字号、粗细、间距）。
+          所以现在**不再**按 `kind` 给不同标签（h2/h3/公式/图）——
+          所有块一律渲染成 `<p>`，见 makeBlockEl。
 
-             所以原生侧现在产出 blocks（heading / paragraph /
-             formula / figure），前端按 kind 给不同标签与样式：
-                heading   → <h2>/<h3>，字号更大、有上间距
-                paragraph → <p>，段距 + 首行缩进
-                formula   → <div class="reader-formula">，等宽 + 底纹
-                figure    → <div class="reader-figure">（暂无产出）
+          ⚠️ 分块本身保留：原生按段落切好，我们照着一段一个 `<p>`。
+             退回整段 `textContent` 会让 `white-space: pre-wrap`
+             把 PDF 的**原始换行**一起保留，窄行排版下每句都断在半截
+             （这正是 v0.1.6 修掉的问题）。
 
           ⚠️ 没有 blocks 时**退回纯文本**（老数据 / 提取层未升级）。
-            不能因为拿不到 blocks 就白屏 —— 那比排版差严重得多。
+             不能因为拿不到 blocks 就白屏。
         */
         /*
           ⚠️ 缓存一份块数据，供测试接口（getBlocks）读取。
-
-          ⚠️ **必须在 renderBlocks 之前赋值** ——
-             renderBlocks 内部的 buildRegions 会把行号写回块（block.line）。
-             晚赋值的话 lastBlocks 里的块**没有 line 字段**。
 
           ⚠️ 两者只会有一个非空，所以要**显式清掉另一个** ——
              不清的话，上一篇的 blocks 会残留在 lastBlocks 里。

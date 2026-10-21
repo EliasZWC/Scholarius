@@ -202,22 +202,6 @@
             'reader.tocEmpty': 'No Headings Found In This Document.',
             'reader.abstract': 'Abstract',
 
-            // 未命名的正文区（原生没认出任何一级标题时的兜底名）
-            'reader.untitledSection': 'Section',
-
-            /*
-              首页区的小标签文案（阅读视图里“这段是标题 / 作者 / 摘要 / 关键词”）。
-
-              ⚠️ 这四个**不属于**标注功能 —— 它们是阅读视图自己画区域头用的，
-                 删标注时千万不要一起删（删了界面上会直接露出原始 key）。
-
-              ⚠️ 都是短语 → 每个词首字母大写。
-            */
-            'reader.typeTitle': 'Title',
-            'reader.typeAuthor': 'Author',
-            'reader.typeAbstract': 'Abstract',
-            'reader.typeKeyword': 'Keyword',
-
             // 阅读设置：字体
             'reader.font': 'Font',
             'reader.fontSize': 'Font Size',
@@ -497,15 +481,6 @@
             'reader.settingsLabel': '设置',
             'reader.tocEmpty': '未能从本文中识别出标题。',
             'reader.abstract': '摘要',
-
-            // 未命名的正文区（原生没认出任何一级标题时的兜底名）
-            'reader.untitledSection': '本节',
-
-            // 首页区的小标签文案（阅读视图画区域头用，不属于标注功能）
-            'reader.typeTitle': '标题',
-            'reader.typeAuthor': '作者',
-            'reader.typeAbstract': '摘要',
-            'reader.typeKeyword': '关键词',
 
             // 阅读设置：字体
             'reader.font': '字体',
