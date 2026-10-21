@@ -3465,6 +3465,27 @@
         */
         currentDoc.author = next;
 
+        /*
+          ══ ⚠️⚠️ 登记为「后台同步」（v0.1.76）══
+
+          用户反馈：
+            「文章具体信息页怎么删了很多项目啊？不能删啊」
+
+          真因：`updateDoc` 的回调会走到 `ScholariusDetail.onDocUpdated`。
+          若详情页正开着同一篇文献，它会：
+
+            ① `currentDoc.fields = draft.fields` ——
+               用**打开详情页时**的旧快照覆盖当前字段，
+               用户在那之后新填的内容全部丢失；
+            ② `close()` —— 无故关闭详情面板。
+
+          ✅ 先登记 id，`onDocUpdated` 识别到就直接返回。
+        */
+        if (global.ScholariusDetail &&
+            typeof global.ScholariusDetail.markSilentUpdate === 'function') {
+            global.ScholariusDetail.markSilentUpdate(currentDoc.id);
+        }
+
         try {
             bridge.updateDoc(currentDoc.id, JSON.stringify({ author: next }));
         } catch (e) {

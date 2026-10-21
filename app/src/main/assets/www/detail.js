@@ -66,6 +66,15 @@
     /** 关闭动画的定时器 —— 快速开关时要用它取消上一次的收尾 */
     var closeTimer = null;
 
+    /**
+     * 正在进行「后台同步」的文献 id（v0.1.76）。
+     *
+     * ⚠️ 由 reader.js 在调 `updateDoc` 前登记，`onDocUpdated` 里消费。
+     *    目的是把"用户在详情页点保存"与"阅读页自动同步作者"区分开 ——
+     *    后者绝不能触发 `currentDoc.fields = draft.fields` + `close()`。
+     */
+    var selfInstigated = {};
+
     function t(key) {
         return global.ScholariusI18n
             ? global.ScholariusI18n.t(key)
@@ -1357,6 +1366,31 @@
     function onDocUpdated(id, ok) {
         if (saveBtn) saveBtn.disabled = false;
 
+        /*
+          ══ ⚠️⚠️ 后台同步不算"用户保存"（v0.1.76）══
+
+          用户反馈：
+            「文章具体信息页怎么删了很多项目啊？不能删啊」
+
+          真因：reader 标注作者姓名时会调 `updateDoc` 同步作者
+          （见 reader.js 的 syncAuthorToDetail）。那条回调也会走到这里。
+          若详情页正开着同一篇文献，就会：
+
+            currentDoc.fields = draft.fields;   ← 用打开时的旧快照覆盖
+            close();                            ← 无故关闭面板
+
+          用户在那之后新填的字段全部丢失，表现为"删了很多项目"。
+
+          ✅ 后台同步带 `__silent` 标记（见 reader.js / 桥），
+             这里识别到就直接返回 —— 不写 currentDoc、不关面板、
+             不弹提示。
+        */
+        if (selfInstigated[id]) {
+            delete selfInstigated[id];
+            trace('detail:silent-update', id);
+            return;
+        }
+
         if (!currentDoc || currentDoc.id !== id) {
             // 已经切走了：只提示，不动界面
             if (ok && global.ScholariusUI) {
@@ -1473,6 +1507,26 @@
         open: open,
         close: close,
         isOpen: isOpen,
-        onDocUpdated: onDocUpdated
+        onDocUpdated: onDocUpdated,
+        /**
+         * 登记一次「后台同步」的 `updateDoc`（v0.1.76）。
+         *
+         * 阅读页自动同步作者时必须先调它，否则 `onDocUpdated` 会
+         * 把它当成用户点击保存：用旧快照覆盖 `currentDoc.fields`
+         * 并关闭详情面板 —— 用户新填的字段就全丢了。
+         */
+        markSilentUpdate: function (id) {
+            if (!id) return;
+            selfInstigated[id] = true;
+            /*
+              ⚠️ 兜底清除：某些环境（原生桥异常、页面切走）
+                 `updateDoc` 的回调可能不会到，标记会一直挂着，
+                 导致用户**下一次真正点保存**被误判成后台同步而跳过。
+                 5 秒足够任何正常回调到达。
+            */
+            global.setTimeout(function () {
+                delete selfInstigated[id];
+            }, 5000);
+        }
     };
 })(window);
