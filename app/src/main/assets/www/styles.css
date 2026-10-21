@@ -1497,24 +1497,59 @@ body {
 
   ⚠️ 只加粗、加大字号，**不改颜色、不加背景、不改行距** ——
      其余视觉保持不变（用户特别说明"其他的先别改"）。
+
+  ══ ⚠️⚠️ 字体族强制 Times New Roman（v0.1.54）══
+
+  用户反馈：
+    「字重不对，不是bold欸」「就是和其他字体相比感觉没有加粗的感觉」
+
+  真因：这些标题继承了正文的衬线族
+  （Georgia, "Times New Roman", "Songti SC", SimSun, serif）。
+  Android 上 Georgia / SimSun 往往**没有真正的 bold 字形**，
+  浏览器只能做"合成加粗"（把笔画横向拉宽一点），
+  中文字形尤其几乎看不出区别。
+
+  ✅ 用户要求直接用 Times New Roman + bold。
+     Times New Roman 在 Android 上有真正的 bold 字形（Liberation Serif
+     的同度量替代），加粗是实打实的笔画变粗，不是合成。
+
+  ⚠️ 用 `font-family` 而不是只改 font-weight ——
+     只改 weight 的话，字体族仍是 Georgia 优先，
+     合成加粗的问题原样存在。
+
+  ⚠️ 这个字体族**只作用于标题类标注**，正文仍跟随用户在设置里
+     选的字族（衬线/无衬线/等宽）。
 */
+.reader-para.is-labeled-body[data-label="h3"],
+.reader-para.is-labeled-body[data-label="h2"],
+.reader-para.is-labeled-body[data-label="h1"],
+.reader-para.is-labeled-body[data-label="title"] {
+    /*
+      ⚠️ 把 Times New Roman 放在最前面 —— 它是用户点名要的。
+         后面的 serif 只是兜底（理论上不会用到）。
+    */
+    font-family: "Times New Roman", Times, serif;
+    /*
+      ⚠️ 用 bold 关键字而不是 700：
+         部分 Android 字体只登记了 normal/bold 两档，
+         数字 700 在某些旧内核上会被映射到 normal。
+    */
+    font-weight: bold;
+}
+
 .reader-para.is-labeled-body[data-label="h3"] {
-    font-weight: 700;
     font-size: 1.0588em;   /* 17 → 18px（+1） */
 }
 
 .reader-para.is-labeled-body[data-label="h2"] {
-    font-weight: 700;
     font-size: 1.1176em;   /* 17 → 19px（+2） */
 }
 
 .reader-para.is-labeled-body[data-label="h1"] {
-    font-weight: 700;
     font-size: 1.2353em;   /* 17 → 21px（+4） */
 }
 
 .reader-para.is-labeled-body[data-label="title"] {
-    font-weight: 700;
     font-size: 1.4118em;   /* 17 → 24px（+7） */
 }
 
