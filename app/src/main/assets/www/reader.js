@@ -3181,18 +3181,44 @@
              而 CSS 拿不到"个数"（竖排下 `ch` 度量的是字符高度，
              不是字符数）。所以由这里算好写成自定义属性。
 
-          ⚠️ 为什么用 `max()` 而不是直接定 36px：
-             编号只占 12px 的 1 位数段落不该被拉高到 36px，
-             否则整篇文档的段间距全被撑松。
-             `max(1em 行距, 编号总高)` —— 取大者，多的不留。
+          ⚠️⚠️ 为什么不用 CSS 的 `max()` 兜底（v0.1.62 踩过）：
+             `max()` 需要 Chrome 79+。部分国内 WebView 内核更旧，
+             而浏览器遇到**不认识的函数**时不是挑一个参数用，
+             而是判定整条 `min-height` 声明非法 → 整条丢弃。
+             表现就是"加了跟没加一样"（用户原话：
+             「段落还是没有被编号最小高度撑起来，而是又和之前一样了」）。
 
-          ⚠️ 这里只写高度，**不写居中对齐**：
-             单行段上方的少量留白由 `min-height` 自然产生；
-             若给段落加 `display:flex; align-items:center`，
-             多行段落会把整块文字浮到垂直中间，反而破坏行距节奏。
+          ✅ 所以这里**直接算成像素数字**：
+             `var()` 的兼容性（Chrome 49+）远好于 `max()`，
+             而且算出来就是一个纯数值，任何内核都认。
+
+          ⚠️ 行高从计算样式里读，不要写死 29.75：
+             正文字号用户可调（12~28px），行高随之变化。
+             段落还没进 DOM 时 `getComputedStyle` 拿不到值，
+             所以套一层兜底并夹下限，避免算出 0 导致全部段落塌陷。
         */
         var noH = 12 * s.length;
-        el.style.setProperty('--no-min-h', 'max(1.75em, ' + noH + 'px)');
+
+        var lh = 0;
+        try {
+            lh = parseFloat(window.getComputedStyle(el).lineHeight) || 0;
+        } catch (e) {
+            lh = 0;
+        }
+        /*
+          ⚠️ 元素此时还没插入文档，`lineHeight` 可能是 'normal' 或空串
+             → parseFloat 得 NaN → 已用 `|| 0` 兜住。
+             兜底按 1.75 × 继承字号估一个合理值。
+        */
+        if (!lh || lh < 1) {
+            var fs = 17;
+            try {
+                fs = parseFloat(window.getComputedStyle(el).fontSize) || 17;
+            } catch (e2) { /* 忽略 */ }
+            lh = fs * 1.75;
+        }
+
+        el.style.setProperty('--no-min-h', Math.max(lh, noH) + 'px');
     }
 
     /**
