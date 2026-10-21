@@ -1863,10 +1863,50 @@
         try {
             var s = global.getSelection();
             if (!s || !s.rangeCount) return '';
-            return String(s);
+            return stripLabelTags(String(s));
         } catch (e) {
             return '';
         }
+    }
+
+    /**
+     * 去掉文本里的**前置标签文字**（v0.1.47）。
+     *
+     * ══ ⚠️ 为什么需要 ══
+     *
+     * 标注之后段落里会渲染出 `.reader-label-tag`（比如 "Article Title "）。
+     * 它是**界面文字**，不是正文内容，但 `Range.toString()` 会把它一起
+     * 包进来。于是用户选中已标注区间的字时，编辑区会显示
+     * "Article Title .pol" 这种混合内容，确认后还会把它写进正文。
+     *
+     * ⚠️ 这里按"标签文字 + 一个空格"的模式剥离 ——
+     *    CSS 里 `.reader-label-tag::after { content: " " }` 追加了一个空格，
+     *    所以实际串是 "Article Title .pol"。
+     *
+     * ⚠️ 只有在**选区起点落在标签文字之前**时才会带上它，
+     *    所以剥离是安全的方向性操作，不会误删正文里的同名文字。
+     */
+    function stripLabelTags(text) {
+        if (!text) return text;
+
+        /*
+          ⚠️ 逐个已知标签名剥离，而不是写正则猜。
+             标签名来自 i18n，是有限的 8 个，穷举最稳。
+        */
+        for (var i = 0; i < LABEL_KEYS.length; i++) {
+            var name = t('reader.label.' + LABEL_KEYS[i]);
+            if (!name) continue;
+
+            /*
+              ⚠️ 只剥掉**开头**的一处：标签永远在标注区间的最前面。
+                 `indexOf === 0` 判断，避免误伤正文中间的同名文字。
+            */
+            if (text.indexOf(name + ' ') === 0) {
+                text = text.slice(name.length + 1);
+            }
+        }
+
+        return text;
     }
 
     /**
@@ -1930,12 +1970,24 @@
             var tmp = startOff; startOff = endOff; endOff = tmp;
         }
 
+        /*
+          ══ ⚠️⚠️ 选中原文用**区间切片**，不用 `Range.toString()` ══（v0.1.47）
+
+          因为 `toString()` 会把渲染出来的前置标签文字（"Article Title "）
+          一起带进来，编辑区就会显示成 "Article Title .pol"。
+
+          ✅ 用刚算出的 start/end 从**块文本**里切片，
+             拿到的永远是纯正文，与标签无关。
+        */
+        var blockText = blockTextOf(line);
+        var exact = blockText.slice(startOff, endOff);
+
         return {
             single: true,
             line: line,
             start: startOff,
             end: endOff,
-            text: text
+            text: exact
         };
     }
 
@@ -1952,7 +2004,22 @@
     }
 
     /**
-     * 求「从 el 的首个文本节点开头」到「(node, offset)」的字符距离。
+     * 求「从块首」到「(node, offset)」在**原始正文**里的字符距离。
+     *
+     * ══ ⚠️⚠️ 必须跳过前置标签文字（v0.1.47）══
+     *
+     * 标注之后，一个 `<p>` 里会多出 `.reader-label-tag`（「文章标题」这类
+     * 前置文字）。实测踩到的坑：
+     *
+     *   段落 "illia.polosukhin@gmail.com"，把 ".pol" 标成文章标题后
+     *   再把光标放到标注区间里，用 `Range.toString().length` 算出的
+     *   偏移是 **19**，而正确答案是 **6** ——
+     *   差的那 13 个字符正是 "Article Title " 这段**渲染出来的标签文字**。
+     *
+     * 后果：在已标注的段落上再次标注或编辑时，区间整体错位，
+     *      替换/打标会落到错误的字符上。
+     *
+     * ✅ 现在按**节点遍历**累计，明确跳过 `.reader-label-tag`。
      *
      * @return {number} 偏移；node 不在 el 内时返回 -1
      */
@@ -1965,24 +2032,58 @@
              此时按"元素起点"处理。
         */
         if (node.nodeType !== 3) {
-            if (!el.contains(node)) return -1;
-            /* 元素端点：用它里面的第一个文本节点 + 0 */
+            if (!el.contains(node) && node !== el) return -1;
             var inner = firstTextNode(node);
-            if (inner) { node = inner; offset = 0; }
-            else if (node === el) { node = firstTn; offset = 0; }
-            else return -1;
+            if (!inner) return 0;
+            node = inner;
+            offset = 0;
         }
 
         if (!el.contains(node)) return -1;
 
-        try {
-            var r = document.createRange();
-            r.setStart(firstTn, 0);
-            r.setEnd(node, offset);
-            return String(r).length;
-        } catch (e) {
-            return -1;
+        /*
+          目标可能就在标签文字里（用户选中了前置的「文章标题」几个字）——
+          那不是正文，没有对应的偏移，返回 -1 让调用方走兜底分支。
+        */
+        if (isInsideLabelTag(node, el)) return -1;
+
+        var total = 0;
+        var found = false;
+
+        /*
+          ⚠️ 用 TreeWalker 按文档顺序遍历所有文本节点 ——
+             比递归手写更短，也能自然跳过元素边界。
+        */
+        var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+        var cur = walker.nextNode();
+
+        while (cur) {
+            if (cur === node) {
+                total += offset;
+                found = true;
+                break;
+            }
+
+            if (!isInsideLabelTag(cur, el)) {
+                total += cur.nodeValue ? cur.nodeValue.length : 0;
+            }
+
+            cur = walker.nextNode();
         }
+
+        return found ? total : -1;
+    }
+
+    /** 这个文本节点是否属于前置标签文字（「文章标题」那一小段） */
+    function isInsideLabelTag(node, root) {
+        var el = node.parentNode;
+        while (el && el !== root) {
+            if (el.classList && el.classList.contains('reader-label-tag')) {
+                return true;
+            }
+            el = el.parentNode;
+        }
+        return false;
     }
 
     /**
@@ -2188,8 +2289,14 @@
 
     var labelSheetEl = null;
     var labelListEl = null;
-    /** 本次标注涉及的块行号 */
-    var labelLines = [];
+    /**
+     * 本次标注的范围（v0.1.47）。
+     *
+     * ⚠️ 从 "labelLines（块行号数组）" 改成 "labelSpan（精确区间）" ——
+     *    与编辑同理：用户可能只把标题里的一个词标成标题，
+     *    而不是整段。
+     */
+    var labelSpan = null;
     /** 表单里当前选中的标签（null = 未选） */
     var labelDraft = null;
 
@@ -2228,17 +2335,17 @@
         mountLabelSheet();
         if (!labelSheetEl || !labelListEl) return;
 
-        labelLines = blockLinesInSelection();
-        if (!labelLines.length) return;
+        labelSpan = selectionSpan();
+        if (!labelSpan) return;
 
         /*
-          ⚠️ 预选当前状态：如果选中的块已有标签，就把那一项选中，
+          ⚠️ 预选当前状态：如果选中的区间已有标签，就把那一项选中，
              让用户看到"现在是什么"，改起来才有依据。
-             ⚠️ 多块标签不一致时取第一块的 —— 反正确认后全部会被覆盖，
-                预选只作提示。
+             ⚠️ 查的是**区间起始位置所在的那个标注** ——
+                单块时用 blockTextOf 算出来的 start 去找覆盖它的 span。
+                跨块时退化为"第一块的第一个标注"。
         */
-        var existing = labels[labelLines[0]] || 'body';
-        labelDraft = (LABEL_KEYS.indexOf(existing) >= 0) ? existing : 'body';
+        labelDraft = findExistingLabel(labelSpan) || 'body';
 
         renderLabelOptions();
 
@@ -2248,6 +2355,30 @@
         labelSheetEl.hidden = false;
         if (labelSheetEl.offsetWidth < 0) return;
         labelSheetEl.classList.add('is-open');
+    }
+
+    /**
+     * 找出覆盖选区起点的那个标注的标签名。
+     *
+     * @return {string|null} 没有就返回 null
+     */
+    function findExistingLabel(span) {
+        var line = span.single ? span.line : (span.lines || [])[0];
+        if (typeof line !== 'number') return null;
+
+        var list = labels[line];
+        if (!list || !list.length) return null;
+
+        var probe = span.single ? span.start : 0;
+
+        for (var i = 0; i < list.length; i++) {
+            var sp = list[i];
+            if (!sp) continue;
+            if (probe >= sp.start && probe < sp.end) return sp.label;
+        }
+
+        /* 起点没落在任何区间里，但有标注 → 用第一个作提示 */
+        return list[0].label || null;
     }
 
     function renderLabelOptions() {
@@ -2288,30 +2419,93 @@
     }
 
     /**
-     * 确认标注：把选中的标签写到涉及的块上。
+     * 确认标注：把标签写到**选中的那个字符区间**上（v0.1.47）。
      *
-     * ⚠️ `body` = 无标签 → **删除**记录，而不是存 'body'。
-     *    这样"恢复成无标签"和"从未标注过"在数据上完全一致，
-     *    目录里也不会出现一条"正文"。
+     * ══ ⚠️⚠️ 为什么改成区间 ══
+     *
+     * 用户实测反馈：
+     *   「标注的区域并非是选中的区域，而也是类似选中了一个词作为标题，
+     *     结果整个句子都变成了标题这样的。」
+     *
+     * 旧实现写 `labels[line] = 标签`，一写就是整段。
+     *
+     * ✅ 现在写 `labels[line] = [{start, end, label}, ...]`。
+     *
+     * ══ 三种操作的语义 ══
+     *
+     *  ① 标成某个标签（如"一级标题"）
+     *     → 把这个区间上的旧标注**移除**，再加入新标注。
+     *       否则同一段文字会同时属于两个标签，渲染时互相覆盖。
+     *
+     *  ② 选「正文」= 无标签
+     *     → 只**移除**与该区间重叠的标注，不新增记录。
+     *       用户要求：「正文（用于恢复已标注过的标签回归原本的无标签形式）」
+     *
+     *  ③ 跨块选中
+     *     → 每块各自记整块区间（跨块时无法用一个字符区间表达）。
      */
     function applyLabel() {
-        if (!labelLines.length) return;
+        if (!labelSpan) return;
 
-        if (labelDraft && labelDraft !== 'body') {
-            for (var i = 0; i < labelLines.length; i++) {
-                labels[labelLines[i]] = labelDraft;
+        if (labelSpan.single) {
+            var line = labelSpan.line;
+            var cur = labels[line] || [];
+
+            /*
+              ⚠️ 先移除与本次区间**有重叠**的标注 ——
+                 一个字符只能属于一个标签。
+                 用严格不相交判断（sp.end <= start || sp.start >= end）
+                 取反。
+            */
+            var kept = [];
+            for (var i = 0; i < cur.length; i++) {
+                var sp = cur[i];
+                if (!sp) continue;
+                if (sp.end <= labelSpan.start || sp.start >= labelSpan.end) {
+                    kept.push(sp);
+                }
             }
+
+            if (labelDraft && labelDraft !== 'body') {
+                kept.push({
+                    start: labelSpan.start,
+                    end: labelSpan.end,
+                    label: labelDraft
+                });
+            }
+
+            if (kept.length) labels[line] = kept;
+            else delete labels[line];
+
+            trace('reader:label', 'line=' + line + ' [' +
+                labelSpan.start + ',' + labelSpan.end + ') = ' + labelDraft);
         } else {
-            for (var j = 0; j < labelLines.length; j++) {
-                delete labels[labelLines[j]];
+            /*
+              ⚠️ 跨块：每块记整块（0 到该块文本长度）。
+                 跨段标注本身就是"这几段都是某类内容"，
+                 用整块区间是合理的。
+            */
+            var lines = labelSpan.lines || [];
+            for (var j = 0; j < lines.length; j++) {
+                var ln = lines[j];
+                if (labelDraft && labelDraft !== 'body') {
+                    labels[ln] = [{
+                        start: 0,
+                        end: blockTextOf(ln).length,
+                        label: labelDraft
+                    }];
+                } else {
+                    delete labels[ln];
+                }
             }
+
+            trace('reader:label', 'multi lines=' + lines.join(',') + ' = ' + labelDraft);
         }
 
         saveLabels();
         closeLabelSheet();
         clearSelection();
         rerenderKeepingScroll();
-        trace('reader:label', 'lines=' + labelLines.join(',') + ' = ' + labelDraft);
     }
 
     // --- 菜单 ---------------------------------------------------------------
@@ -2604,22 +2798,26 @@
         el.textContent = (edited != null) ? edited : b.text;
 
         /*
-          ══ 应用标注（v0.1.45）══
+          ══ 应用标注（v0.1.47）══
 
-          ⚠️ 标注**只加 class，不改字号/字体** ——
-             用户要求正文仍然"无等级"（v0.1.39 的核心约束）。
-             标注的用途是「让目录能看见这些段落」，
-             不是把正文重新变成模板化的排版。
-             视觉上只给一条很轻的左侧竖线（见 CSS）。
-          ⚠️ `body` 标签等于"无标签" —— 用户明确说要能用它
-             「恢复已标注过的标签回归原本的无标签形式」，
-             所以它不落库、也不加 class。
+          用户要求原话：
+            「主要是标注的区域并非是选中的区域，而也是类似选中了一个词
+              作为标题，结果整个句子都变成了标题这样的。」
+
+            「我希望不要用颜色来突出这是标题，而是除了正文外，
+              给个淡色的前置文本，比如文章标题的就前置一个文章标题的
+              文本，后面一段才是标题的内容，这样比较直观。」
+
+          所以标注的数据结构改成**按字符区间**：
+              labels[line] = [{start, end, label}, ...]
+
+          ⚠️ 不是整段 —— 用户可能只把标题里的一个词标成标题。
+          ⚠️ 视觉上用"淡色前置文本"而不是背景色，见 applyLabelSpans。
         */
         if (typeof b.line === 'number') {
-            var lab = labels[b.line];
-            if (lab && lab !== 'body') {
-                el.classList.add('is-labeled');
-                el.setAttribute('data-label', lab);
+            var spans = labels[b.line];
+            if (spans && spans.length) {
+                applyLabelSpans(el, b.line, spans);
             }
         }
 
@@ -2636,6 +2834,108 @@
             el.setAttribute('data-line', String(b.line));
         }
         return el;
+    }
+
+    /**
+     * 把一个段落里被标注的**字符区间**渲染出来。
+     *
+     * ══ 视觉：淡色前置文本 + 原内容（v0.1.47）══
+     *
+     * 用户要求原话：
+     *   「我希望不要用颜色来突出这是标题，而是除了正文外，
+     *     给个淡色的前置文本，比如文章标题的就前置一个文章标题的
+     *     文本，后面一段才是标题的内容，这样比较直观。」
+     *
+     * 效果（以"一级标题"为例）：
+     *
+     *   一级标题  Attention Is All You Need
+     *   ^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     *   淡色小字   正常大小的原文
+     *
+     * ⚠️ 为什么比背景色好：
+     *    · 背景色只说明"这里被标了"，看不出**标成了什么**；
+     *    · 前置文字直接写出标签名，一眼可读，不用去目录对照；
+     *    · 也不改动原文本身的字号字重 —— v0.1.39 的
+     *      「无等级、不要模板」依然成立。
+     *
+     * ══ 实现 ══
+     *
+     * 一个 `<p>` 原本只有一个文本节点。要在中间插入 `<span>`，
+     * 必须把文本节点**按区间切开**，依次追加：
+     *
+     *   [前缀文字 before][普通文本][标注span+标签][普通文本]...
+     *
+     * ⚠️ 区间可能有多个且不重叠 —— 先按 start 排序再依次处理。
+     * ⚠️ 区间越界要夹住：编辑过的段落长度可能变了，
+     *    旧标注的 end 可能超出当前文本，不夹会抛异常。
+     */
+    function applyLabelSpans(el, line, spans) {
+        var text = el.textContent || '';
+        if (!text) return;
+
+        /*
+          规范化：排序 + 夹边界 + 丢掉空区间。
+          ⚠️ 必须**复制**一份再排序 —— 直接排序会改到存储里的数组顺序。
+        */
+        var list = [];
+        for (var i = 0; i < spans.length; i++) {
+            var sp = spans[i];
+            if (!sp || typeof sp.start !== 'number' || typeof sp.end !== 'number') {
+                continue;
+            }
+            var a = Math.max(0, Math.min(sp.start, text.length));
+            var b = Math.max(0, Math.min(sp.end, text.length));
+            if (b <= a) continue;
+            list.push({ start: a, end: b, label: sp.label });
+        }
+        if (!list.length) return;
+
+        list.sort(function (p, q) { return p.start - q.start; });
+
+        el.textContent = '';
+
+        var pos = 0;
+        for (var j = 0; j < list.length; j++) {
+            var item = list[j];
+
+            /*
+              ⚠️ 与前一个区间重叠时，跳过重叠部分 ——
+                 否则会重复输出同一段文字。
+            */
+            var s = Math.max(item.start, pos);
+            if (item.end <= s) continue;
+
+            /* 区间之前的普通文本 */
+            if (s > pos) {
+                el.appendChild(document.createTextNode(text.slice(pos, s)));
+            }
+
+            var span = document.createElement('span');
+            span.className = 'reader-label';
+            span.setAttribute('data-label', item.label);
+
+            /*
+              ⚠️ 前置标签文本：直接是 i18n 里的标签名（一级标题/作者信息…）。
+                 用 `<span>` 而不是伪元素 —— 伪元素无法被选中、
+                 也无法在无障碍里读出，而这段文字是**内容**不是装饰。
+            */
+            var tag = document.createElement('span');
+            tag.className = 'reader-label-tag';
+            tag.textContent = t('reader.label.' + item.label);
+            span.appendChild(tag);
+
+            var body = document.createElement('span');
+            body.className = 'reader-label-body';
+            body.textContent = text.slice(s, item.end);
+            span.appendChild(body);
+
+            el.appendChild(span);
+            pos = item.end;
+        }
+
+        if (pos < text.length) {
+            el.appendChild(document.createTextNode(text.slice(pos)));
+        }
     }
 
     /**
@@ -3609,19 +3909,56 @@
             var line = parseInt(key, 10);
             if (!isFinite(line)) continue;
 
-            var lab = labels[key];
-            /* `body` 不该出现在数据里（applyLabel 会删除），防御一下 */
-            if (!lab || lab === 'body') continue;
+            var spans = labels[key];
+            if (!spans || !spans.length) continue;
 
             var text = blockTextOf(line);
             if (!text) continue;
 
-            byLine[line] = {
-                level: labelLevel(lab),
-                title: tocTitleFrom(text, lab),
-                line: line,
-                labeled: true
-            };
+            /*
+              ══ ⚠️⚠️ 一段可能有**多个**标注区间（v0.1.47）══
+
+              改按区间标注之后，同一个段落里可以有多个被标注的片段
+              （比如「一、引言」和后面的「我们的贡献」被分别标成
+              一级标题和正文）。旧代码假设一行只有一个标签，
+              会只显示最后一条。
+
+              ✅ 现在每块按 start 排序，逐个生成目录项。
+                 每条的标题取**该区间自己的文字**，不是整段 ——
+                 这正是用户想要的「选中多少就标多少」。
+            */
+            var sorted = spans.slice().sort(function (p, q) {
+                return (p.start || 0) - (q.start || 0);
+            });
+
+            var first = true;
+            for (var s = 0; s < sorted.length; s++) {
+                var sp = sorted[s];
+                if (!sp || !sp.label || sp.label === 'body') continue;
+
+                var slice = text.slice(sp.start || 0, sp.end || 0);
+                if (!slice) continue;
+
+                /*
+                  ⚠️ 只有**第一条**覆盖该行的自动目录条目 ——
+                     后面几条是"附加的标注"，不应该把自动条目挤掉两次。
+                     用一个临时键区分，最后统一按 line 排序。
+                */
+                var dictKey = first ? String(line) : (String(line) + '#' + s);
+                byLine[dictKey] = {
+                    level: labelLevel(sp.label),
+                    title: tocTitleFrom(slice, sp.label),
+                    line: line,
+                    /*
+                      ⚠️ 同一行有多个标注时必须能稳定排序（v0.1.47）——
+                         只按 `line` 排的话，它们之间的先后顺序取决于
+                         对象的遍历顺序，不可控。
+                    */
+                    order: (sp.start || 0),
+                    labeled: true
+                };
+                first = false;
+            }
         }
 
         /* ③ 展开成数组，按行号排序 */
@@ -3630,7 +3967,10 @@
             if (!Object.prototype.hasOwnProperty.call(byLine, ln)) continue;
             out.push(byLine[ln]);
         }
-        out.sort(function (a, b) { return a.line - b.line; });
+        out.sort(function (a, b) {
+            if (a.line !== b.line) return a.line - b.line;
+            return (a.order || 0) - (b.order || 0);
+        });
         return out;
     }
 
