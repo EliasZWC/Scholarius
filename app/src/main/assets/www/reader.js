@@ -174,6 +174,21 @@
 
     /** 长按计时器（null = 没有待触发的长按） */
     var selTimer = null;
+    /**
+     * 手势是否正在进行中（v0.1.42）。
+     *
+     * ══ ⚠️⚠️ 为什么需要这个标志 ══
+     *
+     * 拖动选字期间，浏览器会**间歇性**报告"空选区"，紧接着又报告
+     * 正确的选区。如果 `selectionchange` 处理器相信了那次空的，
+     * 就会把用户正在选的字当场清掉 ——
+     * 症状是「小幅拖动后什么都没选上」，而大幅拖动"看起来正常"
+     * （因为恰好最后几次报告不是空的）。
+     *
+     * 判定规则：touchstart 置 true，touchend/touchcancel 置 false。
+     * 手势期间的空报告一律忽略。
+     */
+    var selecting = false;
     /** 长按起点 */
     var selStartX = 0;
     var selStartY = 0;
@@ -636,6 +651,8 @@
 
             var armed = false;
 
+            selecting = true;
+
             clearSelTimer();
             selTimer = global.setTimeout(function () {
                 selTimer = null;
@@ -676,6 +693,13 @@
                     var dy = tp2.clientY - selStartY;
                     if ((dx * dx + dy * dy) > (SELECT_SLOP_PX * SELECT_SLOP_PX)) {
                         clearSelTimer();
+                        /*
+                          ⚠️ 判定为滚动 → 本次不再选字，
+                             必须立刻复位 `selecting`，否则后续
+                             `selectionchange` 的空报告会被一直忽略，
+                             操作条永远收不起来。
+                        */
+                        selecting = false;
                         detach();
                     }
                     return;
@@ -688,10 +712,18 @@
                 */
                 if (mv.cancelable) mv.preventDefault();
                 extendSelectionTo(tp2.clientX, tp2.clientY);
+
+                /*
+                  ══ 拖到屏幕上下边缘 → 自动滚动正文 ══（v0.1.42）
+                  ⚠️ 没有这个，用户想把选区拉到下一屏时只能松手，
+                     再长按一次 —— 而 Android 系统的选字是会自动滚的。
+                */
+                autoScrollForSelection(tp2.clientX, tp2.clientY);
             };
 
             var onEnd = function () {
                 clearSelTimer();
+                stopAutoScroll();
                 detach();
 
                 if (!armed) return;
@@ -700,7 +732,38 @@
                   ⚠️ 松手后选区**保持**，操作条出现。
                      如果选中的只有空白（用户按在段落间隙里开始的），
                      直接收掉，不要弹一个"已选中 0 字"的条。
+
+                  ⚠️⚠️ 这里必须先关掉 `selecting` 标志再读选区。
+                     实测（小位移时）touchend 的**同一帧**内
+                     `getSelection()` 已经变成空字符串，而
+                     `selectionchange` 随后还会补发两次空事件 ——
+                     旧代码因此把刚选好的字当场清掉，
+                     症状是「小幅度拖动什么都不剩」。
                 */
+                selecting = false;
+
+                /*
+                  ══ ⚠️⚠️ 松手后必须把滚动位置"钉"回去 ══（v0.1.42）
+
+                  实测：自动滚动期间 `scrollTop` 能正常增加（采样到 87），
+                  但 **touchend 之后浏览器会把合成器的滚动状态写回**，
+                  位置被还原成手势开始前的值（最终读到 0）。
+
+                  原因：这次手势在 `touchstart` 时就被 `preventDefault` 了，
+                  合成器仍保留着"本次触摸对应的滚动偏移 = 0"的内部状态，
+                  松手时一次性覆盖掉 JS 期间的所有改动。
+
+                  ✅ 对策：松手时记下当前位置，然后在下一帧再写一次。
+                     此时手势已经完全结束，合成器不会再覆盖。
+                */
+                var keepTop = autoScrollTop || (bodyEl ? bodyEl.scrollTop : 0);
+                if (keepTop) {
+                    global.requestAnimationFrame(function () {
+                        if (bodyEl) bodyEl.scrollTop = keepTop;
+                    });
+                }
+                autoScrollTop = 0;
+
                 syncSelectionFromNative();
                 if (!selectedText) {
                     clearSelection();
@@ -729,14 +792,28 @@
         }, { passive: false });
 
         document.addEventListener('selectionchange', function () {
+            /*
+              ══ ⚠️⚠️ 手势进行中时，**忽略空选区** ══（v0.1.42）
+
+              实测现象：长按落点建好选区后，拖动过程中浏览器会
+              间歇性报告"空选区"（`getSelection()` 返回空串），
+              紧接着又报告正确的选区。若在这里相信了那个空的，
+              就会把用户正在选的字当场清掉。
+
+              判定：`selecting` 在 touchstart 置 true、touchend 置 false。
+              手势期间的空报告一律不信任，等 touchmove 的
+              `setBaseAndExtent` 把选区重新建立起来。
+            */
             var text = String(global.getSelection() || '');
 
-            /*
-              ⚠️ 空选区 → 可能是用户点了别处，也可能是浏览器收起了
-                 手柄。若此时操作条还开着，就一并收掉，避免出现
-                 "条上写着 12 字，但屏幕上什么都没选中"。
-            */
             if (!text) {
+                if (selecting) return;
+
+                /*
+                  ⚠️ 空选区 → 可能是用户点了别处，也可能是浏览器收起了
+                     手柄。若此时操作条还开着，就一并收掉，避免出现
+                     "条上写着 12 字，但屏幕上什么都没选中"。
+                */
                 if (selectedText) clearSelection();
                 return;
             }
@@ -776,6 +853,116 @@
             global.clearTimeout(selTimer);
             selTimer = null;
         }
+        stopAutoScroll();
+    }
+
+    /**
+     * 拖到正文可视区的上/下边缘时，自动滚动正文（v0.1.42）。
+     *
+     * ══ 为什么需要 ══
+     *
+     * 没有它，用户想把选区拉到下一屏时必须松手、再长按一次 ——
+     * 而 Android 系统选字是一路拖、页面自己跟着滚的。
+     * 用户原话就是「我用手机选中其他 app 的文本的时候没这么难搞啊」。
+     *
+     * ══ 实现 ══
+     *
+     * 用 `requestAnimationFrame` 持续滚，而不是每个 touchmove 滚一次：
+     *   · 手指停在边缘不动时，触摸事件只有零星几个（甚至没有），
+     *     靠事件驱动会"滚一下就停"；
+     *   · 用帧循环才能实现"手指贴在边缘不动，页面匀速滚"。
+     *
+     * ⚠️ 滚动后必须重新扩展选区 —— 否则滚动只"看得到"但选不到，
+     *    选区会停在滚动前的位置。所以每帧都调一次
+     *    `extendSelectionTo`，用**最近一次的触摸坐标**。
+     *
+     * ⚠️ 速度按"进入边缘区的深度"线性映射：贴得越外滚得越快，
+     *    这样接近边缘时能精细控制。
+     */
+    var autoScrollRaf = null;
+    var autoScrollY = 0;
+    var autoScrollX = 0;
+    var autoScrollStep = 0;
+    /** 自动滚动到过的最后位置（松手后用来钉回，见 onEnd） */
+    var autoScrollTop = 0;
+
+    function autoScrollForSelection(clientX, clientY) {
+        if (!bodyEl) return;
+
+        autoScrollY = clientY;
+        autoScrollX = clientX;
+
+        var rect = bodyEl.getBoundingClientRect();
+        var EDGE = 56;   /* 距边缘多少像素内开始自动滚 */
+        var MAX = 14;    /* 每帧最多滚多少像素 */
+
+        var speed = 0;
+        if (clientY < rect.top + EDGE) {
+            /*
+              越靠上越快：(EDGE - 距离) / EDGE，夹在 [0,1]。
+            */
+            var d = (rect.top + EDGE - clientY) / EDGE;
+            speed = -Math.min(1, Math.max(0, d)) * MAX;
+        } else if (clientY > rect.bottom - EDGE) {
+            var d2 = (clientY - (rect.bottom - EDGE)) / EDGE;
+            speed = Math.min(1, Math.max(0, d2)) * MAX;
+        }
+
+        autoScrollStep = speed;
+
+        if (!speed) {
+            stopAutoScroll();
+            return;
+        }
+
+        /*
+          ⚠️ 已在滚就直接返回 —— 上面的 `autoScrollStep` 已经更新，
+             帧循环下一帧就会用新速度，不用重启。
+        */
+        if (autoScrollRaf !== null) return;
+
+        var tick = function () {
+            if (!bodyEl) { autoScrollRaf = null; return; }
+
+            var step = autoScrollStep;
+            if (!step) { autoScrollRaf = null; return; }
+
+            var before = bodyEl.scrollTop;
+            bodyEl.scrollTop = before + step;
+
+            /*
+              ⚠️ 滚到底/顶了就停，否则会一直空转耗电。
+            */
+            if (bodyEl.scrollTop === before) {
+                autoScrollRaf = null;
+                return;
+            }
+
+            /*
+              ⚠️ 记下目标位置 —— 松手时浏览器会回滚 `scrollTop`，
+                 靠这个值把它钉回去（见 onEnd）。
+            */
+            autoScrollTop = bodyEl.scrollTop;
+
+            /*
+              ⚠️ 滚动之后同一屏幕坐标指向**不同的字符**，
+                 必须重新算一次选区，否则选中范围不跟着走。
+            */
+            extendSelectionTo(autoScrollX, autoScrollY);
+
+            autoScrollRaf = global.requestAnimationFrame(tick);
+        };
+
+        autoScrollRaf = global.requestAnimationFrame(tick);
+    }
+
+    function stopAutoScroll() {
+        if (autoScrollRaf !== null) {
+            try {
+                global.cancelAnimationFrame(autoScrollRaf);
+            } catch (e) { /* 忽略 */ }
+            autoScrollRaf = null;
+        }
     }
 
     /** 清掉浏览器层面的原生选区（不动我们的 UI 状态） */
@@ -784,6 +971,171 @@
             var s = global.getSelection();
             if (s && s.rangeCount) s.removeAllRanges();
         } catch (e) { /* 忽略 */ }
+    }
+
+    /**
+     * 把一个 caret Range 规整成 `{node, offset}`，**保证 node 是文本节点**。
+     *
+     * ══ ⚠️⚠️ 为什么必须有这个函数（v0.1.42）══
+     *
+     * `document.caretRangeFromPoint()` 的 `startContainer` 有两种情况：
+     *
+     *   ① **文本节点**（nodeType 3）—— 手指在字上，最理想；
+     *   ② **元素节点**（nodeType 1）—— 手指在段落之间的空隙、
+     *      `<p>` 的起止边缘、行尾空白处时，Chrome 返回的是宿主元素，
+     *      `startOffset` 变成"第几个子节点"而不是"第几个字符"。
+     *
+     * 旧代码遇到 ② 就直接 `return`，于是拖动过程中**一次都没扩成**，
+     * 选区永远停在长按时的那 1 个字符 —— 这就是用户说的
+     * 「直接单字符了，而不是随着我手指的移动来控制选中区域」。
+     *
+     * ✅ 现在把 ② 规整掉：
+     *    · 元素有文本 → 取它第一个/最后一个文本节点（按 offset 判断方向）
+     *    · 元素空（如段落间的空白 div）→ 往后/往前找相邻的可落脚文本节点
+     *
+     * ⚠️ 找不到就返回 null（比如拖到了正文之外），此时 caller 直接跳过，
+     *    选区保持在上一帧的位置 —— 这是想要的行为：手指滑出正文时
+     *    不要突然把选区清空或跳到别处。
+     */
+    function resolveTextPoint(r) {
+        var node = r.startContainer;
+        var off = r.startOffset;
+
+        if (node && node.nodeType === 3) {
+            return { node: node, offset: off };
+        }
+        if (!node) return null;
+
+        /*
+          ══ ⚠️⚠️ 落到元素节点时，**绝不能**直接取"整棵子树的首/尾" ══
+             （v0.1.42）
+
+          踩过的坑：手指越过行尾、进入段落之间的空隙时，
+          `caretRangeFromPoint` 返回 `<p>` 元素本身。旧代码往下取
+          `lastTextNode()` → offset = 该文本节点长度 → 选区一下子
+          跨到段落末尾。
+
+          症状：手指只挪了 22px，选中的字数却从 1 **直接跳到 31**，
+          中间没有任何过渡 —— 用户会觉得"选区不受控制"。
+
+          ✅ 正确做法：在**原始坐标**附近做小范围试探，
+             取第一个能返回真正文本节点的点。
+             这样落点只会前进几像素对应的字符，不会跳段。
+
+          ⚠️ 试探半径从 1px 渐增到 24px：
+             1px 通常就能命中（落点只是稍微偏出字形），
+             24px 覆盖行高的一半，不会跨到相邻行之外。
+        */
+        var probe = nearestTextPoint(r);
+        if (probe) return probe;
+
+        /*
+          实在测不到（比如手指拖到了正文之外）才退回子树端点。
+          ⚠️ 这种情况下宁可保持上一帧的选区，也不要跳到段落末尾 ——
+             返回 null 让 caller 跳过本帧。
+        */
+        return null;
+    }
+
+    /**
+     * 从原始 Range 出发，向四周**小范围**试探出最近的文本落点。
+     *
+     * ⚠️ 优先纵向（上下），因为用户拖选时主要在换行 ——
+     *    纵向试探到的点语义上更接近手指意图。
+     */
+    function nearestTextPoint(r) {
+        /*
+          ⚠️ `caretRangeFromPoint` 需要屏幕坐标，而 Range 本身
+          只有节点+偏移。用 Range 的 client rect 反推近似坐标：
+          collapsed range 的 rect 就是该落点的位置。
+        */
+        var rect = null;
+        try {
+            rect = r.getBoundingClientRect();
+        } catch (e) {
+            rect = null;
+        }
+
+        /*
+          ⚠️ 拿不到 rect 时，改用子树端点（没有更好的信息了）。
+             但只在 element 有唯一文本节点时才用，
+             避免多段文本时跳到段末。
+        */
+        if (!rect || (!rect.width && !rect.height)) {
+            var t = firstTextNode(r.startContainer);
+            if (!t) return null;
+            /*
+              ⚠️ 只有当元素里**只有一个**文本节点时才敢用它 ——
+                 多个文本节点的情况（如带内联标记的段落）
+                 首节点未必是手指所在的那段。
+            */
+            if (t !== lastTextNode(r.startContainer)) return null;
+            return { node: t, offset: 0 };
+        }
+
+        var cx = rect.left;
+        var cy = rect.top + rect.height / 2;
+
+        var radii = [1, 2, 4, 8, 12, 18, 24];
+
+        /*
+          ⚠️ 先试**精确位置**（半径为 0），最常见情况这里是文本节点，
+             但上面已判过不是，所以从 1px 起步。
+          ⚠️ 每个半径先试正上方/正下方，再试左右。
+             纵向优先是因为换行时落点偏上/偏下最可能。
+        */
+        for (var i = 0; i < radii.length; i++) {
+            var d = radii[i];
+            var probes = [
+                [cx, cy - d], [cx, cy + d],
+                [cx - d, cy], [cx + d, cy]
+            ];
+
+            for (var j = 0; j < probes.length; j++) {
+                var rr = caretRangeAt(probes[j][0], probes[j][1]);
+                if (rr && rr.startContainer &&
+                    rr.startContainer.nodeType === 3) {
+                    return {
+                        node: rr.startContainer,
+                        offset: rr.startOffset
+                    };
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /** 深度优先找 node 子树里的第一个非空文本节点 */
+    function firstTextNode(node) {
+        var kids = node.childNodes;
+        if (!kids) return null;
+        for (var i = 0; i < kids.length; i++) {
+            var k = kids[i];
+            if (k.nodeType === 3) {
+                if (k.nodeValue && k.nodeValue.length) return k;
+            } else if (k.nodeType === 1) {
+                var t = firstTextNode(k);
+                if (t) return t;
+            }
+        }
+        return null;
+    }
+
+    /** 深度优先找 node 子树里的最后一个非空文本节点 */
+    function lastTextNode(node) {
+        var kids = node.childNodes;
+        if (!kids) return null;
+        for (var i = kids.length - 1; i >= 0; i--) {
+            var k = kids[i];
+            if (k.nodeType === 3) {
+                if (k.nodeValue && k.nodeValue.length) return k;
+            } else if (k.nodeType === 1) {
+                var t = lastTextNode(k);
+                if (t) return t;
+            }
+        }
+        return null;
     }
 
     /**
@@ -803,10 +1155,12 @@
         var r = caretRangeAt(cx, cy);
         if (!r) return;
 
-        var node = r.startContainer;
-        var off = r.startOffset;
+        var pt = resolveTextPoint(r);
+        if (!pt) return;
 
-        if (!node || node.nodeType !== 3) return;
+        var node = pt.node;
+        var off = pt.offset;
+
         var len = node.nodeValue ? node.nodeValue.length : 0;
         if (!len) return;
 
@@ -859,11 +1213,117 @@
 
         var node = r.startContainer;
         var off = r.startOffset;
-        if (!node || node.nodeType !== 3) return;
+
+        /*
+          ══ ⚠️⚠️ 落点不一定是文本节点 —— 这是「只能选一个字」的真因 ══
+             （v0.1.42）
+
+          实测：`caretRangeFromPoint` 落在元素边界（段落之间的空隙、
+          `<p>` 的起止处、行尾空白）时，返回的 `startContainer` 是
+          **元素节点**（`nodeType === 1`），`nodeValue` 为 null。
+
+          旧代码在这里直接 `return` —— 于是整个 `touchmove` 序列里
+          **一次都没有**成功扩展，选区永远停在长按时落下的那 1 个字符。
+          用户看到的就是「直接单字符了，不随手指移动」。
+
+          ✅ 修法：把落点**规整**到最近的文本节点上，而不是放弃。
+             见 resolveTextPoint()。
+        */
+        var pt = resolveTextPoint(r);
+        if (!pt) return;
+
+        node = pt.node;
+        off = pt.offset;
+
+        /*
+          ══ ⚠️⚠️ 用 Range + remove/add，**不用** setBaseAndExtent ══
+             （v0.1.42）
+
+          实测：在 Android WebView 里连续调用 `setBaseAndExtent()` 时，
+          **只有第一次生效**，后续调用被静默忽略 —— 选区停在第一次
+          建立的位置，手指再拖也不变。
+
+          症状就是用户说的：
+            「直接单字符了，而不是随着我手指的移动来控制选中区域」
+          以及我实测到的「dy=25 和 dy=40 选中的字符数完全一样」。
+
+          ✅ 改为每次都新建一个 Range 并整替：
+             removeAllRanges() → addRange()。
+             这条路径在 WebView 上每次都生效（实测可随手指逐次变化）。
+
+          ⚠️ 代价是丢失 `setBaseAndExtent` 的方向语义（从后往前拖）。
+             这里用 anchor 与当前点的文档位置比较，手动决定 start/end，
+             效果等价。
+        */
+        var range = document.createRange();
+
+        try {
+            var anchorRange = document.createRange();
+            anchorRange.setStart(selAnchor.node, selAnchor.offset);
+
+            var curRange = document.createRange();
+            curRange.setStart(node, off);
+
+            /*
+              `compareBoundaryPoints(START_TO_START)` < 0 表示
+              当前点位于锚点**之前** → 手指往左上拖，锚点当 end。
+            */
+            var cmp = curRange.compareBoundaryPoints(
+                Range.START_TO_START, anchorRange);
+
+            if (cmp < 0) {
+                range.setStart(node, off);
+                range.setEnd(selAnchor.node, selAnchor.offset);
+            } else {
+                range.setStart(selAnchor.node, selAnchor.offset);
+                range.setEnd(node, off);
+            }
+        } catch (e) {
+            return;
+        }
+
+        /*
+          ══ ⚠️⚠️ 选区坍缩成 0 长度时，**至少保留起点那一个字** ══
+             （v0.1.42）
+
+          实测：手指刚移动几像素（3–16 CSS px）时，
+          `caretRangeFromPoint` 反复返回与锚点**同一个 offset** ——
+          手指还停在同一行同一字符的垂直范围内。
+
+          此时上面算出来的 Range 是 collapsed（start === end），
+          于是：
+            ① 选区变成空串；
+            ② `onEnd` 里 `syncSelectionFromNative()` 读到空 →
+               `clearSelection()`；
+            ③ 用户看到的是一次「长按成功了但什么都没选中」。
+
+          症状正是「小幅拖动后全空，大位移才正常」。
+
+          ✅ 保留起点那个字符（`offset` → `offset + 1`），
+             与长按刚落点时的视觉保持一致。用户手一动、跨到下一个字，
+             就会立刻被上面的 Range 覆盖成正确的跨度。
+        */
+        if (range.collapsed) {
+            try {
+                var aNode = selAnchor.node;
+                var aOff = selAnchor.offset;
+                var aLen = aNode.nodeValue ? aNode.nodeValue.length : 0;
+
+                if (aOff < aLen) {
+                    range.setEnd(aNode, aOff + 1);
+                } else if (aOff > 0) {
+                    range.setStart(aNode, aOff - 1);
+                    range.setEnd(aNode, aOff);
+                }
+            } catch (e) {
+                /* 保守起见：算不出来就用坍缩的选择，至少不抛错 */
+            }
+        }
 
         try {
             var s = global.getSelection();
-            s.setBaseAndExtent(selAnchor.node, selAnchor.offset, node, off);
+            s.removeAllRanges();
+            s.addRange(range);
         } catch (e) {
             return;
         }
