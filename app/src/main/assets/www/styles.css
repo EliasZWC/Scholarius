@@ -1471,6 +1471,54 @@ body {
 }
 
 /*
+  ══ 标题类标注的排版（v0.1.53）══
+
+  ══ 用户要求（原话）══
+
+    「首先改三级标题，要加粗，然后比正文字体（默认）大1个号；
+      二级标题也加粗，大2个号；一级标题加粗，大4个号；
+      文章标题加粗，大7个号。」
+
+  以默认正文 17px 计：三级 18px / 二级 19px / 一级 21px / 文章标题 24px。
+
+  ⚠️⚠️ 用 `em` 而不是 px —— 正文字号是**用户可调**的
+     （设置面板可以改成 12~28px）。写成 px 的话，用户把正文调到 24px，
+     文章标题的 24px 就反而比正文还小。
+
+     `em` 相对的是 `.reader-para` 继承来的字号 = `.reader-content` 的
+     font-size（JS 写在 style 上）。所以：
+         1em = 当前正文字号
+         17px 正文时 1.0588em = 18px，即"大 1 号"
+         17px 正文时 1.4118em = 24px，即"大 7 号"
+
+  ⚠️ 系数按 17px 反算（17+x)/17，而不是拍脑袋的 1.1/1.2 ——
+     这样在默认字号下正好等于用户要的像素增量，
+     调字号时又按同一比例缩放。
+
+  ⚠️ 只加粗、加大字号，**不改颜色、不加背景、不改行距** ——
+     其余视觉保持不变（用户特别说明"其他的先别改"）。
+*/
+.reader-para.is-labeled-body[data-label="h3"] {
+    font-weight: 700;
+    font-size: 1.0588em;   /* 17 → 18px（+1） */
+}
+
+.reader-para.is-labeled-body[data-label="h2"] {
+    font-weight: 700;
+    font-size: 1.1176em;   /* 17 → 19px（+2） */
+}
+
+.reader-para.is-labeled-body[data-label="h1"] {
+    font-weight: 700;
+    font-size: 1.2353em;   /* 17 → 21px（+4） */
+}
+
+.reader-para.is-labeled-body[data-label="title"] {
+    font-weight: 700;
+    font-size: 1.4118em;   /* 17 → 24px（+7） */
+}
+
+/*
   ══ 真正的选区高亮（v0.1.41）══
 
   ⚠️ 上一版（v0.1.40）把 `::selection` 设成透明、改用 `.is-sel` 画背景。
@@ -3566,6 +3614,20 @@ body {
 
   ⚠️ 两行的行高要压紧（1.25 / 1.35）—— 目录项本身间距较大，
      如果两行都松，一条标注项会比自动项高出一倍，列表节奏就乱了。
+
+  ══ ⚠️⚠️ 层级只靠**缩进**区分，字号字重统一（v0.1.53）══
+
+  用户要求原话：
+    「目录中的内容样式字体一样，只不过缩进不同。其他不变，
+      一级标题缩进2格，二级标题缩进4格，三级标题缩进6格。」
+
+  所以标注条目**不再**继承 `.toc-item[data-level]` 的字号/字重差异：
+  · 所有标注条目的内容行都是同一个字号、同一个字重；
+  · 只有 `padding-left` 随层级递增（2/4/6 格）。
+
+  ⚠️ 这推翻了上面 `[data-level]` 规则里"一级字号大"的做法 ——
+     那套规则仍然对**自动识别**的条目生效（无标注时才会出现），
+     但标注条目要用更高优先级的规则覆盖回来。
 */
 .toc-item.is-labeled-entry {
     display: flex;
@@ -3573,6 +3635,34 @@ body {
     gap: 1px;
     padding-top: 9px;
     padding-bottom: 9px;
+    /*
+      ⚠️ 统一字号与字重（覆盖 .toc-item[data-level] 的差异）。
+         用户要求"字体一样"。
+    */
+    font-size: 15px;
+    font-weight: 400;
+    color: var(--on-surface);
+}
+
+/*
+  ══ 标注条目的层级缩进（1 格 = 8px）══
+
+  ⚠️ 只有标题类三级体系需要缩进；文章标题 / 作者信息 / 摘要 /
+     参考文献都是一级，用同一档缩进即可（labelLevel 已把它们归为 1）。
+
+  ⚠️ 用 `padding-left` 覆盖 `.toc-item` 的 12px，而不是 margin ——
+     margin 会让 :active 的高亮背景与文字不同宽，看起来歪。
+*/
+.toc-item.is-labeled-entry[data-level="1"] {
+    padding-left: calc(12px + 16px);   /* 2 格 */
+}
+
+.toc-item.is-labeled-entry[data-level="2"] {
+    padding-left: calc(12px + 32px);   /* 4 格 */
+}
+
+.toc-item.is-labeled-entry[data-level="3"] {
+    padding-left: calc(12px + 48px);   /* 6 格 */
 }
 
 .toc-label-kind {
