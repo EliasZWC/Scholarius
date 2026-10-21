@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Scholarius - 阅读页。
  *
  * ## 交互（与主流阅读器一致）
@@ -3134,7 +3134,7 @@
               ⚠️ 传入计数器对象（而不是数字）—— 它要被就地递增，
                  数字是按值传递的，传出去改了外面看不到。
             */
-            appendLabeledRun(frag, run, counter);
+            appendLabeledRun(frag, run, bodyIndex);
         }
 
         contentEl.appendChild(frag);
@@ -3212,7 +3212,7 @@
      * ⚠️ 标签段取区域内**第一个块**的标签名。同一区域内所有块的
      *    标签签名相同（见 labelSignatureOf），所以取哪个都一样。
      */
-    function appendLabeledRun(frag, run, counter) {
+    function appendLabeledRun(frag, run, bodyIndex) {
         var firstLine = run.blocks[0].line;
         var spans = labels[firstLine] || [];
 
@@ -3226,7 +3226,7 @@
         if (hasMultiple) {
             for (var m = 0; m < run.blocks.length; m++) {
                 var sub = makeLabeledBlock(run.blocks[m], null,
-                    labels[run.blocks[m].line], counter);
+                    labels[run.blocks[m].line], bodyIndex);
                 if (sub) frag.appendChild(sub);
             }
             return;
@@ -3246,7 +3246,7 @@
         /* ② 内容段：区域内所有块，一块一个 `<p>` */
         for (var i = 0; i < run.blocks.length; i++) {
             var b = run.blocks[i];
-            var el = makeContentEl(b, counter);
+            var el = makeContentEl(b, bodyIndex);
 
             /*
               ⚠️ 区域内只有**第一块**带 `data-line` 吗？
@@ -3283,7 +3283,7 @@
      *
      * @return {DocumentFragment|Element}
      */
-    function makeContentEl(b, counter) {
+    function makeContentEl(b, bodyIndex) {
         /*
           ⚠️ 文本一律从 `blockTextOf()` 取（v0.1.57）——
              它按 `edits` → `docModel` 的顺序返回"这一块现在的文本"，
@@ -3368,9 +3368,9 @@
         */
         if (before) {
             var pBefore = makePlainPara(before, b);
-            if (counter) {
-                counter.n++;
-                attachBodyMarker(pBefore, counter.n);
+            if (bodyIndex) {
+                bodyIndex.n++;
+                attachBodyMarker(pBefore, bodyIndex.n);
             }
             frag.appendChild(pBefore);
         }
@@ -3384,9 +3384,9 @@
 
         if (after) {
             var pAfter = makePlainPara(after, b);
-            if (counter) {
-                counter.n++;
-                attachBodyMarker(pAfter, counter.n);
+            if (bodyIndex) {
+                bodyIndex.n++;
+                attachBodyMarker(pAfter, bodyIndex.n);
             }
             frag.appendChild(pAfter);
         }
@@ -3515,7 +3515,7 @@
      *
      * ⚠️ 未标注的部分仍按普通段落渲染，保持原样（v0.1.39 的"无等级"）。
      */
-    function makeLabeledBlock(b, baseEl, spans, counter) {
+    function makeLabeledBlock(b, baseEl, spans, bodyIndex) {
         var frag = document.createDocumentFragment();
 
         /*
@@ -3575,9 +3575,9 @@
                   ⚠️ 残片是正文段 → 计数（v0.1.57）。
                      标注段本身不计数（它不是正文）。
                 */
-                if (counter) {
-                    counter.n++;
-                    attachBodyMarker(plain, counter.n);
+                if (bodyIndex) {
+                    bodyIndex.n++;
+                    attachBodyMarker(plain, bodyIndex.n);
                 }
                 frag.appendChild(plain);
             }
