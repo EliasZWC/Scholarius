@@ -4154,8 +4154,8 @@
      *
      * ✅ 所以按 `line`（块行号）**一起排序**，天然落在正确位置。
      *
-     * ⚠️ 同一行既有自动条目又有标注时，**标注优先** ——
-     *    用户手动标注的意图明确高于机器猜测。
+     * ⚠️ 有标注时**只列标注**，不混入自动识别结果（见 mergedTocEntries）；
+     *    完全没有标注时才退回自动识别 —— 所以这里不需要再判优先级。
      *
      * ⚠️ 标注的标题取该段的**当前文本**（可能是编辑过的），
      *    并截断到一定长度：整段摘要当目录项会撑破弹层。
@@ -4239,26 +4239,39 @@
     }
 
     /**
-     * 把自动识别的目录与用户标注合并成一个按文档顺序排列的列表。
+     * 把用户的标注整理成按文档顺序排列的目录列表。
      *
-     * @return {Array} `[{level, title, line, labeled}]`
+     * ══ ⚠️⚠️ 有标注时，**只列标注**，不混入自动识别结果（v0.1.52）══
+     *
+     * 用户实测反馈：
+     *   「不对啊，我没有标注的为什么目录也有其他的栏？」
+     *
+     * 实测当时的情况：目录 25 条里，用户只标了 2 条，
+     * 其余 23 条全是自动识别的标题（Abstract / 2 Background /
+     * 3 Model Architecture …）。用户要的目录是"**我标出来的东西**"，
+     * 不是"机器猜的标题 + 我标的"。
+     *
+     * ══ 为什么之前会混进去 ══
+     *
+     * v0.1.45 的设计假设是：目录 = 自动识别（主体）+ 标注（补全/纠正）。
+     * 但用户的用法完全是另一回事 —— 他把标注当成**目录的唯一来源**：
+     * 自己决定哪几段是标题、是几级标题。在这种用法下，
+     * 自动识别的那些条目就是纯噪声。
+     *
+     * ✅ 现在的规则：
+     *    · 有标注 → 目录只显示标注条目
+     *    · 完全没有标注 → 目录显示自动识别结果（否则新导入的文献
+     *      一打开就是空目录，用户会以为功能坏了）
+     *
+     * ⚠️ 这个"回退"很重要：不放的话，用户第一次打开任何文献
+     *    都会看到空目录，而他那时还没机会标注过任何东西。
+     *
+     * @return {Array} `[{level, title, line, labeled, label, labelKind}]`
      */
     function mergedTocEntries() {
         var byLine = {};
 
-        /* ① 自动识别的条目先放（可能被标注覆盖） */
-        for (var i = 0; i < toc.length; i++) {
-            var e = toc[i];
-            if (!e || typeof e.line !== 'number') continue;
-            byLine[e.line] = {
-                level: e.level,
-                title: e.title,
-                line: e.line,
-                labeled: false
-            };
-        }
-
-        /* ② 用户标注覆盖同行的自动条目，并补上原本没有的行 */
+        /* ① 先收集标注条目 */
         for (var key in labels) {
             if (!Object.prototype.hasOwnProperty.call(labels, key)) continue;
             var line = parseInt(key, 10);
@@ -4338,6 +4351,33 @@
                     labeled: true
                 };
                 first = false;
+            }
+        }
+
+        /*
+          ② **完全没有标注时**，退回自动识别的目录。
+             ⚠️ 这是必要的新用户路径：第一次打开文献还没标注过任何东西，
+                不放这个回退，目录就是空的，用户会以为功能坏了。
+          ③ 有标注时**不**混入自动条目 —— 见函数头部的说明。
+        */
+        var hasLabels = false;
+        for (var k in byLine) {
+            if (Object.prototype.hasOwnProperty.call(byLine, k)) {
+                hasLabels = true;
+                break;
+            }
+        }
+
+        if (!hasLabels) {
+            for (var i = 0; i < toc.length; i++) {
+                var e = toc[i];
+                if (!e || typeof e.line !== 'number') continue;
+                byLine[e.line] = {
+                    level: e.level,
+                    title: e.title,
+                    line: e.line,
+                    labeled: false
+                };
             }
         }
 
