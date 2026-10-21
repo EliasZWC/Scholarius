@@ -2823,21 +2823,197 @@
      *    早期它是"分区失败时的兜底"，现在成了主路径 ——
      *    因为用户要求「不允许有任何模板」。
      */
+    /**
+     * 平坦渲染：一段一个 `<p>`，没有区域、没有等级。
+     *
+     * ⚠️ v0.1.39 起这是**唯一**的正文渲染路径（`renderBlocks` 直接调它）。
+     *    早期它是"分区失败时的兜底"，现在成了主路径 ——
+     *    因为用户要求「不允许有任何模板」。
+     *
+     * ══ ⚠️⚠️ 相邻且同标签的块要合并成**一个区域**（v0.1.50）══
+     *
+     * 用户实测反馈：
+     *   「区域划分怎么还是按段呢？我将多段加一个段的末尾都分到了作者信息，
+     *     结果末尾那个直接没有前置文本，然后后面的都是一段一个前置文本 ——
+     *     这不对，他们都是一个区域的。」
+     *
+     * 旧实现是**逐块**渲染的（makeBlockEl 自己决定要不要加标签段），
+     * 它根本不知道邻居是谁，所以跨块标注必然渲染成「一段一个前置文本」。
+     *
+     * ✅ 现在先**分组**再渲染：
+     *     · 连续的、标注标签相同的块 → 归为同一个区域
+     *     · 每个区域只在最前面输出**一次**标签段
+     *     · 区域内部是一串普通段落（v0.1.39 的"无等级"仍然成立）
+     *
+     * ⚠️ 判据是「**相邻**」而不是「标签相同」：
+     *    同一标签出现在文中两处（比如两个不同的"一级标题"）时，
+     *    中间隔着正文，它们必须是**两个**区域，各自带自己的标签。
+     */
     function renderFlat(blocks) {
         var frag = document.createDocumentFragment();
+
+        /*
+          把块切成"运行"（run）：连续、且标注标签集合完全相同的块归一段。
+          ⚠️ 比较的是整个标签签名而不是单个标签 —— 一个块里可能同时
+             有多个标签（虽然少见），签名一致才算同一个区域。
+        */
+        var runs = [];
+        var curRun = null;
+
         for (var i = 0; i < blocks.length; i++) {
-            var el = makeBlockEl(blocks[i]);
+            var b = blocks[i];
+            var sig = labelSignatureOf(b);
+
+            if (curRun && sig === curRun.sig && sig !== '') {
+                curRun.blocks.push(b);
+            } else {
+                curRun = { sig: sig, blocks: [b] };
+                runs.push(curRun);
+            }
+        }
+
+        for (var r = 0; r < runs.length; r++) {
+            var run = runs[r];
 
             /*
-              ⚠️ `makeBlockEl` 现在可能返回**一个元素**，也可能返回
-                 **DocumentFragment**（带标注的块会拆成"标签段 + 内容段"
-                 多个元素，见 makeLabeledBlock），还可能返回 null
-                 （标注区间全部越界）。三种情况都要接住。
+              ⚠️ 无标签的运行 → 普通段落，一块一个 `<p>`。
             */
-            if (!el) continue;
+            if (!run.sig) {
+                for (var k = 0; k < run.blocks.length; k++) {
+                    var plain = makeBlockEl(run.blocks[k]);
+                    if (plain && plain.nodeType === 11) {
+                        frag.appendChild(plain);
+                    } else if (plain) {
+                        frag.appendChild(plain);
+                    }
+                }
+                continue;
+            }
+
+            /*
+              ⚠️ 有标签的运行 → **先输出一次标签段**，再输出所有内容段。
+            */
+            appendLabeledRun(frag, run);
+        }
+
+        contentEl.appendChild(frag);
+    }
+
+    /**
+     * 取一个块的「标签签名」——用于判断相邻块是否属于同一区域。
+     *
+     * ⚠️ 只要有一个块的标签不同，签名就不同，它们就分属两个区域。
+     *    这样"作者信息"标在第 3–5 段时，第 3/4/5 段是同一区域，
+     *    第 6 段（未被标注）开始新的一块。
+     *
+     * @return {string} 空串 = 这块没有标注
+     */
+    function labelSignatureOf(b) {
+        if (!b || typeof b.line !== 'number') return '';
+        var spans = labels[b.line];
+        if (!spans || !spans.length) return '';
+
+        var keys = [];
+        for (var i = 0; i < spans.length; i++) {
+            if (spans[i] && spans[i].label) keys.push(spans[i].label);
+        }
+        keys.sort();
+        return keys.join('|');
+    }
+
+    /**
+     * 输出一个「已标注区域」：**一个标签段 + 若干内容段**（v0.1.50）。
+     *
+     * ══ 用户要求（原话）══
+     *
+     *   「我将多段加一个段的末尾都分到了作者信息……他们都是一个区域的。」
+     *
+     * 所以：
+     *
+     *   ┌──────────────────────────────┐
+     *   │ 作者信息                       │  ← 只出现**一次**
+     *   │ 第一段内容…                    │
+     *   │ 第二段内容…                    │
+     *   │ 第三段内容…                    │
+     *   └──────────────────────────────┘
+     *
+     * ⚠️ 区域内部的每段仍是独立 `<p>`（保留段落边界），
+     *    但**不再重复**标签文字 —— 这正是用户指出的问题所在。
+     *
+     * ⚠️ 标签段取区域内**第一个块**的标签名。同一区域内所有块的
+     *    标签签名相同（见 labelSignatureOf），所以取哪个都一样。
+     */
+    function appendLabeledRun(frag, run) {
+        var firstLine = run.blocks[0].line;
+        var spans = labels[firstLine] || [];
+
+        /*
+          ⚠️ 一个块里可能有多个不同标签（虽然少见）。此时无法只用一个
+             标签段表达整个区域，退化为"逐块带标签"——
+             宁可多显示几个标签，也不能漏掉某个标签的信息。
+        */
+        var hasMultiple = spans.length > 1;
+
+        if (hasMultiple) {
+            for (var m = 0; m < run.blocks.length; m++) {
+                var sub = makeLabeledBlock(run.blocks[m], null, labels[run.blocks[m].line]);
+                if (sub) frag.appendChild(sub);
+            }
+            return;
+        }
+
+        var labelKey = spans[0] ? spans[0].label : null;
+
+        /* ① 标签段：整个区域只输出一次 */
+        if (labelKey) {
+            var head = document.createElement('p');
+            head.className = 'reader-label-head';
+            head.setAttribute('data-label', labelKey);
+            head.textContent = t('reader.label.' + labelKey);
+            frag.appendChild(head);
+        }
+
+        /* ② 内容段：区域内所有块，一块一个 `<p>` */
+        for (var i = 0; i < run.blocks.length; i++) {
+            var b = run.blocks[i];
+            var el = makeContentEl(b);
+
+            /*
+              ⚠️ 区域内只有**第一块**带 `data-line` 吗？
+                 不 —— 每块都带自己的 `data-line`，
+                 目录跳转和 blockElOf 才能定位到正确的那一段。
+            */
             frag.appendChild(el);
         }
-        contentEl.appendChild(frag);
+    }
+
+    /**
+     * 造一个"已经处理过标注"的内容段（只要内容，不要标签段）。
+     *
+     * ⚠️ 与 makeBlockEl 的区别：这里**不再**调用 makeLabeledBlock，
+     *    因为标签段由 appendLabeledRun 统一输出一次。
+     */
+    function makeContentEl(b) {
+        var edited = null;
+        if (typeof b.line === 'number' && edits[b.line] != null) {
+            edited = edits[b.line];
+        }
+
+        var el = document.createElement('p');
+        el.className = 'reader-para';
+        el.textContent = (edited != null) ? edited : b.text;
+
+        var spans = (typeof b.line === 'number') ? labels[b.line] : null;
+        if (spans && spans.length === 1 && spans[0].label) {
+            el.classList.add('is-labeled-body');
+            el.setAttribute('data-label', spans[0].label);
+        }
+
+        if (b.page) el.setAttribute('data-page', String(b.page));
+        if (typeof b.line === 'number' && b.line >= 0) {
+            el.setAttribute('data-line', String(b.line));
+        }
+        return el;
     }
 
     /**
@@ -2889,36 +3065,17 @@
         el.textContent = (edited != null) ? edited : b.text;
 
         /*
-          ══ 应用标注（v0.1.48）══
+          ══ 标注不在这里处理（v0.1.50）══
 
-          用户要求原话：
-            「我说的前置文本是新开一段，这段前面是前置文本，
-              这段的所有内容就是前置文本所包含的内容。
-              类似于先给个"文章标题"这样的字样，提示下面是文章标题。
-              然后下面单独成一段是选中的文章标题。」
+          ⚠️⚠️ 这是 v0.1.48/49 犯的错：让 makeBlockEl **自己**决定
+             要不要加标签段。但它只看得到当前这一个块，看不到邻居，
+             所以跨块标注必然渲染成「一段一个前置文本」——
+             用户实测报的就是这个问题。
 
-          所以标注不再做成行内混排，而是拆成**两段**：
-              <p class="reader-label-tag">文章标题</p>   ← 标签段
-              <p class="reader-para">Attention Is…</p>    ← 内容段
-
-          ⚠️ 这与 v0.1.47 的行内方案不同：标签自己占一行，
-             下面才是它管辖的内容，视觉上是"标题 + 正文"的关系，
-             比夹在文字中间更直观。
-
-          ⚠️ 数据仍是按**字符区间**存的（labels[line] = [{start,end,label}]）——
-             只有渲染形式变了。这样用户只标了段落里某几个字时，
-             内容段里也只显示那几个字。
+          ✅ 现在标注的分组与标签段输出全部上移到 renderFlat
+             （见 labelSignatureOf / appendLabeledRun）。
+             本函数只负责**无标签**的普通段落。
         */
-        var spans = (typeof b.line === 'number') ? labels[b.line] : null;
-
-        if (spans && spans.length) {
-            /*
-              ⚠️ 有标注 → 换个造法：标签段 + 内容段。
-                 这里直接返回一个 DocumentFragment，
-                 由 renderFlat 追加（调用方已经不假设它是单个元素）。
-            */
-            return makeLabeledBlock(b, el, spans);
-        }
 
         if (b.page) el.setAttribute('data-page', String(b.page));
         /*
@@ -2968,7 +3125,18 @@
      */
     function makeLabeledBlock(b, baseEl, spans) {
         var frag = document.createDocumentFragment();
-        var text = (baseEl.textContent != null) ? baseEl.textContent : '';
+
+        /*
+          ⚠️ 文本从**块数据**取，不从传入的 DOM 元素取（v0.1.50）——
+             调用方（appendLabeledRun）传的是 `null`（它没有现成元素），
+             旧代码读 `baseEl.textContent` 会抛 TypeError。
+        */
+        var text = '';
+        if (typeof b.line === 'number' && edits[b.line] != null) {
+            text = edits[b.line];
+        } else {
+            text = b.text || '';
+        }
 
         /*
           规范化区间：排序 + 夹边界 + 丢掉空区间。
@@ -3010,7 +3178,7 @@
                 var plain = document.createElement('p');
                 plain.className = 'reader-para';
                 plain.textContent = text.slice(pos, s);
-                copyBlockAttrs(plain, baseEl);
+                copyBlockAttrs(plain, null, b);
                 frag.appendChild(plain);
             }
 
@@ -3041,7 +3209,7 @@
                  编辑/标注时会取不到块。
                  `blockElOf` 只返回第一个匹配，行为仍然是确定的。
             */
-            copyBlockAttrs(body, baseEl);
+            copyBlockAttrs(body, baseEl, b);
 
             frag.appendChild(body);
             pos = item.end;
@@ -3058,13 +3226,31 @@
         return frag;
     }
 
-    /** 把原块的 data-page / data-line 等属性复制到新元素上 */
-    function copyBlockAttrs(dst, src) {
-        if (!src || !src.attributes) return;
-        for (var i = 0; i < src.attributes.length; i++) {
-            var at = src.attributes[i];
-            if (at.name === 'class') continue;
-            dst.setAttribute(at.name, at.value);
+    /**
+     * 把 `data-page` / `data-line` 等数据属性设到新元素上。
+     *
+     * @param {Element} dst
+     * @param {Element|null} src 已经造好的 DOM 元素（可选）
+     * @param {Object|null} block 块数据 `{page, line}`（`src` 为空时用它）
+     *
+     * ⚠️ 两种来源都要支持（v0.1.50）：
+     *    有时手上有现成元素（直接照抄属性），有时只有块数据
+     *    （appendLabeledRun 走的就是后者，它不预先造元素）。
+     */
+    function copyBlockAttrs(dst, src, block) {
+        if (src && src.attributes) {
+            for (var i = 0; i < src.attributes.length; i++) {
+                var at = src.attributes[i];
+                if (at.name === 'class') continue;
+                dst.setAttribute(at.name, at.value);
+            }
+            return;
+        }
+
+        if (!block) return;
+        if (block.page) dst.setAttribute('data-page', String(block.page));
+        if (typeof block.line === 'number' && block.line >= 0) {
+            dst.setAttribute('data-line', String(block.line));
         }
     }
 
@@ -4097,10 +4283,22 @@
                 if (!slice) continue;
 
                 /*
-                  ⚠️ 只有**第一条**覆盖该行的自动目录条目 ——
-                     后面几条是"附加的标注"，不应该把自动条目挤掉两次。
-                     用一个临时键区分，最后统一按 line 排序。
+                  ⚠️ 同一区域（相邻同标签的连续块）只生成**一条**目录项
+                     （v0.1.50）。
+
+                     用户把 4 个段落一起标成「作者信息」时，
+                     旧代码给每段各生成一条，目录里出现 4 条
+                     一模一样的「作者信息」—— 而它们在阅读视图里
+                     是**一个区域**（只有一个标签段）。
+
+                     ✅ 判据：这一块的标签与"上一条已加入的标注条目"相同，
+                        且它在 blocks 顺序上紧邻上一块 → 视为同一区域，跳过。
                 */
+                if (isSameRegionAsPrevious(line, sp.label)) {
+                    first = false;
+                    continue;
+                }
+
                 var dictKey = first ? String(line) : (String(line) + '#' + s);
                 byLine[dictKey] = {
                     level: labelLevel(sp.label),
@@ -4135,6 +4333,43 @@
             return (a.order || 0) - (b.order || 0);
         });
         return out;
+    }
+
+    /**
+     * 判断 `line` 这一块是否与"上一处已标注的块"属于同一区域（v0.1.50）。
+     *
+     * ══ 为什么需要 ══
+     *
+     * 用户把连续多段标成同一个标签时，阅读视图里它们合并成**一个区域**
+     * （只有一个标签段）。目录也必须只有**一条**条目 ——
+     * 否则会出现 4 条一模一样的「作者信息」。
+     *
+     * 判据（两者都要满足）：
+     *   ① 标签相同
+     *   ② 在**块顺序**上紧邻（不是行号数值相邻 —— 中间可能有被
+     *      `dropContainedBlocks` 过滤掉的块，行号会跳）
+     *
+     * ⚠️ 按块顺序判断要用 `lastBlocks`，不能用行号 ±1。
+     */
+    function isSameRegionAsPrevious(line, label) {
+        if (!lastBlocks || !lastBlocks.length) return false;
+
+        var idx = -1;
+        for (var i = 0; i < lastBlocks.length; i++) {
+            if (lastBlocks[i].line === line) { idx = i; break; }
+        }
+        if (idx <= 0) return false;
+
+        /*
+          ⚠️ 判据必须与渲染侧**完全一致**，见 labelSignatureOf()：
+             用整块签名（排序后拼接）而不是单个 label。
+             否则"一个块里有多个标签"时，渲染与目录会得出不同结论。
+        */
+        var curSig = labelSignatureOf({ line: line });
+        var prev = lastBlocks[idx - 1];
+        var prevSig = labelSignatureOf(prev);
+
+        return !!curSig && curSig === prevSig && curSig === label;
     }
 
     /**
