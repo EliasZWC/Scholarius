@@ -1435,22 +1435,33 @@ body {
 }
 
 /*
-  ══ 选中操作条（v0.1.40，v0.1.41 改为跟随选区）══
+  ══ 选中操作条（v0.1.40 起；v0.1.44 改为固定视窗底部）══
 
   ⚠️ 挂在 `.reader`（阅读页根）上，**不挂在 `.reader-body` 里** ——
-     否则会跟着正文滚动，长按处滚出视野后操作条就没了。
+     否则会跟着正文滚动，滚出视野后操作条就没了。
 
-  ⚠️⚠️ 位置由 **JS** 算（`positionSelectBar`），这里**只给外观**。
-     上一版写死了 `bottom: 64px`，结果操作条正好压在正文上 ——
-     实测用户想在下方继续选区，点到的却是"复制"按钮。
+  ⚠️⚠️ 为什么从"贴着选区"改成"固定视窗底部"：
 
-     现在的规则：JS 按选区矩形算出 `top` / `left`，
-     默认落在选区上方，上方挤不下时落到下方。
-     这里不写 `left/top/bottom` 任何定位值，避免与 JS 打架。
+     改用 WebView 原生选择器后，长按/拖动时 Android 会弹自己的
+     悬浮菜单（复制/全选/搜索那一排），它同样出现在选区附近。
+     我们的操作条如果也贴着选区，必然与系统菜单重叠、互相遮挡。
+
+     用户要求原话：
+       「我们的选中操作不需要直接展示在选中文段旁边，而是在视窗底部——
+         如果悬浮菜单出现，就在悬浮下方选项的上面就好了，
+         总结来讲就是可以看见的阅读内容的视窗窗口底部。
+         这样就不会和原生菜单重叠了。」
+
+  ⚠️ 位置完全由 CSS 决定；JS 只切 `.is-above-menu`（底栏是否展开）。
+     这样避免 JS 与 CSS 抢着写 left/top/bottom。
+
+  ⚠️ 18px + 安全区：贴着屏幕下沿会显得"卡在边里"。
 */
 .sel-bar {
     position: absolute;
     z-index: 3;
+    left: 50%;
+    bottom: calc(18px + var(--safe-bottom));
     display: flex;
     align-items: center;
     gap: 4px;
@@ -1459,42 +1470,33 @@ body {
     border-radius: 999px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
     /*
-      ⚠️ 位移**只做垂直方向的出现动画**，不再带水平居中位移 ——
-         `left` 由 JS 给出精确值，`translateX(-50%)` 会让它偏移半个身位。
-         透明度 + 轻微下移足够表达"浮出来"。
+      ⚠️ 居中的 `translateX(-50%)` 必须与出现动画的 `translateY`
+         合写在**同一个** transform 里 —— 分两处写会互相覆盖
+         （这个坑在弹层上犯过）。
     */
-    transform: translateY(6px);
+    transform: translate(-50%, 6px);
     opacity: 0;
     pointer-events: none;
-    transition: transform 180ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms linear;
+    transition: transform 180ms cubic-bezier(0.2, 0, 0, 1),
+        bottom 200ms cubic-bezier(0.2, 0, 0, 1),
+        opacity 180ms linear;
 }
 
 .sel-bar.is-open {
-    transform: translateY(0);
+    transform: translate(-50%, 0);
     opacity: 1;
     pointer-events: auto;
 }
 
 /*
-  ⚠️ 兜底模式：JS 拿不到选区矩形时才用（见 positionSelectBar）——
-     这时退回固定在底栏上方。
+  ⚠️ 底部菜单展开时抬到它上方 —— 否则会被 `.reader-bottom`
+     （高 64px + 安全区，z-index 2）盖住。
+     `bottom` 有过渡，切换菜单时不会跳。
 */
-.sel-bar.is-fixed-bottom {
-    left: 50% !important;
-    top: auto !important;
-    bottom: calc(64px + var(--safe-bottom) + 16px) !important;
-    transform: translate(-50%, 6px);
+.sel-bar.is-above-menu {
+    bottom: calc(64px + var(--safe-bottom) + 12px);
 }
 
-.sel-bar.is-fixed-bottom.is-open {
-    transform: translate(-50%, 0);
-}
-
-/*
-  ⚠️ `[hidden]` 必须自己兜底 ——
-     上面的 `display: flex` 会盖掉 UA 的 `[hidden] { display: none }`。
-     这个坑项目里犯过两次（见 tools/check_hidden_display.py）。
-*/
 .sel-bar[hidden] {
     display: none;
 }

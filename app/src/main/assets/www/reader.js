@@ -1437,76 +1437,48 @@
     }
 
     /**
-     * 把操作条摆到选区上方（空间不够时到下方）。
+     * 把操作条摆到**阅读视窗底部**（v0.1.44）。
      *
-     * ⚠️ 用 `getSelection().getRangeAt(0).getBoundingClientRect()`，
-     *    它对**跨段落**选区同样有效（返回整个选区的外接矩形）。
+     * ══ 用户要求（原话）══
      *
-     * ⚠️ 位置用 `position: fixed` 更方便（相对视口），
-     *    但操作条挂在 `root`（.reader，是 `position: fixed` 的全屏层）上 ——
-     *    视口坐标与 root 坐标在这个项目里是一致的（root 铺满全屏、无位移）。
-     *    所以直接用视口坐标设置 `top/left` 是对的。
+     *   「我们的选中操作不需要直接展示在选中文段旁边，而是在视窗底部——
+     *     当然，如果悬浮菜单出现，就在悬浮下方选项的上面就好了，
+     *     总结来讲就是可以看见的阅读内容的视窗窗口底部。
+     *     这样就不会和原生菜单重叠了。」
+     *
+     * ══ 为什么不再贴着选区 ══
+     *
+     * v0.1.42 之前一直把操作条放在选区上方/下方 10px 处。
+     * 那时选区是我们自己画的、没有系统菜单，贴着放是合理的。
+     * 现在改用**原生选择器**，长按/拖动时 Android 会弹自己的悬浮菜单
+     * （复制/全选/搜索那一排）——它同样出现在选区附近，
+     * 两套 UI 必然打架：重叠、互相遮挡、点错。
+     *
+     * ✅ 现在固定贴在视窗底部，和系统菜单彻底分开：
+     *
+     *    · 菜单收起 → 贴着底部安全区
+     *    · 菜单展开（`.reader.is-menu-open`）→ 抬到底栏上方
+     *
+     * ⚠️ 这正是 v0.1.40 后被推翻的"固定底部"方案，但那时是错在
+     *    **压住了正文**（`elementFromPoint` 实测点到的是按钮）。
+     *    现在不同：操作条只在有选区时出现，而原生选择器已经把
+     *    选区附近交还给我们处理，底部这一条不会挡住用户继续拖选。
+     *
+     * ⚠️ 水平方向居中；样式全在 CSS，JS 只负责"要避开多少底部高度"。
      */
     function positionSelectBar() {
         if (!selBarEl) return;
 
-        var rect = null;
-        try {
-            var s = global.getSelection();
-            if (s && s.rangeCount) {
-                rect = s.getRangeAt(0).getBoundingClientRect();
-            }
-        } catch (e) { rect = null; }
-
         /*
-          ⚠️ 拿不到选区矩形时（极少数时序）退回底部固定位置 ——
-             宁可位置难看，也不能不显示操作条。
+          ⚠️ 不用再算 `top` —— CSS 里用 `bottom` 固定。
+             这里只把"底栏是否展开"告诉 CSS，靠类名切换避让高度。
         */
-        if (!rect || (!rect.width && !rect.height)) {
-            selBarEl.style.left = '50%';
-            selBarEl.style.top = 'auto';
-            selBarEl.style.bottom = 'calc(64px + var(--safe-bottom) + 16px)';
-            selBarEl.classList.add('is-fixed-bottom');
-            return;
-        }
-        selBarEl.classList.remove('is-fixed-bottom');
-        selBarEl.style.bottom = 'auto';
+        var menuOpen = root && root.classList.contains('is-menu-open');
+        selBarEl.classList.toggle('is-above-menu', !!menuOpen);
 
-        /*
-          ⚠️ 先量一次操作条自身尺寸再定位 ——
-             要用它的宽高来决定"放上面还是下面"以及水平夹取。
-             `hidden=false` 之后 offsetWidth 才有效（上面已设）。
-        */
-        var bw = selBarEl.offsetWidth || 160;
-        var bh = selBarEl.offsetHeight || 48;
-
-        var GAP = 10;
-        var margin = 8;
-        var top;
-
-        if (rect.top - bh - GAP >= margin) {
-            // 上方放得下 → 放上方
-            top = rect.top - bh - GAP;
-        } else {
-            // 上方太挤 → 放下方（但不越过底栏）
-            top = rect.bottom + GAP;
-            var maxTop = global.innerHeight - bh - margin;
-            if (top > maxTop) top = Math.max(margin, maxTop);
-        }
-
-        /*
-          ⚠️ 水平居中于选区，并夹在视口内 ——
-             选区长文本时 `rect.left/width` 是整个选区的外接矩形，
-             居中会落在屏幕中间（合理）；短选区时贴着它。
-        */
-        var cx = rect.left + rect.width / 2;
-        var left = cx - bw / 2;
-        var maxLeft = global.innerWidth - bw - margin;
-        if (left < margin) left = margin;
-        if (left > maxLeft) left = Math.max(margin, maxLeft);
-
-        selBarEl.style.left = Math.round(left) + 'px';
-        selBarEl.style.top = Math.round(top) + 'px';
+        selBarEl.style.left = '';
+        selBarEl.style.top = '';
+        selBarEl.style.bottom = '';
     }
 
     /**
@@ -1641,6 +1613,16 @@
         }
         if (settingsBtn) {
             settingsBtn.setAttribute('aria-expanded', 'false');
+        }
+
+        /*
+          ⚠️ 底栏开合会改变操作条的避让高度（v0.1.44）——
+             必须重排一次，否则它会停在错误的高度：
+               · 菜单展开时仍贴着屏幕底部 → 被底栏盖住
+               · 菜单收起时仍抬着 → 与正文之间空一大块
+        */
+        if (selBarEl && !selBarEl.hidden) {
+            positionSelectBar();
         }
     }
 
