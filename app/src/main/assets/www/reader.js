@@ -3062,6 +3062,27 @@
         var frag = document.createDocumentFragment();
 
         /*
+          ══ 正文段计数（v0.1.57）══
+
+          用户要求：
+            「增加一个功能，那就是正文段计数，左边加提示条和正文段编号。
+              编号在提示条左边。」
+            「不包括标注了不是正文的段，剩下的正文段都标，
+              然后连续，从全文的第一个到最后一个」
+
+          ⚠️ 所以计数器只对**正文段**递增：
+             · 被标注为 title / h1 / h2 / h3 / author / abstract /
+               reference 的块**不计数**（它们不是正文）；
+             · 未标注的块、标注为 body 的块都算正文；
+             · 一个块被拆成多段（部分标注）时，只有**未标注的残片**
+               算正文段，标注段本身不算。
+
+          ⚠️ 计数器必须活在整个 `renderFlat` 期间（跨 run 累加），
+             不能每个 run 重置 —— 用户要求"连续，从全文第一个到最后一个"。
+        */
+        var bodyIndex = { n: 0 };
+
+        /*
           把块切成"运行"（run）：连续、且标注标签集合完全相同的块归一段。
           ⚠️ 比较的是整个标签签名而不是单个标签 —— 一个块里可能同时
              有多个标签（虽然少见），签名一致才算同一个区域。
@@ -3090,6 +3111,15 @@
             if (!run.sig) {
                 for (var k = 0; k < run.blocks.length; k++) {
                     var plain = makeBlockEl(run.blocks[k]);
+
+                    /*
+                      ⚠️ 无标签块必然是正文段 → 计数 + 挂编号。
+                     */
+                    if (plain && plain.nodeType === 1) {
+                        bodyIndex.n++;
+                        attachBodyMarker(plain, bodyIndex.n);
+                    }
+
                     if (plain && plain.nodeType === 11) {
                         frag.appendChild(plain);
                     } else if (plain) {
@@ -3101,11 +3131,41 @@
 
             /*
               ⚠️ 有标签的运行 → **先输出一次标签段**，再输出所有内容段。
+              ⚠️ 传入计数器对象（而不是数字）—— 它要被就地递增，
+                 数字是按值传递的，传出去改了外面看不到。
             */
-            appendLabeledRun(frag, run);
+            appendLabeledRun(frag, run, counter);
         }
 
         contentEl.appendChild(frag);
+    }
+
+    /**
+     * 给一个**正文段**挂上编号 + 左侧提示条（v0.1.57）。
+     *
+     * 用户要求：
+     *   「正文段计数，左边加提示条和正文段编号。编号在提示条左边。」
+     *
+     * 视觉：
+     *
+     *      3 │ 正文内容…
+     *      ^ ^
+     *      │ └ 提示条（竖线）
+     *      └ 编号（在竖线左边）
+     *
+     * ⚠️ 编号用 `data-body-no` 挂到段落上，由 CSS 的 `::before` 绘制 ——
+     *    不用额外的 DOM 元素：
+     *      · `::before` 不参与选中（`user-select: none` 也省了），
+     *        复制正文不会带上编号；
+     *      · 不占内容流，段落文字的对齐不受影响。
+     *
+     * ⚠️ 竖线用 `border-left` 还是 `::before`：
+     *    这里用 `::before` 画编号、`border-left` 画竖线。
+     *    用 border 而不是 box-shadow，因为要的就是"提示条"那种明确的线。
+     */
+    function attachBodyMarker(el, no) {
+        el.classList.add('is-body-para');
+        el.setAttribute('data-body-no', String(no));
     }
 
     /**
@@ -3152,7 +3212,7 @@
      * ⚠️ 标签段取区域内**第一个块**的标签名。同一区域内所有块的
      *    标签签名相同（见 labelSignatureOf），所以取哪个都一样。
      */
-    function appendLabeledRun(frag, run) {
+    function appendLabeledRun(frag, run, counter) {
         var firstLine = run.blocks[0].line;
         var spans = labels[firstLine] || [];
 
@@ -3165,7 +3225,8 @@
 
         if (hasMultiple) {
             for (var m = 0; m < run.blocks.length; m++) {
-                var sub = makeLabeledBlock(run.blocks[m], null, labels[run.blocks[m].line]);
+                var sub = makeLabeledBlock(run.blocks[m], null,
+                    labels[run.blocks[m].line], counter);
                 if (sub) frag.appendChild(sub);
             }
             return;
@@ -3185,7 +3246,7 @@
         /* ② 内容段：区域内所有块，一块一个 `<p>` */
         for (var i = 0; i < run.blocks.length; i++) {
             var b = run.blocks[i];
-            var el = makeContentEl(b);
+            var el = makeContentEl(b, counter);
 
             /*
               ⚠️ 区域内只有**第一块**带 `data-line` 吗？
@@ -3222,7 +3283,7 @@
      *
      * @return {DocumentFragment|Element}
      */
-    function makeContentEl(b) {
+    function makeContentEl(b, counter) {
         /*
           ⚠️ 文本一律从 `blockTextOf()` 取（v0.1.57）——
              它按 `edits` → `docModel` 的顺序返回"这一块现在的文本"，
@@ -3288,7 +3349,7 @@
             · 编辑/标注直接作用在整块文本的区间上，永远对得上。
         */
 
-        /* 整块被标注 → 不必拆节点 */
+        /* 整块被标注 → 不必拆节点。⚠️ 标注段**不是正文**，不计数。 */
         if (!before && !after) {
             var whole = document.createElement('p');
             whole.className = 'reader-para is-labeled-body';
@@ -3300,8 +3361,18 @@
 
         var frag = document.createDocumentFragment();
 
+        /*
+          ⚠️ 残片是**正文段** → 要计数并挂编号（v0.1.57）。
+             用户要求：「不包括标注了不是正文的段，剩下的正文段都标」
+             所以：标注段不计数，前后残片计数。
+        */
         if (before) {
-            frag.appendChild(makePlainPara(before, b));
+            var pBefore = makePlainPara(before, b);
+            if (counter) {
+                counter.n++;
+                attachBodyMarker(pBefore, counter.n);
+            }
+            frag.appendChild(pBefore);
         }
 
         var marked = document.createElement('p');
@@ -3312,7 +3383,12 @@
         frag.appendChild(marked);
 
         if (after) {
-            frag.appendChild(makePlainPara(after, b));
+            var pAfter = makePlainPara(after, b);
+            if (counter) {
+                counter.n++;
+                attachBodyMarker(pAfter, counter.n);
+            }
+            frag.appendChild(pAfter);
         }
 
         return frag;
@@ -3439,7 +3515,7 @@
      *
      * ⚠️ 未标注的部分仍按普通段落渲染，保持原样（v0.1.39 的"无等级"）。
      */
-    function makeLabeledBlock(b, baseEl, spans) {
+    function makeLabeledBlock(b, baseEl, spans, counter) {
         var frag = document.createDocumentFragment();
 
         /*
@@ -3495,6 +3571,14 @@
                 plain.className = 'reader-para';
                 plain.textContent = text.slice(pos, s);
                 copyBlockAttrs(plain, null, b);
+                /*
+                  ⚠️ 残片是正文段 → 计数（v0.1.57）。
+                     标注段本身不计数（它不是正文）。
+                */
+                if (counter) {
+                    counter.n++;
+                    attachBodyMarker(plain, counter.n);
+                }
                 frag.appendChild(plain);
             }
 

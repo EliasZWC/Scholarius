@@ -1343,6 +1343,75 @@ body {
      靠段距区分。混用会让中英混排的文档看起来杂乱。
      段距已经足够表达分段。
 */
+/*
+  ══ 正文段编号 + 左侧提示条（v0.1.57）══
+
+  ══ 用户要求（原话）══
+
+    「增加一个功能，那就是正文段计数，左边加提示条和正文段编号。
+      编号在提示条左边。」
+    「不包括标注了不是正文的段，剩下的正文段都标，
+      然后连续，从全文的第一个到最后一个」
+
+  视觉：
+
+        3 │ 正文内容…
+        ^ ^
+        │ └ 提示条（竖线，用 border-left 画）
+        └ 编号（用 ::before 画，在竖线左边）
+
+  ⚠️⚠️ 编号用 `::before` 而不是真实 DOM 元素：
+     · 伪元素**不可选中**，用户复制正文时不会把编号带进去；
+     · 不占内容流，段落文字对齐完全不受影响；
+     · 不用为几千个段落多建几千个 span。
+
+  ⚠️ 竖线用 `border-left` 而不是 `box-shadow: inset`：
+     inset 阴影贴在内容区内侧，会压住文字半个像素；
+     border 在 padding 之外，文字不被遮。
+
+  ⚠️ 编号与竖线之间留空隙，否则 `2` 和 `│` 会挤在一起。
+     用 `padding-left` 给编号留位置，`::before` 绝对定位到那里。
+*/
+.reader-para.is-body-para {
+    position: relative;
+    /*
+      ⚠️ 左边距给"编号区"腾地方，否则编号会压在容器左 padding 上。
+    */
+    padding-left: 20px;
+    border-left: 2px solid var(--outline);
+}
+
+.reader-para.is-body-para::before {
+    content: attr(data-body-no);
+    position: absolute;
+    /*
+      ⚠️ 负偏移把编号放到 border 的**左边**。
+         border 在 padding 之外，所以要从 border 外再往左推。
+    */
+    right: calc(100% + 6px);
+    top: 0;
+    /*
+      ⚠️ 行高与正文一致，编号才能和**第一行**文字对齐 ——
+         不用 `top: 50%` 居中，否则高段落里编号会跑到中间，
+         看不出它属于哪一行之首。
+    */
+    font-size: 12px;
+    line-height: 1.75;
+    font-weight: 400;
+    /*
+      ⚠️ 数字用等宽 + 右对齐：段落过百时 "9" 与 "100" 宽度不同，
+         左对齐会让编号右边缘参差不齐。
+    */
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    min-width: 22px;
+    color: var(--on-surface-variant);
+    opacity: 0.7;
+    -webkit-user-select: none;
+    user-select: none;
+    pointer-events: none;
+}
+
 .reader-para {
     margin: 1em 0 0;
     /* 段内换行按原样保留（公式对齐、列表缩进都依赖它） */
