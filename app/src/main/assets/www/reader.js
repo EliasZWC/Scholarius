@@ -634,175 +634,82 @@
              之前的绝不阻止 —— 否则页面滚不动（这是第一版的惨痛教训：
              touchstart 无条件 preventDefault，滚动全靠自己算，很脆）。
         */
-        contentEl.addEventListener('touchstart', function (ev) {
-            /*
-              ⚠️ 多指（缩放）不参与选区。
-            */
-            if (ev.touches && ev.touches.length > 1) {
-                clearSelTimer();
-                return;
-            }
+        /*
+          ══ 选区实现：**完全交给浏览器原生选择器**（v0.1.43 重做）══
 
-            var tp = ev.touches && ev.touches[0];
-            if (!tp) return;
+          ══ 为什么推翻了 v0.1.41/v0.1.42 的"自己做选区" ══
 
-            selStartX = tp.clientX;
-            selStartY = tp.clientY;
+          真机实测（用户反馈 + 反复确认）：
 
-            var armed = false;
+            「高亮有，但**没有拖动把手**；很不稳定，大部分情况都是单个
+              字符无法改变，但有时候可以正常选中，也有蓝色小圆点。」
 
-            selecting = true;
+          ⚠️ 这就是**两套选择器在打架**：
 
-            clearSelTimer();
-            selTimer = global.setTimeout(function () {
-                selTimer = null;
-                armed = true;
+            · 原生选择器：WebView 内建，会给出蓝色把手（那两个小圆点），
+              手感就是用户平时在别的 app 里用惯的那个；
+            · 我们自己的选区：`getSelection()` + `addRange()`，
+              **只有高亮、没有把手**，而且每一帧都要自己重算。
 
-                /*
-                  ⚠️ 触发选中时给一次**震动**。
-                     Android 系统长按选中也有这一下，用户靠它确认
-                     "我这次是按住了，不是在滑"。
-                     ⚠️ `navigator.vibrate` 在部分机型/设置下会抛，
-                        必须包 try 且**不能**因为失败而中断选中。
-                */
-                try {
-                    if (global.navigator && global.navigator.vibrate) {
-                        global.navigator.vibrate(12);
-                    }
-                } catch (e) { /* 忽略 */ }
+          两套都在抢同一个 `window.getSelection()`。哪一套最后写入就赢，
+          所以表现成"时好时坏、大部时候只能选一个字"。
 
-                armSelectionAt(selStartX, selStartY);
-            }, SELECT_LONG_PRESS_MS);
+          ⚠️ 我之前的模拟器测试测不出来这个，因为 `emu_touch.py` 走
+             CDP 派发 touch 事件，绕过了 WebView 原生选择器那一层 ——
+             在模拟器上我的代码"独占"了选区，看起来完美；
+             真机上原生选择器才是真正的持有者，我的代码被它不断覆盖。
 
-            /*
-              ⚠️ 每次手势注册一对**一次性**的 move/end，
-                 结束就摘掉。不用全局监听，避免和别的触摸逻辑打架。
-            */
-            var onMove = function (mv) {
-                var tp2 = mv.touches && mv.touches[0];
-                if (!tp2) return;
+          ══ ✅ 现在：只用原生选择器，我们只接管界面 ══
 
-                if (!armed) {
-                    /*
-                      ⚠️ 手指一动（超过抖动半径）就取消长按 ——
-                         用户是在滚动，**不要** preventDefault，
-                         让浏览器正常滚动。
-                         阈值按物理尺寸定（2mm），见 SELECT_SLOP_PX。
-                    */
-                    var dx = tp2.clientX - selStartX;
-                    var dy = tp2.clientY - selStartY;
-                    if ((dx * dx + dy * dy) > (SELECT_SLOP_PX * SELECT_SLOP_PX)) {
-                        clearSelTimer();
-                        /*
-                          ⚠️ 判定为滚动 → 本次不再选字，
-                             必须立刻复位 `selecting`，否则后续
-                             `selectionchange` 的空报告会被一直忽略，
-                             操作条永远收不起来。
-                        */
-                        selecting = false;
-                        detach();
-                    }
-                    return;
-                }
+          原生选择器本来就满足用户的要求：
+            · 最小单位是**字符**（不是整段、不是整词）
+            · 按住拖动**实时**改变范围
+            · 自带两个可以拖的把手，可以精细调整两端
+            · 拖到屏幕边缘会自动滚动
 
-                /*
-                  ══ armed：按住拖动 → 实时扩展选区 ══
-                  ⚠️ 必须 preventDefault —— 否则浏览器会把这次拖动
-                     当成滚动，`.reader-body` 会跟着滚，选区永远扩不开。
-                */
-                if (mv.cancelable) mv.preventDefault();
-                extendSelectionTo(tp2.clientX, tp2.clientY);
+          我们**只**做三件事，一行手势代码都不写：
 
-                /*
-                  ══ 拖到屏幕上下边缘 → 自动滚动正文 ══（v0.1.42）
-                  ⚠️ 没有这个，用户想把选区拉到下一屏时只能松手，
-                     再长按一次 —— 而 Android 系统的选字是会自动滚的。
-                */
-                autoScrollForSelection(tp2.clientX, tp2.clientY);
-            };
+            ① `selectionchange` → 同步字数 + 显示/移动操作条
+            ② 点正文空白处 → 收起操作条
+            ③ 操作条上的「复制」按钮 → 写剪贴板
 
-            var onEnd = function () {
-                clearSelTimer();
-                stopAutoScroll();
-                detach();
+          ⚠️ 原生菜单（复制/全选/搜索那一排）由 Android 弹出，
+             我们无法定制、无法 i18n、暗色下还闪白 ——
+             所以仍然由我们自己的操作条负责复制。
+             原生的那一排无法完全屏蔽，但它只在长按/点把手时出现，
+             且不会盖住我们的操作条。
 
-                if (!armed) return;
+          ══ ⚠️ 前置条件（MainActivity 里必须满足）══
 
-                /*
-                  ⚠️ 松手后选区**保持**，操作条出现。
-                     如果选中的只有空白（用户按在段落间隙里开始的），
-                     直接收掉，不要弹一个"已选中 0 字"的条。
-
-                  ⚠️⚠️ 这里必须先关掉 `selecting` 标志再读选区。
-                     实测（小位移时）touchend 的**同一帧**内
-                     `getSelection()` 已经变成空字符串，而
-                     `selectionchange` 随后还会补发两次空事件 ——
-                     旧代码因此把刚选好的字当场清掉，
-                     症状是「小幅度拖动什么都不剩」。
-                */
-                selecting = false;
-
-                /*
-                  ══ ⚠️⚠️ 松手后必须把滚动位置"钉"回去 ══（v0.1.42）
-
-                  实测：自动滚动期间 `scrollTop` 能正常增加（采样到 87），
-                  但 **touchend 之后浏览器会把合成器的滚动状态写回**，
-                  位置被还原成手势开始前的值（最终读到 0）。
-
-                  原因：这次手势在 `touchstart` 时就被 `preventDefault` 了，
-                  合成器仍保留着"本次触摸对应的滚动偏移 = 0"的内部状态，
-                  松手时一次性覆盖掉 JS 期间的所有改动。
-
-                  ✅ 对策：松手时记下当前位置，然后在下一帧再写一次。
-                     此时手势已经完全结束，合成器不会再覆盖。
-                */
-                var keepTop = autoScrollTop || (bodyEl ? bodyEl.scrollTop : 0);
-                if (keepTop) {
-                    global.requestAnimationFrame(function () {
-                        if (bodyEl) bodyEl.scrollTop = keepTop;
-                    });
-                }
-                autoScrollTop = 0;
-
-                syncSelectionFromNative();
-                if (!selectedText) {
-                    clearSelection();
-                    return;
-                }
-                showSelectBar();
-
-                /*
-                  ⚠️ 吃掉浏览器补发的 click，否则它会把选中立刻取消掉
-                     （症状：长按了但操作条一闪而过）。
-                */
-                if (global.ScholariusUI && global.ScholariusUI.markDragged) {
-                    global.ScholariusUI.markDragged();
-                }
-            };
-
-            function detach() {
-                contentEl.removeEventListener('touchmove', onMove);
-                contentEl.removeEventListener('touchend', onEnd);
-                contentEl.removeEventListener('touchcancel', onEnd);
-            }
-
-            contentEl.addEventListener('touchmove', onMove, { passive: false });
-            contentEl.addEventListener('touchend', onEnd);
-            contentEl.addEventListener('touchcancel', onEnd);
-        }, { passive: false });
+            · `isLongClickable = true`
+              （原来是 false，会连原生文字选择一起关掉）
+            · `setOnLongClickListener(null)`
+              （原来是 `{ true }`，直接吃掉长按，原生选择器永远收不到）
+            · CSS：全局 `user-select: none`，只对 `.reader-para` 放开
+              `user-select: text` —— 这样只有正文能选，
+              按钮/顶栏/表单不会被误选。
+        */
 
         document.addEventListener('selectionchange', function () {
             /*
-              ══ ⚠️⚠️ 手势进行中时，**忽略空选区** ══（v0.1.42）
+              ══ ⚠️⚠️ 这里**绝对不能**主动清原生选区 ══（v0.1.43）
 
-              实测现象：长按落点建好选区后，拖动过程中浏览器会
-              间歇性报告"空选区"（`getSelection()` 返回空串），
-              紧接着又报告正确的选区。若在这里相信了那个空的，
-              就会把用户正在选的字当场清掉。
+              这是"没有蓝色把手"的真因：
 
-              判定：`selecting` 在 touchstart 置 true、touchend 置 false。
-              手势期间的空报告一律不信任，等 touchmove 的
-              `setBaseAndExtent` 把选区重新建立起来。
+              原生选择器在手指拖动期间会**间歇性**报告空选区
+              （`getSelection()` 返回空串），紧接着又报回正确的。
+             旧代码相信了那个空报告 → 调 `clearSelection()`
+              → 它内部 `removeAllRanges()` → **把原生选区和两个把手
+              一起删掉了**。
+
+              用户看到的就是：「高亮有，但没有拖动把手；
+              大部分情况只能选一个字，无法改变」——
+              因为把手刚出现就被我们自己删了。
+
+              ✅ 现在的规则：
+                 · 手势进行中（`selecting`）→ 什么都不做
+                 · 空选区 → **只**收起我们的操作条（hideSelectBar），
+                   绝不动 `window.getSelection()`
             */
             var text = String(global.getSelection() || '');
 
@@ -810,11 +717,12 @@
                 if (selecting) return;
 
                 /*
-                  ⚠️ 空选区 → 可能是用户点了别处，也可能是浏览器收起了
-                     手柄。若此时操作条还开着，就一并收掉，避免出现
-                     "条上写着 12 字，但屏幕上什么都没选中"。
+                  ⚠️ 只收 UI，不清选区。
+                     `hideSelectBarOnly()` 不调 `removeAllRanges()`。
                 */
-                if (selectedText) clearSelection();
+                if (selectedText) hideSelectBarOnly();
+                selectedText = '';
+                if (selCountEl) selCountEl.textContent = '';
                 return;
             }
 
@@ -840,11 +748,17 @@
           ⚠️ 点正文任意处收起选中 —— 但**不能**收起操作条自己的按钮。
              操作条挂在 root 上（不在 contentEl 里），所以这里的
              `closest('.sel-bar')` 只是防御性的。
+          ⚠️ v0.1.43：这里也不再清原生选区 —— 用户点一下正文，
+             浏览器自己会收起选区与把手（那是系统行为，比我们准确）。
+             我们只负责把操作条收掉。
         */
         contentEl.addEventListener('click', function (ev) {
             if (!selectedText) return;
             if (ev.target.closest && ev.target.closest('.sel-bar')) return;
-            clearSelection();
+            hideSelectBarOnly();
+            selectedText = '';
+            selAnchor = null;
+            if (selCountEl) selCountEl.textContent = '';
         });
     }
 
@@ -1593,6 +1507,26 @@
 
         selBarEl.style.left = Math.round(left) + 'px';
         selBarEl.style.top = Math.round(top) + 'px';
+    }
+
+    /**
+     * 只收起操作条 UI，**不动** `window.getSelection()`（v0.1.43）。
+     *
+     * ⚠️⚠️ 与 `clearSelection()` 的区别必须记住：
+     *
+     *    · `clearSelection()`        —— 连原生选区一起删（`removeAllRanges`）。
+     *                                   只在**用户明确要求**时用（返回键）。
+     *    · `hideSelectBarOnly()`     —— 只收 UI，保留原生选区与把手。
+     *                                   用于"选区变空了""点了正文"等
+     *                                   浏览器自己已经处理好的场景。
+     *
+     * ⚠️ 为什么不合并成一个：`removeAllRanges()` 会把原生选择器的
+     *    两个蓝色把手一起删掉，而把手的出现/消失必须由系统决定 ——
+     *    我们越权去删，就出现了「高亮有、把手没有、拖动无法扩展」。
+     */
+    function hideSelectBarOnly() {
+        if (!selBarEl) return;
+        hideSelectBar();
     }
 
     function hideSelectBar() {
