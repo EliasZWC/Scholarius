@@ -3374,29 +3374,36 @@
             if (!sp || sp.label !== 'author') return false;
         }
         /*
-          ══ ⚠️⚠️ 只有**多条**标注才需要按行拆分（v0.1.82）══
+          ══ ⚠️⚠️ 只要块里**有换行**，就按行拆分（v0.1.84）══
 
-          用户反馈：
+          用户反馈（两次）：
+            「当只有一个子标签的时候，比如姓名，
+              直接整个作者信息区域都成了正常字体颜色，而非淡色」
             「其他没有添加子标签的也出现了这样的问题」
 
-          真因：v0.1.81 只要块是 author 就走 `makeAuthorLinesEl()`，
-          哪怕块里只有**一条**标注。那条路径会：
+          真因：v0.1.82 的判据是 `spans.length > 1` —— 只标了一行时
+          返回 false，于是整块走**老的单标注路径**，
+          输出**一个** `<p>` 带着 `.is-author-name`：
 
-            · 按换行切行 —— 但真机上很多块**没有换行符**
-              （PDF 提取时多行被合并成一行，用空格分隔）；
-            · 于是只切出 1 行，`hit` 命中唯一那条标注，
-              整块被当成"那一行"，子标签被应用到整块；
-            · 编号只加一次，其余行为空 → 看起来"超出区域、没有正文编号"。
+              <p class="is-author-name">Name  Jacob…  Google AI  {…}</p>
 
-          ✅ 单条标注的块根本不需要按行拆分 ——
-             它就是一个普通的整块标注（老路径 `makeContentEl` 处理）。
-             只有**同一块里有 2 条以上** author 标注（逐行设子标签）
-             才进入按行渲染。
+          ⚠️ `.is-author-name` 的颜色是 `--on-surface`（正常色），
+             它作用在**整个段落**上 → 三行全部变正常色。
+             用户要的是"只有姓名那一行正常色，其余淡色"。
 
-          ⚠️ 这样"没加子标签的作者区域"完全不受影响，
-             仍走它们一直在用的稳定路径。
+          ✅ 判据改成：**有换行**就按行渲染。
+             有换行 ⇒ 这个块真的是"多行作者信息"，
+             每行独立判断自己的子标签，没标的行自然是淡色。
+             只有单行块（没有 `\n`）才退回老路径 ——
+             它没有"按行"可言，整块就是一个条目。
         */
-        return spans.length > 1;
+        if (spans.length > 1) return true;
+
+        /* 一条标注 + 块里有换行 → 仍要按行拆分 */
+        var ln = spans[0] ? spans[0].line : null;
+        if (typeof ln !== 'number') return false;
+        var txt = blockTextOf(ln);
+        return /[\r\n]/.test(String(txt == null ? '' : txt));
     }
 
     /**
@@ -3631,28 +3638,42 @@
      * @return {{start:number, end:number}}
      */
     function lineRangeAt(text, start, end) {
-        var s = String(text == null ? '' : text);
+        /*
+          ══ ⚠️⚠️ 先把 CRLF 归一成 LF，再算区间（v0.1.84）══
+
+          用户反馈：
+            「当我给第二行的机构信息来标注子标签时，直接出错了」
+
+          ⚠️ 渲染侧 `makeAuthorLinesEl()` 是在 `flatText`
+             （已归一化）上按 `\n` 切行的；
+             而这里如果直接对**原始文本**（含 `\r\n`）算边界，
+             行数一致但**字符偏移每行差 1**：
+
+             原始:  A\r\nB\r\nC
+             归一:  A\nB\nC
+
+             第二行在原始里是 [3,4)，在归一后是 [2,3) ——
+             差一位，标注区间与渲染区间就错开，
+             表现是"相邻行的子标签互串 / 某行丢失标签"。
+
+          ✅ 所以这里也归一化，保证两边算的是同一套坐标。
+             ⚠️ 返回的区间是相对**归一化文本**的 ——
+                渲染侧也全用归一化文本，两边一致。
+                存储层仍保存这套坐标，重启后照旧可用。
+        */
+        var s = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
         var a = Math.max(0, Math.min(start || 0, s.length));
         var b = Math.max(a, Math.min(end || 0, s.length));
 
         /*
-          ⚠️ 必须同时认 `\n` 和 `\r\n`（v0.1.82）——
-             真机上 PDF 提取出的换行可能是 CRLF。
-             只找 `\n` 时行首位置是对的（`\r` 会被留在上一行末尾），
-             但行尾会**多带一个 `\r`**，导致区间与下一行的标注
-             相差 1 个字符，出现"相邻行互串"的现象。
+          ⚠️ 归一化之后文本里只剩 `\n`，不用再兼顾 `\r`。
         */
-        var ls = Math.max(s.lastIndexOf('\n', a - 1), s.lastIndexOf('\r', a - 1));
+        var ls = s.lastIndexOf('\n', a - 1);
         ls = (ls < 0) ? 0 : (ls + 1);
 
-        /* 终点往后找下一个换行（`\r` 或 `\n`）之前 */
+        /* 终点往后找下一个换行之前 */
         var nl = s.indexOf('\n', b);
-        var cr = s.indexOf('\r', b);
-        var le;
-        if (nl < 0 && cr < 0) le = s.length;
-        else if (nl < 0) le = cr;
-        else if (cr < 0) le = nl;
-        else le = Math.min(nl, cr);
+        var le = (nl < 0) ? s.length : nl;
 
         return { start: ls, end: le };
     }
@@ -3734,8 +3755,14 @@
                 wa = lr.start;
                 wb = lr.end;
             } else if (labelDraft === 'reference') {
+                /*
+                  ⚠️ 长度也按**归一化后**的文本算（v0.1.84）——
+                     与 `lineRangeAt()` 的坐标系保持一致，
+                     否则 CRLF 块里 `end` 会多出"行数"个字符。
+                */
                 wa = 0;
-                wb = blockTextOf(line).length;
+                wb = String(blockTextOf(line) == null ? '' : blockTextOf(line))
+                    .replace(/\r\n?/g, '\n').length;
             }
 
             /*
@@ -3743,14 +3770,49 @@
                  一个字符只能属于一个标签。
                  用严格不相交判断（sp.end <= start || sp.start >= end）
                  取反。
+
+              ══ ⚠️⚠️ 但作者信息的**逐行子标签**不能这样删（v0.1.84）══
+
+              用户反馈：
+                「当我给第二行的机构信息来标注子标签时，直接出错了，
+                  显示效果是第一行成了正文段，第二三行淡色，
+                  但没有任何子标签标识」
+
+              真因：真机上有两种情形会让 `lineRangeAt()` 退化：
+
+                · 块里**没有换行符**（PDF 把多行合并成一行）；
+                · 换行是 `\r\n`，而我按 `\r` 找边界时算出的区间
+                  与渲染侧（已归一成 `\n`）不一致。
+
+              两者都导致 `wa=0, wb=整块长度` —— 于是"重叠"判据
+              把**已有的姓名标注也一并删掉**，第一行就失去了
+              `author` 标签，退化成正文段（既无 A 编号也无淡色）。
+
+              ✅ 作者信息的语义是"块内每一行各一个子标签"，
+                 行与行本来就不该互相排斥。
+                 所以作者标签**按行区间是否完全相同**判断重复，
+                 而不是按字符重叠 —— 只有**同一行**被重新标注时
+                 才覆盖上一条。
             */
             var kept = [];
             for (var i = 0; i < cur.length; i++) {
                 var sp = cur[i];
                 if (!sp) continue;
-                if (sp.end <= wa || sp.start >= wb) {
-                    kept.push(sp);
+
+                var drop;
+                if (labelDraft === 'author' && sp.label === 'author') {
+                    /*
+                      ⚠️ 同一行 → 覆盖；不同行 → 保留。
+                         用区间"完全相同"作为同一行的判据：
+                         `lineRangeAt()` 对同一行总是返回同一对值，
+                         所以稳定可靠。
+                    */
+                    drop = (sp.start === wa && sp.end === wb);
+                } else {
+                    drop = !(sp.end <= wa || sp.start >= wb);
                 }
+
+                if (!drop) kept.push(sp);
             }
 
             if (labelDraft && labelDraft !== 'body') {
@@ -3813,9 +3875,14 @@
             for (var j = 0; j < lines.length; j++) {
                 var ln = lines[j];
                 if (labelDraft && labelDraft !== 'body') {
+                    /*
+                      ⚠️ 长度按归一化文本算（v0.1.84），与单块分支一致。
+                    */
+                    var lnText0 = String(blockTextOf(ln) == null ? '' : blockTextOf(ln))
+                        .replace(/\r\n?/g, '\n');
                     var rec = {
                         start: 0,
-                        end: blockTextOf(ln).length,
+                        end: lnText0.length,
                         label: labelDraft
                     };
                     if (labelDraft === 'cite' && citeTarget != null) {
