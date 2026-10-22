@@ -4168,6 +4168,43 @@
         var cursor = 0;
 
         /**
+         * 这一块**已知的行边界**（在 `flatText` 里的字符下标，含末尾）。
+         *
+         * ══ ⚠️⚠️ 为什么需要（v0.1.93 修 bug）══
+         *
+         * 用户反馈：
+         *   「当给作者信息区域第二行标注子标签时，出现了换行——
+         *     请确定，是否目前是遵循 md 格式切分实现的，
+         *     因为如果按照嵌套项而言，应该不会出现切分问题。」
+         *
+         * 之前按 `\n` 切行，但 md 存储时块文本已用空格合并，
+         * 里面根本没有 `\n` → 整块当成一行，被词条切开后变成两行。
+         *
+         * ✅ 现在用 `b.lines`（提取层/md 里保留的原始行）算出边界，
+         *    按边界切分，保证一行原文不会被词条劈开。
+         *
+         * ⚠️ 用 indexOf 逐行定位（不是累加长度）——
+         *    因为合并时行间插入了一个空格，累加会偏移。
+         * ⚠️ 找不到就退回空数组（老数据），行为回到旧版，不会更糟。
+         */
+        var lineBoundaries = [];
+        if (b.lines && b.lines.length > 1) {
+            var scan = 0;
+            var okAll = true;
+            for (var lb = 0; lb < b.lines.length; lb++) {
+                var lrow = String(b.lines[lb] || '').replace(/^\s+|\s+$/g, '');
+                if (!lrow) continue;
+                var at = flatText.indexOf(lrow, scan);
+                if (at < 0) { okAll = false; break; }
+                scan = at + lrow.length;
+                lineBoundaries.push(scan);
+            }
+            if (!okAll || lineBoundaries.length < 1) {
+                lineBoundaries = [];
+            }
+        }
+
+        /**
          * 输出一段未标注文本。
          *
          * ⚠️ 按 `\n` 换行，**每一段输出一个普通行**。
@@ -4185,9 +4222,56 @@
          * ✅ 用户已明确选择「按选区硬切」（见 v0.1.89 的确认），
          *    所以这就是预期行为，不再尝试合并。
          */
-        function pushPlain(textChunk) {
+        function pushPlain(textChunk, chunkStart) {
             if (!textChunk) return;
-            var rows = textChunk.split('\n');
+
+            /*
+              ══ ⚠️⚠️ 用**已知的行边界**切，而不是按 `\n` 硬切（v0.1.93 修 bug）══
+
+              用户反馈（原话）：
+                「当给作者信息区域第二行标注子标签时，出现了换行——
+                  请确定，是否目前是遵循 md 格式切分实现的，
+                  因为如果按照嵌套项而言，应该不会出现切分问题。」
+
+              **用户说对了。** 之前 `textChunk.split('\n')` ——
+              但 md 合并后块文本里**没有 `\n`**，所以整段落进 rows[0]，
+              然后被词条切开：前半截进一个 `.reader-author-line`、
+              后半截进另一个 → 视觉上"凭空多了一行"。
+
+              ✅ 改用 `b.lines`（提取层/md 给的原始行边界）：
+                 把每个片段再按这些边界切开，保证
+                 **一行原文永远落在同一个 `.reader-author-line` 里**。
+
+              ⚠️ `b.lines` 缺失时（老数据）退回按 `\n` 切 —— 不会更糟。
+              ⚠️ 片段边界（`chunkStart`）要与行边界做坐标对齐：
+                 词条切出来的片段只是整块文本的一部分，
+                 必须传它在大文本里的起点，否则每个片段都被当成从 0 开始。
+            */
+            var cuts = lineBoundaries;
+            var base = (typeof chunkStart === 'number') ? chunkStart : 0;
+            var chunkEnd = base + textChunk.length;
+
+            var rows = [];
+            if (cuts && cuts.length > 1) {
+                /* 把这一片段与行边界求交，得到它在每行里的那一段 */
+                var pos = base;
+                while (pos < chunkEnd) {
+                    var nextCut = chunkEnd;
+                    for (var ci = 0; ci < cuts.length; ci++) {
+                        if (cuts[ci] > pos && cuts[ci] < nextCut) nextCut = cuts[ci];
+                    }
+                    /*
+                      ⚠️ 从 `textChunk` 自身切（下标减 base），
+                         不能从 `flatText` 切 —— 否则越界取到别的行。
+                    */
+                    var piece = textChunk.slice(pos - base, nextCut - base);
+                    if (piece.replace(/\s+/g, '')) rows.push(piece);
+                    pos = nextCut;
+                }
+            } else {
+                rows = textChunk.split('\n');
+            }
+
             for (var r = 0; r < rows.length; r++) {
                 if (!rows[r].replace(/\s+/g, '')) continue;
                 var lineEl = document.createElement('span');
@@ -4242,11 +4326,11 @@
             while (termB > termA && /\s/.test(flatText.charAt(termB - 1))) termB--;
             if (termB <= termA) continue;
 
-            pushPlain(flatText.slice(cursor, termA));
+            pushPlain(flatText.slice(cursor, termA), cursor);
             pushTerm(flatText.slice(termA, termB), mk.field);
             cursor = termB;
         }
-        pushPlain(flatText.slice(cursor));
+        pushPlain(flatText.slice(cursor), cursor);
 
         /* 整块一个编号，加在这一整个 `<p>` 上 */
         if (markTyped) markTyped(p, 'author');
@@ -5150,7 +5234,27 @@
      */
     function attachBodyMarker(el, no) {
         el.classList.add('is-body-para');
-        el.setAttribute('data-body-no', String(no));
+
+        /*
+          ══ ⚠️⚠️ 编号与竖线**分开处理**（v0.1.93）══
+
+          用户要求：
+            「同一个作者区域的编号应当相同，提示条应当连续」
+
+          ✅ 语义上，编号和竖线都是**区域**的属性，不是块的属性。
+             一个区域里有多段时：
+               · 编号只挂在第一段（A1 只出现一次）
+               · 竖线**每段都要挂** —— 用户看到的是"一条连续的提示带"，
+                 中间断开就会以为是两个区域。
+
+          ⚠️ 所以 `no === null` 表示"这一段属于某个区域，但不是首段"：
+             只挂竖线，不设编号。CSS 里 `::before` 靠
+             `attr(data-body-no)` 取内容，没有该属性就不渲染编号，
+             但竖线是真实元素，照常显示 —— 正好是想要的效果。
+        */
+        if (no !== null && no !== undefined) {
+            el.setAttribute('data-body-no', String(no));
+        }
 
         /*
           ⚠️ 竖线作为第二个 flex 项插入。
@@ -5356,7 +5460,58 @@
         /* ② 内容段：区域内所有块，一块一个 `<p>` */
         for (var i = 0; i < run.blocks.length; i++) {
             var b = run.blocks[i];
-            var el = makeContentEl(b, bodyIndex, refIndex, authorIndex, markTyped);
+
+            /*
+              ══ ⚠️⚠️ 一个区域只挂一个编号（v0.1.93）══
+
+              用户要求（原话）：
+                「同一个作者区域的编号应当相同，提示条应当连续」
+
+              ⚠️ 之前这里每块都调 `makeContentEl(..., markTyped)`，
+                 而作者块内部又各自 `markTyped(p, 'author')` ——
+                 于是同一个作者区域被标成 A1、A2、A3，
+                 每块还各带一条竖线，看起来像三个独立区域。
+
+              ✅ 正确语义：**区域**是编号单位，不是块。
+                 区域的第一个块挂编号，其余块不挂编号 ——
+                 但**竖线每块都要有**，否则提示带中间断开，
+                 看起来就像两个区域了（用户原话：「提示条应当连续」）。
+
+              ⚠️ 只对「合并成一个区域」的路径生效（本函数），
+                 `reference` 走的是上面的逐块独立分支，
+                 每条文献仍然有自己的 R1/R2/R3 —— 那是它们本来就该有的。
+              ⚠️ 传 `null` 而不是删掉参数：`makeAuthorLinesEl` /
+                 `makeContentEl` 内部都会判 `if (markTyped)`，
+                 传 null 就自然跳过编号，不需要改它们的签名。
+            */
+            var regionMarker = (i === 0) ? markTyped : null;
+            var el = makeContentEl(b, bodyIndex, refIndex, authorIndex, regionMarker);
+
+            /*
+              ⚠️ 非首块：**只补竖线，不补编号**。
+                 首块已经由 `markTyped` → `attachBodyMarker` 同时挂了
+                 编号和竖线，这里再挂会多出一条。
+                 `attachBodyMarker(el, null)` 就是"只挂竖线"的意思（见该函数）。
+
+              ⚠️⚠️ `makeContentEl` 可能返回 **Element**，也可能是
+                 **DocumentFragment**（作者路径的 `makeAuthorLinesEl` 返回 frag）。
+                 第一次写成 `el.nodeType === 1` 判断，结果作者块被整个跳过，
+                 第二段仍然没有竖线（实测 `hasRule: false`）。
+
+              ✅ 所以要把返回值**展开成元素数组**再逐个处理。
+                 Fragment 用 `children`（只取元素，跳过文本节点）。
+            */
+            if (i > 0 && el) {
+                var els = (el.nodeType === 1)
+                    ? [el]
+                    : Array.prototype.slice.call(el.children || []);
+                for (var ei = 0; ei < els.length; ei++) {
+                    var e2 = els[ei];
+                    if (e2 && !e2.querySelector('.reader-rule')) {
+                        attachBodyMarker(e2, null);
+                    }
+                }
+            }
 
             /*
               ⚠️ 区域内只有**第一块**带 `data-line` 吗？
@@ -5424,7 +5579,6 @@
         if (spans && spans.length > 0 && isAuthorLineSet(spans, b.line)) {
             return makeAuthorLinesEl(b, spans, fullText, bodyIndex, authorIndex, markTyped);
         }
-
         var sp = (spans && spans.length === 1) ? spans[0] : null;
 
         /*

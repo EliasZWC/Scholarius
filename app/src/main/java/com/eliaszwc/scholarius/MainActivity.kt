@@ -1579,7 +1579,21 @@ class MainActivity : AppCompatActivity() {
             if (b.listMarker.isNotEmpty()) {
                 sb.append(",\"listMarker\":").append(org.json.JSONObject.quote(b.listMarker))
             }
-            if (b.lines.size > 1) {
+            /*
+              ══ ⚠️⚠️ `lines` 是**行边界**，不是排版冗余（v0.1.93 修 bug）══
+
+              用户反馈：
+                「当给作者信息区域第二行标注子标签时，出现了换行」
+
+              真因：md 解析出来的块每块只有一行，所以之前
+              `lines.size > 1` 永远不成立 → 前端拿不到"原来在哪换行" →
+              渲染层只能按标注区间的端点硬切，第二行就被凭空切断。
+
+              ✅ 现在只要块有 `lines` 就传（哪怕是单行）。
+                 前端在作者块上用它决定"一行一项"，
+                 正文块不用它（见 www/md.js 的说明）。
+            */
+            if (b.lines.isNotEmpty()) {
                 sb.append(",\"lines\":[")
                 for ((li, l) in b.lines.withIndex()) {
                     if (li > 0) sb.append(',')

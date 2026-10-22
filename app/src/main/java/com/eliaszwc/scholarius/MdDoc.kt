@@ -100,7 +100,44 @@ object MdDoc {
             else if (b.mdPrefix.isNotEmpty()) b.mdPrefix + " "
             else ""
 
-            sb.append(marker).append(body)
+            /*
+              ══ ⚠️⚠️ 作者块的多行必须写进 md 的**结构**（v0.1.93 修 bug）══
+
+              用户反馈：
+                「当给作者信息区域第二行标注子标签时，出现了换行——
+                  请确定，是否目前是遵循 md 格式切分实现的，
+                  因为如果按照嵌套项而言，应该不会出现切分问题。」
+
+              **用户判断对了。** 之前把 `b.lines`（提取层给的原始排版行）
+              整块丢掉了，md 里只剩一整行拼接字符串。读回来时不知道
+              原来在哪换行，渲染层只能按标注区间的端点硬切 →
+              第二行被凭空切断，看起来"加了个子标签就多出一行"。
+
+              ✅ 现在把行边界写进 md：**同一列表项内的续行**（markdown 原生）。
+
+                  - Google Inc., Mountain View, CA Google Inc., Mountain View, CA
+                    tmikolov@google. com kaichen@google. com
+
+              缩进 2 空格 = "这是上一个列表项的续行"，而不是新列表项。
+              读回来时把续行并回同一块、`lines` 恢复成两行。
+              纯文本 md 依然可读，不引入任何私有语法。
+
+              ⚠️ 只对**有多行**的块这样做；正文段落不写行（那是排版折行，
+                 见 www/md.js 里"正文不能硬换行"的说明）。
+            */
+            val rows = b.lines
+            if (rows.size > 1 && marker.isNotEmpty()) {
+                sb.append(marker).append(rows[0])
+                for (k in 1 until rows.size) {
+                    val row = rows[k]
+                    if (row.isBlank()) continue
+                    /* 续行缩进 = 记号宽度（`- ` 是 2，`1. ` 是 3）+ 2 */
+                    sb.append('\n').append(contIndent(marker)).append(row)
+                }
+            } else {
+                sb.append(marker).append(body)
+            }
+
             /* 行内标注（引用、作者子标签）跟在正文后面 */
             for (m in b.marks) {
                 val tag = encodeMark(m)
@@ -110,6 +147,9 @@ object MdDoc {
         }
         return sb.toString()
     }
+
+    /** 列表项续行的缩进（`- ` → 4 空格；`1. ` → 4 空格，统一取 4 最安全） */
+    private fun contIndent(marker: String): String = "    "
 
     /**
      * 一条标注 → HTML 注释。
@@ -215,9 +255,34 @@ object MdDoc {
             }
 
             /*
+              ══ ⚠️⚠️ 还原列表项的**续行**（v0.1.93 修 bug）══
+
+              serialize 把作者块的多行写成"同一列表项的续行"：
+
+                  - Google Inc., Mountain View, CA …
+                    tmikolov@google. com kaichen@google. com
+
+              ✅ 这里把续行并回 `body`（用空格连接，与提取层一致），
+                 同时保留 `rows` —— 渲染层靠它知道**原来在哪换行**，
+                 加子标签时才不会把一行硬切成两段。
+
+              ⚠️ **顺序至关重要**：注释里的 `start/end` 是相对
+                 「所有行用空格连接后的整块文本」的（写的时候就是这么算的，
+                 见 reader.js 的 buildMdText）。
+                 所以必须先 `joinToString(" ")` 得到 `body`，再夹区间 ——
+                 反过来会让区间全错位。
+
+              ⚠️ 正文段落同样会走到这里（多行 → 并成一段），
+                 那是排版折行，不是语义换行，合并是正确的。
+            */
+            val rawRows = body.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+            if (rawRows.size > 1) {
+                body = rawRows.joinToString(" ")
+            }
+
+            /*
               ⚠️ 注释里的区间是相对**去掉记号后的正文**的（`body`），
-                 而入库的 `text` 也是 `body` —— 两者天然对齐，不需要偏移。
-                 这也是为什么解析必须先把记号剥掉再收集注释。
+                 而入库的 `text` 也是 `body` —— 两者天然对齐。
             */
             val safeMarks = marks.mapNotNull { m ->
                 val a = m.start.coerceIn(0, body.length)
@@ -231,7 +296,13 @@ object MdDoc {
                     kind = kind,
                     level = level,
                     text = body,
-                    lines = body.split('\n').map { it.trim() }.filter { it.isNotEmpty() },
+                    /*
+                      ⚠️ 用**合并前**的 `rawRows`，不是 `body`（v0.1.93）——
+                         `body` 已经被空格连成一行了，拿它拆 `lines`
+                         永远只有一条，等于把行边界又丢掉一次。
+                         这正是"给第二行加子标签就多出换行"的根因。
+                    */
+                    lines = if (rawRows.size > 1) rawRows else emptyList(),
                     marks = safeMarks,
                     mdPrefix = mdPrefix,
                     listMarker = listMarker

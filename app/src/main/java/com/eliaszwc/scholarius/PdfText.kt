@@ -412,12 +412,29 @@ object PdfText {
         private val rowText = StringBuilder()
         private var rowMeta: Line? = null
 
+        /**
+         * ══ ⚠️⚠️ 上一片段末字形的**绝对右边缘**（v0.1.93）══
+         *
+         * 用来和下一片段首字形比间距。
+         *
+         * ⚠️ 必须是**跨片段**的：`writeString` 每次只给本片段的
+         *    `positions`，拿它内部的最后两个字相比，比的是
+         *    「同一个片段里相邻两字」，而不是「两个片段交界处」——
+         *    实测这样做导致所有空格全被吞（每个片段内部字距本来就小）。
+         *
+         * ⚠️ 用 `xDirAdj`（已按文字方向校正）而不是 `x`：
+         *    旋转过的页面用原生 `x` 会得到完全错误的间距。
+         * ⚠️ 每吐出/新起一行都要清掉 —— 跨行比间距没有意义。
+         */
+        private var prevGlyphRight = Float.NaN
+
         /** 把已累积的一行吐出。 */
         private fun flushRow() {
             val txt = rowText.toString()
             val meta = rowMeta
             rowText.setLength(0)
             rowMeta = null
+            prevGlyphRight = Float.NaN
             if (txt.isEmpty() || meta == null) return
             /*
               ⚠️ 用 `copy(text = txt)` 保留字体/字号/包围盒，
@@ -601,23 +618,58 @@ object PdfText {
                     y1 = ny1
                 )
                 rowText.append(trimmed)
+
+                /*
+                  ⚠️ 新行的第一个片段也要立坐标基准，
+                     否则第二个片段没有"前一字形"可比。
+                */
+                val g0 = positions.lastOrNull { !it.unicode.isNullOrEmpty() }
+                prevGlyphRight = if (g0 != null) g0.xDirAdj + g0.widthDirAdj else Float.NaN
             } else {
                 /*
-                  ⚠️ 拼接同一个视觉行的后续片段：
-                     ① 补空格（两个部分之间要分开，否则 `Recurrentmodels`）
-                     ② 包围盒**并上**这一段（x1 要延伸到最右）
-                  ⚠️ 不补空格的例外：上一片段以 `-` 结尾（断词续行）或
-                     本片段以 `,` `.` 等标点开头 —— 但 PDF 的标点是独立
-                     片段（实测 `time,` `states.`），不要额外补空格，
-                     因为它们本身就带着标点。
-                     所以规则简化为：**两侧都是"词字符"时才补空格**。
+                  ══ 片段之间：有间距就放一个空格 ══
+                     （v0.1.93 —— 第一性原理，只此一条规则）
+
+                  用户两次反馈方向相反：
+                    「标点符号后面的空格依然被吞了」
+                    「原本标点符号后面没有空格的被强制加了空格」
+
+                  不是因为我规则写得不够多，是因为**规则这条路本身是错的**：
+                  我一直在问「这个字符后面该不该有空格」（语法判断），
+                  而 PDF 里根本不存在"该不该"——只有**排版事实**。
+
+                  PDF 没有空格字符，只有坐标。`BERT,which` 与 `BERT, which`
+                  在 PDF 里的唯一区别就是 `,` 和 `w` 之间有没有一段空隙。
+                  所以判据只有一条：
+
+                      两个字形之间**有间隙** → 一个空格
+                      紧贴                  → 没有
+
+                  这一条对 URL（`www.fit.vutbr.cz` 的点紧贴字母）、
+                  邮箱、`e.g.`、真句号，**全部自动正确** ——
+                  因为它读的是排版，不是语义。
+
+                  ⚠️ 连字符断词优先排除：`multi-` + `modal`，
+                     那是同一个词被切开，无论间距多大都要接上。
+                  ⚠️ 取不到坐标时（`prevGlyphRight` 为 NaN）**不放空格** ——
+                     没有事实就不做假设，宁可少一个空格也不打散 URL。
                 */
                 val lastCh = if (rowText.isNotEmpty()) rowText[rowText.length - 1] else ' '
-                val firstCh = trimmed[0]
-                val needSpace = isWordChar(lastCh) && isWordChar(firstCh) &&
-                    lastCh != '-' && lastCh != '\u2010'
-                if (needSpace) rowText.append(' ')
+                val hyphenBreak = lastCh == '-' || lastCh == '\u2010' || lastCh == '\u2011'
+
+                val firstLeft = positions.firstOrNull { !it.unicode.isNullOrEmpty() }?.xDirAdj
+                val hasGap = !prevGlyphRight.isNaN() &&
+                    firstLeft != null &&
+                    firstLeft - prevGlyphRight > 0.5f
+
+                if (!hyphenBreak && hasGap) rowText.append(' ')
                 rowText.append(trimmed)
+
+                /* 更新基准：本片段末字形的右边缘，供下一片段比较 */
+                val lastGlyph = positions.lastOrNull { !it.unicode.isNullOrEmpty() }
+                if (lastGlyph != null) {
+                    prevGlyphRight = lastGlyph.xDirAdj + lastGlyph.widthDirAdj
+                }
 
                 rowMeta = rowMeta!!.copy(
                     x0 = minOf(rowMeta!!.x0, nx0),
@@ -640,10 +692,7 @@ object PdfText {
         }
     }
 
-    /** 是不是"词字符"（用来决定拼接时补不补空格） */
-    private fun isWordChar(c: Char): Boolean {
-        return c.isLetterOrDigit() || c == '\u2019' || c == '\''
-    }
+
 
     /**
      * 读 PDF 自带的书签大纲。
@@ -2346,7 +2395,7 @@ object PdfText {
         "\uFB06" to "st"
     )
 
-    /** 连字还原 + 标点空格修复 + 连续空白压缩。所有文本入库前都要过这一道 */
+    /** 连字还原 + 连续空白压缩。所有文本入库前都要过这一道 */
     private fun normaliseText(s: String): String {
         if (s.isEmpty()) return s
         var out = s
@@ -2355,25 +2404,29 @@ object PdfText {
         }
 
         /*
-          ══ ⚠️⚠️ 补回英文标点后的空格（v0.1.91）══
+          ══ ⚠️⚠️ 这里**不再**补标点后的空格（v0.1.93）══
 
-          用户反馈（原话）：
-            「似乎 pdf 转文本的时候，英文标点符号后面的空格都消失了。
-              很多该有的空格全部消失了。」
+          用户反馈两轮，方向相反：
+            「标点符号后面的空格依然被吞了」
+            「原本标点符号后面没有空格的被强制加了空格」
 
-          ✅ 这里是**行内**那一半的原因：
-             PDF 里的字符是按位置逐个摆的，提取出的字符串常常直接少了
-             标点后的那个空格（不是"多个空格压缩成一个"，是压根没有）：
+          我先后加了七八条规则去猜「这个标点后面该不该有空格」，
+          结果规则互相打架 —— 补的规则把 URL 打散
+          （`www.fit.vutbr.cz` → `www. fit. vutbr. cz`），
+          不补的又吞掉真空格。**这不是参数问题，是方法错了。**
 
-                 "called BERT,which stands for"
-                 "such as ELMo(Peters et al.,2018a)"
+          ✅ 行内空格现在完全由 **字形坐标** 决定（见 writeString 里
+             「有间距就放一个空格」，只有那一条规则）——
+             那是排版的客观事实，不需要任何白名单：
+               · `www.fit.vutbr.cz` 的点紧贴字母 → 无间距 → 不补
+               · `BERT, which` 的逗号后有间距   → 有间距 → 补
 
-          规则见 [fixPunctSpacing]（含小数点、缩写的排除）。
-
-          ⚠️ 放在 `LIGATURES` 替换**之后**、压缩空格**之前** ——
-             这样插进来的空格不会被重复压缩。
+          ⚠️ 所以这个函数只做两件**确定性**的事：
+             连字还原（`ﬁ` → `fi`）、压缩多余空白。
+             它**不做任何判断**，因此也不会再引入任何误判。
+          ⚠️ 行与行之间的合并仍由 [needsSpaceBetween] 负责 ——
+             那是跨图形的边界，坐标不连续，只能按字符类型判断。
         */
-        out = fixPunctSpacing(out)
 
         // 压缩连续空格/制表符（PDF 提取常见多个空格对齐）
         return out.replace(Regex("[ \\t]+"), " ").trim()
@@ -2482,107 +2535,9 @@ object PdfText {
         return false
     }
 
-    /**
-     * 行内「标点紧跟字母/数字」→ 插入一个空格（v0.1.91）。
-     *
-     * ══ ⚠️ 为什么不用正则 lookbehind ══
-     *
-     * 试过 `(?<![A-Za-z]\.)(?<!\d)`，但两个断言都在**标点前**判断、
-     * 长度不同、含义也不同，组合起来互相干扰：
-     *
-     *     `e.g.this`  → 第一个 `.` 后面是 `g`，被误加空格 → `e. g. this`
-     *     `l.,2018`   → `,` 前面是 `l`，`(?<!\d)` 通过 → 误判
-     *
-     * ✅ 改成**手写扫描**，一次看清前两个字符和后两个字符。
-     *    规则与 `tools/check_punct_space.py` 逐条对应（17 项全过）。
-     *
-     * ⚠️ 必须与 [needsSpaceBetween] 保持**一致**：
-     *    一个管行内，一个管行间，判据不同会让同一段文字出现两种结果。
-     */
-    private fun fixPunctSpacing(s: String): String {
-        if (s.length < 2) return s
-        val sb = StringBuilder(s.length + 16)
-        for (i in s.indices) {
-            val c = s[i]
-            sb.append(c)
-            if (i + 1 >= s.length) continue
 
-            val next = s[i + 1]
 
-            /*
-              ══ ⚠️⚠️ 左括号/左引号**前面**也要空格（v0.1.92）══
 
-              用户要求：
-                「pdf 转 md 的时候要确保文本不能少了，然后就是
-                  标点符号后面的空格也不能丢了」
-
-              实测 Word2Vec 的一句话：
-
-                  ... 58.9% accuracy(59.2% on the development part ...
-
-              `accuracy(` 之间应为 `accuracy (`。PDF 里字符是逐个摆的，
-              括号前那个空格有时根本没被提取出来。
-
-              ✅ 判据：**左括号/左引号 + 前一个字符是字母或数字** → 补空格。
-                 `accuracy(` → `accuracy (`
-                 `word"` 不处理（右引号在另一条规则里）
-
-              ⚠️ 不补的例外：
-                 · 函数调用/化学式这类看不出来，但本项目是论文阅读器，
-                   正文里的 `(` 要么是引用 `(Peters et al., 2018)` 要么是
-                   补充说明，两侧都该有空格 —— 补比不补更符合自然语言。
-                 · **数字 + `(`** 常见于编号 `1(a)`，但论文里也可能是
-                   `58.9%(59.2%` —— 后者才对。取"补"（见上面实测样本）。
-            */
-            if ((next == '(' || next == '[') && sb.length >= 2) {
-                val prev = s[i]
-                if (prev.isLetter() && prev.code < 0x2E80) {
-                    sb.append(' ')
-                    continue
-                }
-            }
-
-            if (ENGLISH_TRAILING_PUNCT.indexOf(c) < 0) continue
-
-            val nextIsWord = next in 'a'..'z' || next in 'A'..'Z' || next in '0'..'9'
-            if (!nextIsWord) continue
-
-            val prev1 = if (i >= 1) s[i - 1] else ' '
-            val prev2 = if (i >= 2) s.substring(i - 2, i) else ""
-
-            if (c == '.') {
-                /* ① 小数点：点**前后都是数字** → `1.5` */
-                if (prev1.isDigit() && next.isDigit()) continue
-                /*
-                  ⚠️⚠️ 不要在这里排除「数字 + 点 + 字母」（v0.1.91 修）
-
-                  我一度写了 `if (prev1.isDigit()) continue`，想挡住
-                  `v1.2beta` 这类版本号 —— 但那把**真正的句号**也挡住了：
-
-                      "shown at Figure 1.Note that"   → 应为 `1. Note`
-                      "comparison2.However, as far"   → 应为 `2. However`
-
-                  实测真实 PDF（Word2Vec）里这类共 2 处。
-                  `v1.2beta` 本身已被①挡住（点后是数字），不需要②。
-
-                  ② 缩写：
-                      `e.g.` 的**第一个**点 —— 前是单字母，后是「单字母+点」
-                      `e.g.` 的**第二个**点 —— 前两个字符是「单字母+点」
-                */
-                if (prev1 in 'a'..'z' || prev1 in 'A'..'Z') {
-                    if (i + 2 < s.length && s[i + 2] == '.') continue
-                }
-                if (prev2.length == 2 && prev2[1] == '.' &&
-                    (prev2[0] in 'a'..'z' || prev2[0] in 'A'..'Z')
-                ) {
-                    continue
-                }
-            }
-
-            sb.append(' ')
-        }
-        return sb.toString()
-    }
 
     /**
      * 合并两段文字时是否需要补空格。

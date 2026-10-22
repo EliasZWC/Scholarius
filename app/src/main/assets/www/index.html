@@ -355,34 +355,50 @@
                     <span class="selection-count" id="selection-count"></span>
 
                     <!--
-                      ══ 导出（v0.1.92）══
+                      ══ 右侧按钮组（v0.1.93）══
 
-                      用户要求原话：
-                        「应该是 vault 页选中后菜单栏删除按钮左边
-                          增加一个导出，来导出整个 md 文件」
-                        「对于阅读视图来说，导出是没有意义的，根本不需要」
+                      用户要求：
+                        「导出图标请不要用下载图标，且不能距离删除图标太远，
+                          应当是视觉上的并列，而选中计数应仍然在栏目居中位置。」
+                        「删除的垃圾桶按钮请单独使用主题的红色配色，以突出删除功能。」
 
-                      ✅ 位置：删除按钮**左边**。
-                      ✅ 图标：Material Icons 的 file_download（24 体系，
-                         与旁边垃圾桶用同一套，不混 960 体系）。
-                      ⚠️ 导出的是**已有的 doc.md**（含用户的编辑与标注），
-                         不是现场重新生成。
+                      ✅ 结构：三个格子 `1fr auto 1fr`
+                          · 左格：X（靠左）
+                          · 中格：计数（**强制居中**）
+                          · 右格：导出 + 删除（靠右、**贴在一起**）
+
+                      ⚠️ 之前是 `justify-content: space-between` 三件套直接排，
+                         于是"计数"被挤到左边、两个按钮被拉得很开。
+                         用三格布局才能同时满足"计数居中"和"按钮并列"。
                     -->
-                    <button class="icon-button" type="button" id="selection-export"
-                        aria-label="Export selected" data-i18n-aria-label="selection.export">
-                        <!-- Google Material Icons: file_download -->
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
-                        </svg>
-                    </button>
+                    <div class="selection-actions">
+                        <!--
+                          导出（v0.1.93）
+                          ⚠️ 图标用 `ios_share`（向上箭头出框），**不是**下载图标 ——
+                             我们做的是把已有的 doc.md 交出去，不是从别处取下来。
+                        -->
+                        <button class="icon-button" type="button" id="selection-export"
+                            aria-label="Export selected" data-i18n-aria-label="selection.export">
+                            <!-- Material Symbols: ios_share（960 体系） -->
+                            <svg viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
+                                <path d="M240-40q-33 0-56.5-23.5T160-120v-440q0-33 23.5-56.5T240-640h120v80H240v440h480v-440H600v-80h120q33 0 56.5 23.5T800-560v440q0 33-23.5 56.5T720-40H240Zm200-280v-447l-64 64-56-57 160-160 160 160-56 57-64-64v447h-80Z" />
+                            </svg>
+                        </button>
 
-                    <button class="icon-button" type="button" id="selection-delete"
-                        aria-label="Delete selected" data-i18n-aria-label="selection.delete">
-                        <!-- Google Material Icons: delete -->
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
-                        </svg>
-                    </button>
+                        <!--
+                          删除（红色，v0.1.93）
+                          ⚠️ 用户要求「单独使用主题的红色配色，以突出删除功能」。
+                             颜色由 CSS 的 `.selection-delete { color: var(--danger) }` 给，
+                             这里不加内联样式（主题切换时内联色不会跟着变）。
+                        -->
+                        <button class="icon-button selection-delete" type="button" id="selection-delete"
+                            aria-label="Delete selected" data-i18n-aria-label="selection.delete">
+                            <!-- Google Material Icons: delete -->
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
+                            </svg>
+                        </button>
+                    </div>
                 </div>
             </section>
 

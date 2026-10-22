@@ -1064,6 +1064,21 @@ body {
   多选操作栏（照搬 Livolog 的 selection-bar）。
   在**顶部**、从上方滑入，盖住标题栏。
   z-index 7 —— 高于内容与导航栏，低于登录页（50）与弹层（100）。
+
+  ══ ⚠️⚠️ 三格布局（v0.1.93）══
+
+  用户要求：
+    「导出……不能距离删除图标太远，应当是视觉上的并列，
+      而选中计数应仍然在栏目居中位置。」
+
+  ✅ `1fr auto 1fr` 三格：
+       · 左格 1fr  → 关闭 X 靠左（用 `justify-content: flex-start`）
+       · 中格 auto → 计数，**天然居中**
+       · 右格 1fr  → 导出 + 删除靠右、**相互贴紧**
+
+  ⚠️ 之前是 `justify-content: space-between` 直接排三个子元素：
+      于是计数被推到左侧、两个按钮被拉到两端 ——
+      “计数不居中”和“按钮离得远”是同一个根因。
 */
 .selection-bar {
     position: fixed;
@@ -1071,10 +1086,10 @@ body {
     left: var(--safe-left);
     right: var(--safe-right);
     z-index: 7;
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    gap: 4px;
     height: 56px;
     padding: 0 8px;
     background: var(--bg);
@@ -1095,6 +1110,58 @@ body {
     font-weight: 600;
     color: var(--on-surface);
     font-variant-numeric: tabular-nums;
+    /* 中格内容居中；不影响两边的按钮格 */
+    text-align: center;
+}
+
+/*
+  ══ 右侧按钮组（v0.1.93）══
+
+  用户要求：
+    「导出……不能距离删除图标太远，应当是视觉上的并列」
+
+  ✅ `justify-content: flex-end` + `gap: 2px` ——
+     两个按钮贴在右边、彼此只隔 2px，视觉上是一组。
+  ✅ 放在第 3 格（1fr）里再靠右对齐，所以它们的右缘与
+     左格 X 的左缘对称，整条栏不会歪。
+*/
+.selection-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+    /* 抵消 icon-button 自带的内边距，让图标视觉上贴边 */
+    margin-right: -6px;
+}
+
+/*
+  ══ 删除按钮用主题红色（v0.1.93）══
+
+  用户要求：
+    「删除的垃圾桶按钮请单独使用主题的红色配色，以突出删除功能。」
+
+  ⚠️⚠️ 必须在选择器里带 `.selection-bar`（提高优先级），
+     不能只写 `.selection-delete { color: ... }`。
+
+     原因（实测踩到）：`.icon-button` 定义在 styles.css 的**第 5717 行**，
+     而这段在第 1149 行附近 —— 优先级相同时**后出现的赢**，
+     所以红色被 `.icon-button { color: var(--on-surface-variant) }`
+     直接盖掉，垃圾桶仍然是灰的（实测 rgb(110,110,110)）。
+     加一层 `.selection-bar` 变成 (0,2,0)，稳定压过 `.icon-button`。
+
+  ⚠️ 用 `var(--danger)` 而不是写死 `#d32f2f` ——
+     深色/浅色主题各有自己的红，写死会在某个主题下对比度不足。
+  ⚠️ 只给 `color`，不改背景 ——
+     多选栏上突然出现一块红底，会盖住"这是一条操作栏"的视觉基调。
+     `:active` 时才给淡红底（见下），保留操作反馈。
+*/
+.selection-bar .selection-delete {
+    color: var(--danger);
+}
+
+.selection-bar .selection-delete:active {
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    color: var(--danger);
 }
 
 /* --------------------------------------------------------------------------
@@ -1604,6 +1671,36 @@ body {
     user-select: none;
     pointer-events: none;
 }
+
+/*
+  ══ 没有编号的段落：保留 12px 占位，但不显示数字（v0.1.93）══
+
+  用户要求：
+    「同一个作者区域的编号应当相同，提示条应当连续」
+
+  区域里的第一段挂了 `A1`，后续段落**不挂编号**（同属 A1），
+  但要竖向提示条 —— 否则带子就断了。
+
+  ══ ⚠️⚠️ 为什么**不能**把这一列压成 0 宽 ══
+
+  我第一版写的是 `width: 0`，想让无编号段不占位。实测结果：
+
+      段      before 宽   竖线 x   正文 x
+      A1        12px        26       34
+      无编号     0px        14       22     ← 竖线左移 12px
+
+  竖线跟着 flex 行整体左移了 —— 视觉上成了**两条错开的带子**，
+  正好和用户要的"连续"相反。
+
+  ✅ 正确做法：**保持 12px 占位**，只是 `content` 为空（自然就没有数字）。
+     这样两段的竖线落在同一个 x 上，看起来是一条贯通的带子；
+     正文也左边缘对齐，不会出现第二段右缩或左移。
+
+  ⚠️ 所以这里**不需要**任何额外 CSS —— 默认行为就是对的：
+     `content: attr(data-body-no)` 在没有该属性时渲染空串，
+     `flex: 0 0 auto` + `width: 12px` 依然占位。
+     上面那条 `:not([data-body-no])` 规则是**错的**，已删除。
+*/
 
 /*
   竖线（提示条）—— 三列中的第二列（v0.1.68）。
@@ -2530,6 +2627,29 @@ body {
 }
 
 /*
+  ══ ⚠️⚠️ 平级标签之间加分割线（v0.1.93）══
+
+  用户要求：
+    「标注表单中不同标签用分割线，展开后的子标签之间不用」
+
+  ✅ 有了线，一眼能数出有多少个可选标签，也分得清哪行是“另一个标签”。
+  ❌ 子标签不加线（见 `.sel-sub-list` 里那段说明）——
+     子标签是同一条从属关系里的东西，加线就把从属变成并列了。
+
+  ⚠️ 用 `:not(:last-child)` 以外的判据：`.sel-label-row` 里可能
+     还包含展开的子标签区，所以**线画在 row 上**，不是画在 item 上 ——
+     否则“展开的作者信息”和它的子标签之间也会出现一条线。
+*/
+.sel-label-row + .sel-label-row {
+    border-top: 1px solid var(--outline);
+}
+
+/* 末项与容器底部对齐，不留一条孤零零的线 */
+.sel-label-list > .sel-label-row:last-child {
+    border-bottom: none;
+}
+
+/*
   ⚠️ 选项本身变成 flex 行，让文字和右侧图标分开：
      `justify-content: space-between` 把图标推到最右边。
 */
@@ -2550,12 +2670,23 @@ body {
 }
 
 /*
-  子标签图标（一个右尖角）。
+  子标签图标（一个箭头）。
 
-  ⚠️ 保持**小**且有足够点击区（32×32）：
+  ⚠️ 保持**小**且有足够点击区（28×28）：
      用户要"点图标展开"，点太小会点不准。
-  ⚠️ 用 `›` 字符而不是 SVG —— 旋转 90° 就变成"展开"的向下箭头，
-     不需要两套图标。
+
+  ══ ⚠️⚠️ 方向就是折叠方向本身（v0.1.93）══
+
+  用户要求：
+    「子标签的折叠箭头：折叠的时候向上，展开的时候向下」
+
+  ✅ 用 `›`（指向右）+ 旋转 90°：
+       · 展开时 `rotate(90deg)` → 指向**下**（下 = 后面的内容展开了）
+       · 收起时 `rotate(-90deg)` → 指向**上**（上 = 收回去）
+
+  ⚠️ 之前收起态是 `rotate(0)`（指向右），用户说“折叠的时候向上”。
+     右是个“可点开”的中性提示，但不是用户要的语义 ——
+     他要的是**箭头方向直接告诉你现在是什么状态**。
 */
 .sel-label-sub-toggle {
     flex: 0 0 auto;
@@ -2572,9 +2703,10 @@ body {
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     /*
-      ⚠️ 收起时是 `›`（指向右），展开时转 90° 指向下。
-         用 transition 让手感连贯。
+      ⚠️ 默认（收起）= 指向上，展开 = 指向下。
+         见上面那段用户要求的说明。
     */
+    transform: rotate(-90deg);
     transition: transform 0.15s ease;
 }
 
@@ -2589,16 +2721,31 @@ body {
 /*
   子标签展开区。
 
-  ⚠️ 左侧缩进 + 顶部细线：视觉上明确"这是上一项的子级"，
+  ⚠️ 左侧缩进：视觉上明确"这是上一项的子级"，
      而不是又一批平级标签。
   ⚠️ 不再单独限制高度 —— 它在 `.sel-label-list` 内部，
      那个容器已经有 `overflow-y: auto`。
+
+  ══ ⚠️⚠️ 这里**不能有**分割线（v0.1.93）══
+
+  用户要求：
+    「标注表单中不同标签用分割线，展开后的子标签之间不用」
+
+  ✅ 分割线表达的是“这一项结束了、下一项开始了” ——
+     它只能出现在**平级标签之间**。
+  ❌ 子标签属于同一个标签之下，是一条从属关系，
+     加线会把“作者信息 + 它的子项”错误地切成两块。
+  ❌ 子标签**之间**也不能有线，理由同上。
+
+  ⚠️ 之前的 `border-top: 1px solid var(--outline)` 就是用户看到的那根线。
+     改成 `border-top: none` 而不是删掉这一行 —— 保留声明，
+     让后来的人知道“这里曾经有、且**确定不要**”。
 */
 .sel-sub-list {
     list-style: none;
-    margin: 2px 0 8px;
-    padding: 4px 0 0 14px;
-    border-top: 1px solid var(--outline);
+    margin: 0 0 6px;
+    padding: 0 0 0 14px;
+    border-top: none;
 }
 
 .sel-sub-list .sel-cite-item {

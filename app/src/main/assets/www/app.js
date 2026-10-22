@@ -234,17 +234,6 @@
             }
             return window.ScholariusReader.setText(id, text, outline, meta, blocks);
         },
-        /**
-         * 原生读 `doc.md` 之后推过来的块（v0.1.92）。
-         *
-         * ══ ⚠️⚠️ 这是**主路径**，`readerText` 退化为兜底 ══
-         *
-         * 用户裁决：
-         *   「md 是我们的数据保存结构，但阅读器靠这个原文件来渲染」
-         *
-         * ✅ md 里已经带着正文 + 标注，所以这里只需要块数组：
-         *    `[{kind, text, level, line, lines?, listMarker?, marks?}]`
-         */
         readerMd: function (id, blocks) {
             if (!window.ScholariusReader) {
                 return 'no-reader-module';
@@ -806,6 +795,48 @@
             window.ScholariusDetail.isOpen()) {
             window.ScholariusDetail.close();
             trace('back', 'closed detail page');
+            return true;
+        }
+
+        /*
+          ⓹ 阅读页的标注表单 / 详情页的编辑表单（v0.1.93）。
+
+          ⚠️⚠️ 这两个都是**独立**的 `<section role="dialog">`，
+             不像 sheet-update / sheet-confirm 那样走 ScholariusUI.closeSheet()，
+             所以 ③ 那条**管不到它们** —— tools/check_back_layers.py
+             把它们列成"未认领"，意味着在这里按返回会**直接退出应用**。
+
+          ⚠️ 顺序：必须在 ① 阅读页**之前**。
+             标注表单盖在阅读页上面，按返回应该先关表单，
+             而不是把整个阅读页收起来（那会让用户丢掉正在编辑的标注）。
+             同理编辑表单盖在详情页上面。
+
+          ⚠️ 判据用 `hidden` 而不是各自的 isOpen()：
+             这两个元素的显隐就是 `hidden` 属性，没有别的状态，
+             多一层间接反而可能与实际显示不同步。
+        */
+        var sheetLabel = document.getElementById('sheet-label');
+        if (sheetLabel && !sheetLabel.hidden) {
+            if (window.ScholariusReader &&
+                typeof window.ScholariusReader.closeLabelSheet === 'function') {
+                window.ScholariusReader.closeLabelSheet();
+            } else {
+                /* 兜底：至少把它藏起来，别让用户卡在这一层 */
+                sheetLabel.hidden = true;
+            }
+            trace('back', 'closed label sheet');
+            return true;
+        }
+
+        var sheetEdit = document.getElementById('sheet-edit');
+        if (sheetEdit && !sheetEdit.hidden) {
+            if (window.ScholariusDetail &&
+                typeof window.ScholariusDetail.closeEditSheet === 'function') {
+                window.ScholariusDetail.closeEditSheet();
+            } else {
+                sheetEdit.hidden = true;
+            }
+            trace('back', 'closed edit sheet');
             return true;
         }
 
