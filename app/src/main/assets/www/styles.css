@@ -1920,6 +1920,61 @@ body {
     align-items: flex-start;
 }
 
+/*
+  ══ 作者信息：整块一个段落，内部逐行左右分栏（v0.1.86）══
+
+  用户要求（原话）：
+    「整个段不应该断开啊，你看提示条是断开的。」
+    「明明在元素内一个左对齐元素一个右对齐元素就可以了啊。」
+
+  ⚠️⚠️ 旧实现是"每行一个 `<p>`"，每行各带一条竖线，
+     而 `.reader-rule` 的 `align-self: stretch` 只撑满**自己那一段**，
+     于是三行 = 三条断开的短线 + 三份段间距。
+
+  ✅ 现在整块只有一个 `<p>`，竖线只有一条，自然贯穿到底。
+     行在 `.reader-author-lines` 内部，每行自己是一个 flex：
+
+         [项名 flex:0] [内容 flex:1 text-align:right]
+
+     这正是用户说的"一个左对齐元素一个右对齐元素"。
+*/
+
+/* 右列容器：装所有行，吃掉竖线右侧的全部宽度 */
+.reader-para.is-author-body .reader-author-lines {
+    /*
+      ⚠️ `flex: 1 1 auto` + `min-width: 0`：
+         必须能收缩，否则长内容会把竖线挤歪。
+         `min-width: auto`（默认）在 flex 项上不能收缩到内容以下。
+    */
+    flex: 1 1 auto;
+    min-width: 0;
+    /*
+      ⚠️ 行与行之间用**行内间距**，不是段间距 ——
+         作者信息的几行属于同一条目，视觉上要紧凑。
+    */
+    display: flex;
+    flex-direction: column;
+}
+
+/* 单行：左项名 + 右内容 */
+.reader-author-line {
+    display: flex;
+    align-items: baseline;
+    /*
+      ⚠️ 不用 `justify-content` —— 与整块同理，
+         让内容自己 `flex:1` + `text-align:right` 贴右，
+         项名宽度由自身文字决定。这样：
+           · 有项名 → 项名在左、内容贴右；
+           · 无项名 → 内容独占一行，同样贴右。
+    */
+    gap: 12px;
+}
+
+/* 姓名行用正文色，其余行淡色（父级规则已给淡色，这里只覆盖姓名行） */
+.reader-author-line.is-author-name {
+    color: var(--on-surface);
+}
+
 /* 项名：贴左，不伸展 */
 .reader-author-field {
     /*

@@ -3497,36 +3497,62 @@
 
         var numbered = false;
 
+        /*
+          ══ ⚠️⚠️ 一个块 = **一个** `<p>`，多行放在它内部（v0.1.86）══
+
+          用户要求（原话）：
+            「整个段不应该断开啊，你看提示条是断开的。」
+            「明明在元素内一个左对齐元素一个右对齐元素就可以了啊。」
+
+          ⚠️⚠️ 我之前的实现是"每行一个 `<p>`"，于是每行各带一条竖线
+             （`.reader-rule` 的 `align-self: stretch` 只撑满**自己那一段**），
+             三段之间还有段间距 —— 视觉上就是**提示条断成三截**。
+
+          ✅ 正确结构：整块只输出一个 `<p>`（带 gutter），
+             行是它内部的普通块级元素：
+
+              <p class="reader-para is-body-para is-author-body" data-no="A1">
+                <span class="reader-rule"></span>        ← 一条竖线，撑满整块
+                <span class="reader-author-lines">       ← 右列：所有行
+                  <span class="reader-author-line">
+                    <span class="reader-author-field">Name</span>        ← 左对齐
+                    <span class="reader-author-value">Jacob…</span>      ← 右对齐
+                  </span>
+                  …
+                </span>
+              </p>
+
+          ✅ 每行就是用户说的「一个左对齐元素 + 一个右对齐元素」，
+             用 `.reader-author-line` 的 `display:flex` 排开。
+          ✅ 竖线只有一条，`align-self: stretch` 自动贯穿整个段落 —— 天然连续。
+        */
+        var p = document.createElement('p');
+        p.className = 'reader-para is-labeled-body is-author-body';
+        p.setAttribute('data-label', 'author');
+
+        if (b.page) p.setAttribute('data-page', String(b.page));
+        if (typeof b.line === 'number' && b.line >= 0) {
+            p.setAttribute('data-line', String(b.line));
+        }
+
+        /* 右列容器：装所有行 */
+        var linesEl = document.createElement('span');
+        linesEl.className = 'reader-author-lines';
+
         for (var s = 0; s < segs.length; s++) {
             var seg = segs[s];
 
-            /* 空行跳过 —— 不渲染空段落（渲染层既有规则） */
+            /* 空行跳过 —— 不渲染空行 */
             if (!seg.text.replace(/\s+/g, '')) continue;
 
             /*
-              ══ ⚠️⚠️ 找覆盖这一行的标注（v0.1.82 改判据）══
+              ══ 找覆盖这一行的标注 ══
 
-              用户反馈：
-                「非姓名行也增加了姓名子标签」
-                「其他没有添加子标签的也出现了这样的问题」
-
-              旧判据是"行区间与标注区间**有交集**就算命中，取第一个"：
-
-                  if (cs < seg.end && ce > seg.start) { hit = cand; break; }
-
-              ⚠️ 这个判据在块里**没有换行符**时会全面失效 ——
-                 整块只有一行，`seg` 就是 `[0, len)`，
-                 所有标注都与它"相交"，于是第一个标注被应用到整行，
-                 而且每一行（如果有）都会拿到同一个标注。
-
-              ✅ 改成**按行中心点归属**：
+              ✅ 按**行中心点归属**：
                  先看哪个标注完整包含这一行的中心字符，
                  没有则退回"交集最大"的那个。
                  中心点落在哪个标注里，那一行就属于哪个标注 ——
                  这与直观一致，也不会被相邻标注"抢走"。
-
-              ⚠️ 仍保留"交集"作为兜底：某些标注区间可能没覆盖整行
-                 （历史数据、编辑后偏移），交集最大的那个更可能是对的。
             */
             var mid = Math.floor((seg.start + seg.end) / 2);
             var hit = null;
@@ -3553,69 +3579,46 @@
                 }
             }
 
-            var p = document.createElement('p');
-            p.className = 'reader-para is-labeled-body is-author-body';
-            p.setAttribute('data-label', 'author');
-
+            var lineEl = document.createElement('span');
+            lineEl.className = 'reader-author-line';
             if (hit && hit.field === 'name') {
-                p.classList.add('is-author-name');
+                lineEl.classList.add('is-author-name');
             }
 
+            /* 左：项名（只有设了子标签才有） */
             if (hit && hit.field) {
                 var fieldEl = document.createElement('span');
                 fieldEl.className = 'reader-author-field';
                 fieldEl.textContent = t('reader.field.' + hit.field);
-                p.appendChild(fieldEl);
+                lineEl.appendChild(fieldEl);
             }
 
+            /* 右：内容 */
             var valEl = document.createElement('span');
             valEl.className = 'reader-author-value';
             valEl.textContent = seg.text;
-            p.appendChild(valEl);
+            lineEl.appendChild(valEl);
 
-            if (b.page) p.setAttribute('data-page', String(b.page));
-            if (typeof b.line === 'number' && b.line >= 0) {
-                p.setAttribute('data-line', String(b.line));
-            }
-
-            if (!numbered && markTyped) {
-                markTyped(p, 'author');
-                numbered = true;
-            } else {
-                /*
-                  ══ ⚠️⚠️ 后续行也要挂 gutter，只是**不写编号**（v0.1.83）══
-
-                  用户反馈：
-                    「所有作者信息的第一行都还在作者信息区域内，
-                      但后面的行都出现了超出作者区域且也没有正文段编号」
-
-                  真因：`attachBodyMarker()` 给段落加上 `is-body-para` 后，
-                  该段落变成 flex 容器并带 `margin-left:-16px`；
-                  被它抵消的是 `.reader-para` 的 `padding-left:16px`。
-
-                  ⚠️ 于是同一块里：
-                     第一行  → 有 `is-body-para`，向左让出 gutter；
-                     其余行  → 没有 → 仍按原 padding 起排，
-                                视觉上"缩进偏右"，看起来跑出了作者区域。
-
-                  ✅ 所以每一行都调用 `attachBodyMarker()`，
-                     但只有第一行传真实编号，其余行传空串 ——
-                     竖线与编号列照样占位，文字左边缘完全对齐。
-                     `data-body-no=""` 时 CSS 的 `::before` 不显示内容，
-                     但 `width` 固定，占位不变。
-                */
-                attachBodyMarker(p, '');
-            }
-
-            frag.appendChild(p);
+            linesEl.appendChild(lineEl);
         }
 
-        /* 极端情况：所有行都是空白 → 至少给个空占位，避免块整个消失 */
+        /* 整块一个编号，加在这一整个 `<p>` 上 */
+        if (markTyped) {
+            markTyped(p, 'author');
+            numbered = true;
+        }
+        p.appendChild(linesEl);
+
+        /*
+          ⚠️ 极端情况：所有行都是空白 → 块会整个消失。
+             此时退回普通段落占位，保证块仍然存在于 DOM 里
+             （否则 `data-line` 找不到，编辑/标注会失效）。
+        */
         if (!numbered) {
-            var empty = makePlainPara(fullText, b);
-            return empty;
+            return makePlainPara(fullText, b);
         }
 
+        frag.appendChild(p);
         return frag;
     }
 
