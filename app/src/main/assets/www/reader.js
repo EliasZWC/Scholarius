@@ -3367,7 +3367,7 @@
      *    否则会把"一块里既有标题又有作者"的情况也拉进来，
      *    那种情形应该由 `makeLabeledBlock()` 处理。
      */
-    function isAuthorLineSet(spans) {
+    function isAuthorLineSet(spans, line) {
         if (!spans || !spans.length) return false;
         for (var i = 0; i < spans.length; i++) {
             var sp = spans[i];
@@ -3399,10 +3399,21 @@
         */
         if (spans.length > 1) return true;
 
-        /* 一条标注 + 块里有换行 → 仍要按行拆分 */
-        var ln = spans[0] ? spans[0].line : null;
-        if (typeof ln !== 'number') return false;
-        var txt = blockTextOf(ln);
+        /*
+          ══ ⚠️⚠️ 块行号要从**块**上取，不是从标注上取（v0.1.85）══
+
+          ⚠️ 踩过的坑：标注记录只有 `{start, end, label, field}`，
+             **没有 `line` 字段** —— 它本来就存在 `labels[行号]` 下，
+             行号是那个对象的键。
+
+             我上一版写成了 `spans[0].line`，永远是 `undefined`，
+             于是 `typeof ln !== 'number'` 恒为 true → **恒返回 false**
+             → 一条子标签的多行作者块始终走老路径，
+             整个区域被染成 `.is-author-name` 的正常色。
+
+          ✅ 正确做法：由调用方把块行号传进来。
+        */
+        var txt = (typeof line === 'number') ? blockTextOf(line) : '';
         return /[\r\n]/.test(String(txt == null ? '' : txt));
     }
 
@@ -4750,7 +4761,7 @@
              整个块的子标签编号（A1/A2…）只算**一次**，
              因为它们在语义上属于同一个作者条目。
         */
-        if (spans && spans.length > 0 && isAuthorLineSet(spans)) {
+        if (spans && spans.length > 0 && isAuthorLineSet(spans, b.line)) {
             return makeAuthorLinesEl(b, spans, fullText, bodyIndex, authorIndex, markTyped);
         }
 
@@ -7130,6 +7141,32 @@ function tocTitleFrom(text) {
                 lastError: global.__scholariusLastError || null,
                 docModelLines: (docModel.blocks || []).length
             };
+        },
+        /**
+         * 直接调用真实的标注写入流程（供真机排查用，v0.1.85）。
+         *
+         * ⚠️ 为什么需要：
+         *   WebView 的原生选区在模拟器/脚本里造不出来
+         *   （`Input.dispatchTouchEvent` 走的是 CDP，绕过原生选择器），
+         *   于是"标注第二行 → 第一行标签被挤掉"这类问题
+         *   只能靠人肉点，排查效率极低、而且每次都要重新点一遍。
+         *
+         * ✅ 这里绕过"选区"这一层，直接给 `labelSpan` 赋值，
+         *    然后调用**同一个** `applyLabel()` ——
+         *    所以它跑的仍然是真实业务逻辑（重叠判断、区间扩展、
+         *    落库、重渲染全都在），只是省掉了手点。
+         *
+         * 用法：
+         *   ScholariusReader.debugLabel(2, 29, 47, 'author', 'affiliation')
+         *   ScholariusReader.debugLabel(2, 0, 28, 'author', null)  // 清子标签
+         */
+        debugLabel: function (line, start, end, label, field) {
+            labelSpan = { single: true, line: line, start: start, end: end };
+            labelDraft = label;
+            fieldDraft = field || null;
+            citeTarget = null;
+            applyLabel();
+            return labels[line] || null;
         },
         /** 当前设置（供测试用） */
         getSettings: function () {
