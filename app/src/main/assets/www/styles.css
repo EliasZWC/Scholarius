@@ -2025,8 +2025,19 @@ body {
       ✅ 所以左列钉死一个宽度（能容纳最长项名 `Affiliation`），
          没标签的行就是一个等宽空占位 —— 右列起点全部对齐。
     */
-    width: 76px;
+    width: 88px;
     box-sizing: border-box;
+    /*
+      ══ ⚠️⚠️ 项名**不许折行**（v0.1.88）══
+
+      实测：`Affiliation` 在 76px 宽、13px 字号下被折成
+      `Affiliati` / `on` 两行 —— 因为 `width` 固定但没禁止换行。
+
+      ✅ `white-space: nowrap` 让它整体不折，配合稍宽的列。
+      ⚠️ 列宽要能容纳最长的项名（`Affiliation` ≈ 70px @ 13px），
+         留一点余量取 88px。
+    */
+    white-space: nowrap;
     /*
       ⚠️ 与右列一起垂直居中（见 `.reader-author-line` 的 `stretch` 说明）。
     */

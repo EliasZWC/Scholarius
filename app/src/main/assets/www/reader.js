@@ -3374,47 +3374,24 @@
             if (!sp || sp.label !== 'author') return false;
         }
         /*
-          ══ ⚠️⚠️ 只要块里**有换行**，就按行拆分（v0.1.84）══
+          ══ ⚠️⚠️ 凡是 author 标签，一律走"词条"渲染路径（v0.1.88）══
 
-          用户反馈（两次）：
-            「当只有一个子标签的时候，比如姓名，
-              直接整个作者信息区域都成了正常字体颜色，而非淡色」
-            「其他没有添加子标签的也出现了这样的问题」
+          用户要求（原话）：
+            「将这些词切出来，然后重新放到作者信息区域，
+              当作成一个新标签，只不过这个新标签放在作者信息区域内，
+              不单独显示」
 
-          真因：v0.1.82 的判据是 `spans.length > 1` —— 只标了一行时
-          返回 false，于是整块走**老的单标注路径**，
-          输出**一个** `<p>` 带着 `.is-author-name`：
+          ✅ 新路径按**已标注区间**组织内容（见 `makeAuthorLinesEl`），
+             完全不依赖 `\n`，也不依赖标注条数：
+               · 只有一条标注 → 一条词条 + 其余未标注文本；
+               · 多条标注   → 多条词条 + 之间/前后的未标注文本。
 
-              <p class="is-author-name">Name  Jacob…  Google AI  {…}</p>
+          ⚠️ 之前几版的判据（`spans.length > 1`、是否有换行）全部废弃 ——
+             它们都在"猜行"，而这版根本不需要行。
 
-          ⚠️ `.is-author-name` 的颜色是 `--on-surface`（正常色），
-             它作用在**整个段落**上 → 三行全部变正常色。
-             用户要的是"只有姓名那一行正常色，其余淡色"。
-
-          ✅ 判据改成：**有换行**就按行渲染。
-             有换行 ⇒ 这个块真的是"多行作者信息"，
-             每行独立判断自己的子标签，没标的行自然是淡色。
-             只有单行块（没有 `\n`）才退回老路径 ——
-             它没有"按行"可言，整块就是一个条目。
+          ⚠️ `line` 参数保留，只为兼容调用方签名（当前未使用）。
         */
-        if (spans.length > 1) return true;
-
-        /*
-          ══ ⚠️⚠️ 块行号要从**块**上取，不是从标注上取（v0.1.85）══
-
-          ⚠️ 踩过的坑：标注记录只有 `{start, end, label, field}`，
-             **没有 `line` 字段** —— 它本来就存在 `labels[行号]` 下，
-             行号是那个对象的键。
-
-             我上一版写成了 `spans[0].line`，永远是 `undefined`，
-             于是 `typeof ln !== 'number'` 恒为 true → **恒返回 false**
-             → 一条子标签的多行作者块始终走老路径，
-             整个区域被染成 `.is-author-name` 的正常色。
-
-          ✅ 正确做法：由调用方把块行号传进来。
-        */
-        var txt = (typeof line === 'number') ? blockTextOf(line) : '';
-        return /[\r\n]/.test(String(txt == null ? '' : txt));
+        return true;
     }
 
     /**
@@ -3434,29 +3411,33 @@
         var frag = document.createDocumentFragment();
 
         /*
-          ══ ⚠️⚠️ 按 `\n` 切行（v0.1.87 重写）══
+          ══ ⚠️⚠️ 按**已标注的词条**组织，不再按换行切（v0.1.88）══
 
           用户要求（原话）：
-            「左边一个元素，右边一个元素，右边元素就是作者信息文本（右对齐），
-              左边就是子标签名（左对齐），两个元素行数量和行高保持相等，
-              视觉上完全一样。到时候选中一个姓名，就在左边元素增加一个
-              对应行位置的标识文本，然后姓名的只需要把选中的右边作者信息
-              文本改色就行了，不需要你切分。」
+            「既然某个区域内的一些词可以选中，将这些词切出来，
+              然后重新放到作者信息区域，当作成一个新标签，
+              只不过这个新标签放在作者信息区域内，不单独显示」
 
-          ✅ 所以不再"推断行的边界" —— 文本里本来就有 `\n`，
-             按它切就是行。每行输出**一对**左右元素，放在同一个 flex 行里：
+          ══ ✅ 新逻辑 ══
 
-              <span class="reader-author-line">      ← flex 行，行高由它决定
-                <span class="reader-author-field">Name</span>   ← 左，可空
-                <span class="reader-author-value">Jacob…</span> ← 右，右对齐
-              </span>
+          把整块文本按**已标注的区间**切成若干片段：
 
-          ✅ 行高天然相等 —— 左右在**同一个** flex 行里，
-             不是两个各自排版的容器，不存在"对不齐"。
-          ✅ 左边没标签时输出空元素占位，保证列宽与行高一致。
+              [未标注文本] [词条(field=name)] [未标注文本] [词条(field=affiliation)] …
+
+          · 每条已标注的区间 = 一个**词条**，带上它的子标签名（左列）；
+          · 区间之间的文本 = 普通行（左列为空占位）；
+          · 全部放进同一个作者区域，**不单独显示标签名**（不新起区域）。
+
+          ⚠️⚠️ 为什么不再按 `\n` 切：
+             真机上块文本的多行边界与用户"选中的词"不一定重合，
+             硬按 `\n` 切会导致「选的是一行中间几个词」时对不上，
+             而且没有换行符时整块退化成一行、所有子标签挤在一起。
+
+          ✅ 现在**以用户的选择为准**：
+             他选了什么，那一段就是一条词条 —— 这是最可靠的依据，
+             不需要推断任何换行。
         */
         var flatText = String(fullText == null ? '' : fullText).replace(/\r\n?/g, '\n');
-        var parts = flatText.split('\n');
 
         var p = document.createElement('p');
         p.className = 'reader-para is-labeled-body is-author-body';
@@ -3470,63 +3451,96 @@
         var boxEl = document.createElement('span');
         boxEl.className = 'reader-author-box';
 
-        var pos = 0;
-        for (var i = 0; i < parts.length; i++) {
-            var lnText = parts[i];
-            var start = pos;
-            var end = pos + lnText.length;
-            pos = end + 1;
+        /*
+          ══ ① 收集并规范化已标注区间 ══
 
+          ⚠️ 夹到 [0, len] 内 —— 编辑过之后旧区间可能越界。
+          ⚠️ 丢掉空区间。
+          ⚠️ 按起点排序，保证输出顺序与原文一致。
+        */
+        var marks = [];
+        for (var i = 0; i < spans.length; i++) {
+            var sp = spans[i];
+            if (!sp) continue;
+            var ms = Math.max(0, Math.min(sp.start || 0, flatText.length));
+            var me = Math.max(ms, Math.min(sp.end || 0, flatText.length));
+            if (me <= ms) continue;
+            marks.push({ start: ms, end: me, field: sp.field || null });
+        }
+        marks.sort(function (x, y) { return x.start - y.start; });
+
+        /* ② 逐个片段输出：未标注文本 → 词条 → 未标注文本 → … */
+        var cursor = 0;
+
+        function pushPlain(textChunk) {
+            if (!textChunk) return;
             /*
-              ⚠️ 空行仍然输出，保持左右行数一致 ——
-                 跳过的话两边的行序号就对不上，
-                 "在第 2 行放标签"会落到第 3 行去。
+              ⚠️ 未标注部分可能含 `\n` —— 每一行各输出一个普通行，
+                 保持"原文怎么排就怎么排"的观感。
+              ⚠️ **丢掉纯空白行**（v0.1.88）：两条词条之间只隔一个空格时，
+                 会冒出一个空行，看起来像多了个段落。
+                 作者区域里有意义的换行本来就少，纯空白行都是分隔残留。
             */
+            var rows = textChunk.split('\n');
+            for (var r = 0; r < rows.length; r++) {
+                if (!rows[r].replace(/\s+/g, '')) continue;
+                var lineEl = document.createElement('span');
+                lineEl.className = 'reader-author-line';
+                var fEl = document.createElement('span');
+                fEl.className = 'reader-author-field';
+                lineEl.appendChild(fEl);
+                var vEl = document.createElement('span');
+                vEl.className = 'reader-author-value';
+                vEl.textContent = rows[r];
+                lineEl.appendChild(vEl);
+                boxEl.appendChild(lineEl);
+            }
+        }
+
+        function pushTerm(termText, field) {
             var lineEl = document.createElement('span');
-            lineEl.className = 'reader-author-line';
+            lineEl.className = 'reader-author-line is-author-term';
+            if (field === 'name') lineEl.classList.add('is-author-name');
 
             /*
-              ══ 找覆盖这一行的标注 ══
-
-              ✅ 用**字符区间相交**判断：标注区间与这一行的区间有交集，
-                 这一行就属于该标注。区间来自文本坐标，不需要猜。
-
-              ⚠️ 一行只能有一个子标签 → 取交集最大的那个
-                 （同名行被重复标注时，后写的区间更贴合）。
+              ⚠️ 词条的字段名放在**左列**（与普通行同一列），
+                 不新起区域、不加额外标题 —— 用户要求"不单独显示"。
             */
-            var hit = null;
-            var bestOverlap = 0;
-            for (var k = 0; k < spans.length; k++) {
-                var cand = spans[k];
-                if (!cand) continue;
-                var cs = Math.max(0, cand.start || 0);
-                var ce = Math.max(cs, cand.end || 0);
-                var ov = Math.min(ce, end) - Math.max(cs, start);
-                if (ov > bestOverlap) {
-                    bestOverlap = ov;
-                    hit = cand;
-                }
-            }
+            var fEl = document.createElement('span');
+            fEl.className = 'reader-author-field';
+            fEl.textContent = field ? t('reader.field.' + field) : '';
+            lineEl.appendChild(fEl);
 
-            if (hit && hit.field === 'name') {
-                lineEl.classList.add('is-author-name');
-            }
-
-            /* 左：项名（没设子标签时是空占位，保持列宽） */
-            var fieldEl = document.createElement('span');
-            fieldEl.className = 'reader-author-field';
-            fieldEl.textContent = (hit && hit.field)
-                ? t('reader.field.' + hit.field) : '';
-            lineEl.appendChild(fieldEl);
-
-            /* 右：原文，右对齐 */
-            var valEl = document.createElement('span');
-            valEl.className = 'reader-author-value';
-            valEl.textContent = lnText;
-            lineEl.appendChild(valEl);
+            var vEl = document.createElement('span');
+            vEl.className = 'reader-author-value';
+            vEl.textContent = termText;
+            lineEl.appendChild(vEl);
 
             boxEl.appendChild(lineEl);
         }
+
+        for (var m = 0; m < marks.length; m++) {
+            var mk = marks[m];
+            /* 跳过与上一条重叠的部分（取先出现的），避免文字重复 */
+            if (mk.start < cursor) mk.start = cursor;
+            if (mk.end <= mk.start) continue;
+
+            /*
+              ⚠️ 词条**前后**的空格交给相邻的普通行，词条本身不带（v0.1.88）——
+                 否则右对齐时词条右边会空出一格，
+                 而普通行又以空格开头，看起来多一处缩进。
+            */
+            var termA = mk.start;
+            var termB = mk.end;
+            while (termA < termB && /\s/.test(flatText.charAt(termA))) termA++;
+            while (termB > termA && /\s/.test(flatText.charAt(termB - 1))) termB--;
+            if (termB <= termA) continue;
+
+            pushPlain(flatText.slice(cursor, termA));
+            pushTerm(flatText.slice(termA, termB), mk.field);
+            cursor = termB;
+        }
+        pushPlain(flatText.slice(cursor));
 
         /* 整块一个编号，加在这一整个 `<p>` 上 */
         if (markTyped) markTyped(p, 'author');
@@ -3678,10 +3692,28 @@
             var wb = labelSpan.end;
 
             if (labelDraft === 'author') {
-                var whole = blockTextOf(line);
-                var lr = lineRangeAt(whole, labelSpan.start, labelSpan.end);
-                wa = lr.start;
-                wb = lr.end;
+                /*
+                  ══ ⚠️⚠️ 作者信息：**用选中的精确区间**，不扩展到整行（v0.1.88）══
+
+                  用户要求（原话）：
+                    「既然某个区域内的一些词可以选中，将这些词切出来，
+                      然后重新放到作者信息区域，当作成一个新标签」
+
+                  ✅ 所以"行"不再是 `\n` 分隔的排版行，而是**用户选中的词**。
+                     扩展整行反而会覆盖掉其他词条 —— 这正是之前
+                     "标机构把姓名挤掉"的根源。
+
+                  ⚠️ 只去掉首尾空白：选中文时手指容易多带一个空格，
+                     保留它会让词条右对齐时多出一个空隙。
+                */
+                var rawW = String(blockTextOf(line) == null ? '' : blockTextOf(line))
+                    .replace(/\r\n?/g, '\n');
+                var ws = Math.max(0, Math.min(labelSpan.start, rawW.length));
+                var we = Math.max(ws, Math.min(labelSpan.end, rawW.length));
+                while (ws < we && /\s/.test(rawW.charAt(ws))) ws++;
+                while (we > ws && /\s/.test(rawW.charAt(we - 1))) we--;
+                wa = ws;
+                wb = we;
             } else if (labelDraft === 'reference') {
                 /*
                   ⚠️ 长度也按**归一化后**的文本算（v0.1.84）——
@@ -3730,12 +3762,11 @@
                 var drop;
                 if (labelDraft === 'author' && sp.label === 'author') {
                     /*
-                      ⚠️ 同一行 → 覆盖；不同行 → 保留。
-                         用区间"完全相同"作为同一行的判据：
-                         `lineRangeAt()` 对同一行总是返回同一对值，
-                         所以稳定可靠。
+                      ⚠️ 词条之间**不应该重叠**（一个词只能属于一个子标签），
+                         但仍然要允许"相邻"（前一条结束 == 后一条开始）。
+                      ⚠️ 与自身完全相同 → 覆盖（重复标注同一段）。
                     */
-                    drop = (sp.start === wa && sp.end === wb);
+                    drop = (sp.start < wb && sp.end > wa);
                 } else {
                     drop = !(sp.end <= wa || sp.start >= wb);
                 }
