@@ -44,6 +44,10 @@ class WebAppBridge(
      *    固定参数签名意味着每加一个字段都要改桥。
      */
     private val onUpdateDoc: (String, String) -> Unit,
+    /** 保存正文 md（v0.1.92）。md 是**本地存储的唯一形态**，见 saveDocMd 说明 */
+    private val onSaveDocMd: (String, String) -> Unit,
+    /** 导出若干文献的 md 到用户选择的位置（v0.1.92） */
+    private val onExportDocs: (String) -> Unit,
     // --- 临时诊断（v0.0.6，定位完删）---
     private val onTrace: (String) -> Unit,
 ) {
@@ -149,6 +153,44 @@ class WebAppBridge(
     @JavascriptInterface
     fun requestDocText(id: String) {
         onRequestDocText(id)
+    }
+
+    /**
+     * 保存正文 md（v0.1.92）—— **唯一的数据写入通道**。
+     *
+     * ══ ⚠️⚠️ 为什么由前端生成 md，而不是原生 ══
+     *
+     * md 里要带**用户的标注**（引用区间、作者子标签），
+     * 而这些是前端在编辑/标注后才知道的（字符区间、子标签名）。
+     * 原生只知道“PDF 提取出来的原始正文”。
+     *
+     * ✅ 所以分工：
+     *    · 导入 / 懒迁移 → 原生从 PDF 生成初版 md（见 mdFromExtract）；
+     *    · 用户编辑/标注 → 前端把当前完整 md 回写（本接口）。
+     *
+     * ⚠️ 传的是**完整 md 全文**，不是增量 ——
+     *    增量合并需要两边维护同一套版本号，容易错位；
+     *    一篇文献的 md 通常几十 KB，整存代价可以接受。
+     *
+     * @param md 完整的 Markdown 全文（含 `<!--@…-->` 标注注释）
+     */
+    @JavascriptInterface
+    fun saveDocMd(id: String, md: String) {
+        onSaveDocMd(id, md)
+    }
+
+    /**
+     * 导出若干文献的 md 到用户选的位置（v0.1.92）。
+     *
+     * ⚠️ 用系统文件选择器（`ACTION_CREATE_DOCUMENT`）而不是写固定目录 ——
+     *    用户要知道文件去哪了，而且 Android 10+ 不允许随意写外部存储。
+     * ⚠️ 导出**不改动**任何本地数据，只是拷贝。
+     *
+     * @param idsJson 文献 id 的 JSON 数组字符串
+     */
+    @JavascriptInterface
+    fun exportDocs(idsJson: String) {
+        onExportDocs(idsJson)
     }
 
 

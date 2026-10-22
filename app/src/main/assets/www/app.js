@@ -234,6 +234,26 @@
             }
             return window.ScholariusReader.setText(id, text, outline, meta, blocks);
         },
+        /**
+         * 原生读 `doc.md` 之后推过来的块（v0.1.92）。
+         *
+         * ══ ⚠️⚠️ 这是**主路径**，`readerText` 退化为兜底 ══
+         *
+         * 用户裁决：
+         *   「md 是我们的数据保存结构，但阅读器靠这个原文件来渲染」
+         *
+         * ✅ md 里已经带着正文 + 标注，所以这里只需要块数组：
+         *    `[{kind, text, level, line, lines?, listMarker?, marks?}]`
+         */
+        readerMd: function (id, blocks) {
+            if (!window.ScholariusReader) {
+                return 'no-reader-module';
+            }
+            if (!blocks || !blocks.length) {
+                return window.ScholariusReader.onExtractFailed(id);
+            }
+            return window.ScholariusReader.setMd(id, blocks);
+        },
         /*
           原生 → 网页：某篇文献的元数据保存完了。
           详情页据此收起面板并提示「已保存」。
@@ -247,6 +267,27 @@
         docUpdated: function (id, ok) {
             if (window.ScholariusVault) {
                 return window.ScholariusVault.onDocUpdated(id, ok);
+            }
+            return 'no-vault-module';
+        },
+        /**
+         * 原生 → 网页：md 写盘完成（v0.1.92）。
+         *
+         * ⚠️ 失败必须让用户知道 —— 否则他以为标注已保存，
+         *    重开却发现没了（v0.1.70 那个 bug 的同类）。
+         */
+        docMdSaved: function (id, ok) {
+            if (!ok && window.ScholariusUI && window.ScholariusUI.toast) {
+                window.ScholariusUI.toast(
+                    (window.ScholariusI18n ? window.ScholariusI18n.t('reader.mdSaveFailed') : 'Could Not Save.')
+                );
+            }
+            return 'md-saved';
+        },
+        /** 原生 → 网页：一批导出完成（v0.1.92） */
+        exportFinished: function (count) {
+            if (window.ScholariusVault && window.ScholariusVault.onExportFinished) {
+                return window.ScholariusVault.onExportFinished(count);
             }
             return 'no-vault-module';
         },

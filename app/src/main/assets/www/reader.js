@@ -283,6 +283,16 @@
     /** 当前文献的存储键前缀（`open()` 时按 doc.id 生成） */
     var docStoreKey = '';
 
+    /**
+     * 从 md 读进来时的原始块文本（v0.1.92）。
+     *
+     * ⚠️ 用途**只有一个**：回写前做丢字自检（见 mdKeepsAllText）。
+     *    实测出过事故：内存里的块少了一句话，照常回写会覆盖掉
+     *    磁盘上正确的那份 md。
+     * ⚠️ 老路径（PDF 直接推）不设置这个，自检直接放行。
+     */
+    var mdOriginText = '';
+
     /** 可用的标注标签，顺序即表单里的顺序 */
     var LABEL_KEYS = [
         'body',        /* 正文：用于把已标注的段落恢复成"无标签" */
@@ -502,6 +512,263 @@
             writeStore('scholarius.labels.' + docStoreKey,
                 JSON.stringify(labels));
         } catch (e) { /* 忽略 */ }
+    }
+
+    // --- 回写 md（v0.1.92）---------------------------------------------------
+
+    /**
+     * 把当前文档（正文 + 编辑 + 标注）写回 `doc.md`。
+     *
+     * ══ ⚠️⚠️ md 是**本地存储的唯一形态**（用户裁决）══
+     *
+     *   「现在直接改为 md 就可以了，就相当于这就是我们本地保存的形式，
+     *     而不是转换为 md」
+     *   「相当于 md 是我们的数据保存结构，但阅读器靠这个原文件来渲染」
+     *
+     * 所以**每次编辑/标注之后**都要回写，否则下次打开读回来的
+     * 还是旧 md —— 那就是 v0.1.70 那个「改了没保存」bug 的重演。
+     *
+     * ══ 为什么在前端生成 md，而不是让原生生成 ══
+     *
+     * md 里要带**标注区间**（引用 `[12]` 的位置、作者子标签对应哪几个字），
+     * 只有前端知道（`labels[line]` 是字符区间）。
+     * 原生只知道 PDF 提取出来的原始正文。
+     *
+     * ⚠️ 序列化规则必须与 `MdDoc.serialize` **完全对称**，
+     *    否则原生读回来会错位。这里刻意照抄 Kotlin 的逻辑。
+     */
+    function pushMdToNative() {
+        var bridge = global.ScholariusNative;
+        if (!bridge || typeof bridge.saveDocMd !== 'function') return;
+        if (!currentDoc || !currentDoc.id) return;
+
+        /*
+          ══ ⚠️⚠️ 丢字检查：**宁可不写，也不能写坏**（v0.1.92 实测）══
+
+          实测事故：PDF 原文标题是
+
+              Efficient Estimation of Word Representations in Vector Space
+
+          而内存里的块只有 `... Representations in` —— `Vector Space`
+          在这一层已经丢了。此时如果照常回写，就会用**不完整的数据
+          覆盖掉磁盘上正确的那份 md**，用户永久丢失那句话。
+
+          ✅ 所以回写前先比对：
+             本次要写的 md 去记号后，必须包含**读进来时的原始块文本**
+             （`mdOrigin` 在 setText 里记下）。
+             对不上 → 拒绝回写并 trace 出来，让磁盘上的旧 md 留着。
+
+          ⚠️ 只做"包含"检查，不做完全相等 —— 用户编辑确实是会变的。
+             这里防的是"整段消失"，不是"少了一个字"。
+        */
+        var md = buildMdText();
+        if (!md) return;
+
+        if (!mdKeepsAllText(md)) {
+            trace('reader:md', 'REFUSED: md lost text, keep disk copy');
+            return;
+        }
+
+        try {
+            bridge.saveDocMd(String(currentDoc.id), md);
+            trace('reader:md', 'saved ' + md.length + ' chars');
+        } catch (e) {
+            trace('reader:md', 'save failed: ' + (e && e.message));
+        }
+    }
+
+    /**
+     * 回写前的自检：md 里必须还带着**读进来时**的每一块正文。
+     *
+     * @return {boolean} true = 文本齐全，可以写
+     */
+    function mdKeepsAllText(md) {
+        var origin = mdOriginText;
+        if (!origin) {
+            /* 不是从 md 读进来的（老路径）→ 没有基线可比，放行 */
+            return true;
+        }
+        var body = String(md)
+            .replace(/<!--@[^>]*-->/g, '')
+            .replace(/^[ \t]*(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)/gm, '')
+            .replace(/\s+/g, '');
+        var src = String(origin).replace(/\s+/g, '');
+
+        /*
+          ⚠️ 逐块检查（按 `\n\n` 切），不是整篇 ——
+             整篇 indexOf 在"某块丢了但内容在别处重复"时会漏检。
+          ⚠️ 块内子串检查而不是全等：用户可能编辑了某块的**一部分**，
+             那仍然算"没丢"。真正的丢失是整块消失。
+        */
+        var chunks = String(origin).split('\n\n');
+        var missing = 0;
+        for (var i = 0; i < chunks.length; i++) {
+            var c = chunks[i].replace(/\s+/g, '');
+            if (!c) continue;
+            /* 只检验长度足够的一段，短标签容易误判 */
+            if (c.length < 12) continue;
+            /* 取前 12 个字符作为锚点 */
+            var anchor = c.slice(0, 12);
+            if (body.indexOf(anchor) < 0) missing++;
+        }
+        if (missing > 0) {
+            trace('reader:md', 'integrity: ' + missing +
+                ' chunks missing (src ' + src.length + ' chars)');
+        }
+        return missing === 0;
+    }
+
+    /**
+     * 生成 md 全文（与 `MdDoc.serialize` 对称）。
+     *
+     * 每块：`记号 + 正文 + 行内标注注释`，块间空行。
+     */
+    function buildMdText() {
+        var list = docModel.blocks || [];
+        var out = [];
+
+        for (var i = 0; i < list.length; i++) {
+            var b = list[i];
+            var line = b.line;
+            var text = String(blockTextOf(line) || '').replace(/\r\n/g, '\n');
+            if (!text.replace(/\s+/g, '')) continue;
+
+            var kind = b.kind || '';
+            var level = b.level || 0;
+
+            /*
+              ⚠️ 用户标注会改变这一块的记号 ——
+                 判据与渲染层一致：整块标注优先，其次是"全部是 author"。
+            */
+            var spans = labels[line] || [];
+            var whole = null;
+            var allAuthor = spans.length > 0;
+            for (var s = 0; s < spans.length; s++) {
+                var sp = spans[s];
+                if (!sp || !sp.label) continue;
+                if (sp.label !== 'author') allAuthor = false;
+                if ((sp.start || 0) <= 1 && (sp.end || 0) >= text.length - 1) {
+                    whole = sp;
+                }
+            }
+
+            var marker = '';
+            if (whole) {
+                if (whole.label === 'h1') marker = '## ';
+                else if (whole.label === 'h2') marker = '### ';
+                else if (whole.label === 'h3') marker = '#### ';
+                else if (whole.label === 'title') marker = '# ';
+                else if (whole.label === 'author') marker = '- ';
+                else if (whole.label === 'reference') marker = '1. ';
+            } else if (allAuthor) {
+                marker = '- ';
+            } else if (kind === 'heading') {
+                /*
+                  ⚠️ 提取层的标题：首块用 `#`，其余按 level。
+                     与 PdfText.Block.mdHeadingPrefix 一致。
+                */
+                if (i === 0) marker = '# ';
+                else if (level <= 1) marker = '## ';
+                else if (level === 2) marker = '### ';
+                else marker = '#### ';
+            }
+
+            /*
+              ⚠️ 作者/文献的多行 → 每行一项（与导出一致）。
+                 正文绝不分行（`lines` 是排版折行）。
+            */
+            var body;
+            var rowMarks = null;
+            if ((marker === '- ' || marker === '1. ') &&
+                b.lines && b.lines.length > 1) {
+                var parts = [];
+                var cursor = 0;
+                for (var r = 0; r < b.lines.length; r++) {
+                    var row = String(b.lines[r] || '').replace(/^\s+|\s+$/g, '');
+                    if (!row) continue;
+
+                    /*
+                      ══ ⚠️⚠️ 子标签必须**按行**匹配（v0.1.92 实测踩到）══
+
+                      第一版把整块的 spans 都挂在每一行后面，结果：
+
+                          - Tomas Mikolov Kai Chen <!--@a:0-22=name-->
+                          - Google Inc., …          <!--@a:0-102=affiliation-->
+
+                      第二行的注释写着 `0-102`（整块区间），
+                      可它只覆盖第二行那一小段 —— 回读时区间全错。
+
+                      ✅ 在块文本里定位这一行的起点，只有**整行被覆盖**
+                         的标注才算这一行的。与 `authorItemsOf()` 同判据。
+                    */
+                    var at = text.indexOf(row, cursor);
+                    if (at >= 0) cursor = at + row.length;
+
+                    var rowTag = '';
+                    if (at >= 0) {
+                        for (var rs = 0; rs < spans.length; rs++) {
+                            var rsp = spans[rs];
+                            if (!rsp || rsp.label !== 'author' || !rsp.field) continue;
+                            var rs0 = rsp.start || 0;
+                            var re0 = rsp.end || 0;
+                            if (rs0 <= at + 1 && re0 >= at + row.length - 1) {
+                                /* ⚠️ 区间相对**这一行**，不是相对整块 */
+                                rowTag = ' <!--@a:0-' + row.length +
+                                    '=' + rsp.field + '-->';
+                                break;
+                            }
+                        }
+                    }
+                    parts.push((marker === '1. ' ? '1. ' : '- ') + row + rowTag);
+                }
+                body = parts.join('\n\n');
+                marker = '';
+                rowMarks = 'done';
+            } else {
+                body = text;
+            }
+
+            var chunk = marker + body;
+            /*
+              ⚠️ 已经按行写过子标签注释 → 不再追加整块的行内注释，
+                 否则同一行会出现两条区间不同的 `@a`。
+            */
+            if (rowMarks !== 'done') {
+                var inline = inlineMarkComments(spans, text.length);
+                if (inline) chunk += ' ' + inline;
+            }
+            out.push(chunk);
+        }
+        return out.length ? out.join('\n\n') + '\n' : '';
+    }
+
+    /**
+     * 把**行内**标注编码成 HTML 注释。
+     *
+     * ⚠️ 只编码 cite / 作者子标签 —— 块级标注已由 md 记号表达
+     *    （`##`、`- `），再写一遍是冗余，用户改 md 后会立刻不一致。
+     *    与 `MdDoc.encodeMark` 完全对称。
+     */
+    function inlineMarkComments(spans, len) {
+        var parts = [];
+        for (var i = 0; i < spans.length; i++) {
+            var sp = spans[i];
+            if (!sp || !sp.label) continue;
+            if (sp.label !== 'cite' && sp.label !== 'author') continue;
+            if (sp.label === 'author' && !sp.field) continue;
+
+            var a = Math.max(0, Math.min(sp.start || 0, len));
+            var b = Math.max(a, Math.min(sp.end || 0, len));
+            if (b <= a) continue;
+
+            if (sp.label === 'cite') {
+                parts.push('<!--@c:' + a + '-' + b +
+                    (typeof sp.ref === 'number' ? '=' + sp.ref : '') + '-->');
+            } else {
+                parts.push('<!--@a:' + a + '-' + b + '=' + sp.field + '-->');
+            }
+        }
+        return parts.join(' ');
     }
 
     // --- 初始化 -------------------------------------------------------------
@@ -1671,22 +1938,19 @@
             function () { openLabelSheet(); }));
 
         /*
-          ══ 「复制为 Markdown」（v0.1.91）══
+          ══ ⚠️ 这里**没有**「导出 Markdown」按钮（v0.1.92 用户裁决）══
 
-          用户要求（原话）：
-            「我知道了，也许我们保存的形式可以不是纯文本，而是md？」
-            「直接用 md 来储存，那么段、项目、排序项等结构都是原生的，
-              这不需要我们自己来专门写一份结构分割算法了」
+          用户原话：
+            「导出不应该安排在选中的操作条上，而应该是 vault 页选中后
+              菜单栏删除按钮左边增加一个导出」
+            「对于阅读视图来说，导出是没有意义的，根本不需要」
 
-          ⚠️ 它是**全文导出**，不是"复制选中范围" ——
-             所以放在操作条最后一个，并且图标用 download
-             （与"取出整篇"一致），避免和第一个"复制"按钮混淆。
+          ✅ 导出统一放在**文库多选栏**（见 index.html 的
+             `#selection-export` 与 vault.js 的 confirmExportSelected）。
 
-          ⚠️ 不用内联 `data-action="copy"` 的样式类，
-             但保留同一套 `.sel-action` 外观，与既有两个按钮对齐。
+          ⚠️ 不要再把按钮加回这里 —— 阅读页的 md 就是它的**存储本身**，
+             「导出」在语义上是对外分享，那个动作属于文库。
         */
-        actions.appendChild(makeSelAction('md', 'reader.selectMd', 'download',
-            function () { copyMarkdown(); }));
 
         selBarEl.appendChild(actions);
         root.appendChild(selBarEl);
@@ -3305,6 +3569,11 @@
              必须一并落盘，否则重新进入时恢复原样（v0.1.70）。
         */
         saveDocBlocks();
+        /*
+          ⚠️ md 是**本地存储的唯一形态**（v0.1.92）——
+             编辑完必须回写，否则下次打开读回来的是旧 md。
+        */
+        pushMdToNative();
         closeEditSheet();
         clearSelection();
         rerenderKeepingScroll();
@@ -4305,6 +4574,10 @@
         }
 
         saveLabels();
+        /*
+          ⚠️ 标注也改变 md（标题层级、列表、引用注释）→ 必须回写（v0.1.92）。
+        */
+        pushMdToNative();
         closeLabelSheet();
         clearSelection();
         rerenderKeepingScroll();
@@ -4512,6 +4785,8 @@
              正文清空带走 —— 不清会残留"上一篇选中 N 字"。
         */
         clearSelection();
+        /* ⚠️ 丢字自检的基线也必须换掉，否则会拿上一篇的文本去比（v0.1.92） */
+        mdOriginText = '';
 
         /*
           ⚠️ 每次打开都重置正文缓存。
@@ -5675,6 +5950,34 @@
     function dropContainedBlocks(blocks) {
         if (!blocks || blocks.length < 2) return blocks;
 
+        /*
+          ══ ⚠️⚠️ md 解析出来的块**不能**做几何去重（v0.1.92 实测丢字事故）══
+
+          实测：Word2Vec 的标题在 PDF 里是两行
+
+              Efficient Estimation of Word Representations in
+              Vector Space
+
+          提取层产出两个块（正确），从前端走 PDF 路径时，
+          这两块的包围盒互相包含（第二行被第一行的框整个盖住），
+          于是被当成"重复输出"丢掉一个 —— `Vector Space` 永久消失。
+
+          ⚠️ 丢字不可接受。用户要求原话：
+             「pdf 转 md 的时候要确保文本不能少了」
+
+          ✅ 判据：**md 块带 `fromMd` 标记**（见 setMd 路径）。
+             这类块一块一行、已经是我们自己整理过的结果，
+             不存在"原生重复输出"，绝不能去重。
+
+          ⚠️ 为什么不用"有没有坐标"判断：
+             原生 `blocksToJson` 就是**有坐标才输出坐标**（见 1622 行），
+             所以 PDF 路径里也可能有块没有坐标 —— 那样判据会失效。
+             用显式标记，语义明确、不依赖巧合。
+        */
+        if (blocks[0] && blocks[0].fromMd) {
+            return blocks;
+        }
+
         var n = blocks.length;
         var drop = [];
         for (var i = 0; i < n; i++) drop.push(false);
@@ -5746,7 +6049,7 @@
      * @param {Array|null}  outline PDF 自带大纲 [{level,title,page}]；没有则为 null
      * @param {Object|null} meta    行排版元数据 {fonts:[名], lines:[[字体下标,字号x10,页]]}
      */
-    function setText(id, text, outline, meta, blocks) {
+    function setText(id, text, outline, meta, blocks, fromMd) {
         if (!currentDoc || currentDoc.id !== id) {
             trace('reader:text-stale', 'ignored ' + id);
             return;
@@ -5756,9 +6059,27 @@
         }
 
         contentEl.textContent = '';
-        if (!text) {
+        /*
+          ⚠️ md 路径下 `text` 可能是 null（原生只推块）——
+             此时不能当成"提取失败"，正文由 blocks 拼出来。
+        */
+        if (!text && !(fromMd && blocks && blocks.length)) {
             showError();
             return;
+        }
+
+        /*
+          ⚠️ 给 md 块打标记（v0.1.92）——
+             `dropContainedBlocks` 据此**跳过几何去重**。
+             实测事故：标题的第二行 `Vector Space` 被当成"被包含的重复块"
+             丢掉，整句话永久消失。见那个函数里的说明。
+          ⚠️ 标记挂在第一个块上就够了（判据是"这批是不是 md 来的"），
+             但为了调用方不依赖下标，按需给每个块都挂 —— 成本可忽略。
+        */
+        if (fromMd && blocks && blocks.length) {
+            for (var fb = 0; fb < blocks.length; fb++) {
+                if (blocks[fb]) blocks[fb].fromMd = true;
+            }
         }
 
         /*
@@ -5786,14 +6107,62 @@
         */
         if (blocks && blocks.length) {
             /*
-              ⚠️⚠️ 必须先丢掉「被别的块包含」的重复块（见 dropContainedBlocks）。
+              ══ ⚠️⚠️ md 模式：标注**从块里来**，不读 localStorage（v0.1.92）══
 
-                 不丢的后果（用户实测报的一串问题）：
-                   · 同一行多个块层层叠着 → 正文重复、行距错乱
+              用户裁决：
+                「相当于 md 是我们的数据保存结构，但阅读器靠这个原文件来渲染」
 
-                 ⚠️ 必须在这里（**渲染与缓存之前**）过滤，
-                    这样 renderBlocks 与 lastBlocks 用的是**同一份**数据。
+              ✅ md 里带的 `marks` 就是标注的权威来源。
+                 `loadAnnotations()` 已经先把 localStorage 里的旧标注读进来了
+                 （那是编辑器写 md 之前的记录），这里用 md 的覆盖掉。
+
+              ⚠️ 必须 `blocks` 里**有任何一块带 marks** 才覆盖 ——
+                 否则把用户刚加的标注抹掉（md 是我们自己写的，
+                 正常情况下一定有 marks）。
             */
+            if (fromMd) {
+                /*
+                  ⚠️ 记下"读进来时"的正文，作为回写前的丢字基线（v0.1.92）。
+                     见 mdKeepsAllText 的事故说明。
+                */
+                var originParts = [];
+                for (var op = 0; op < blocks.length; op++) {
+                    var ob = blocks[op];
+                    if (!ob) continue;
+                    var ot = String(ob.text || '').replace(/\s+/g, '');
+                    if (ot) originParts.push(ot);
+                }
+                mdOriginText = originParts.join('\n\n');
+
+                var hasMarks = false;
+                for (var mi = 0; mi < blocks.length; mi++) {
+                    if (blocks[mi] && blocks[mi].marks && blocks[mi].marks.length) {
+                        hasMarks = true;
+                        break;
+                    }
+                }
+                if (hasMarks) {
+                    var fresh = {};
+                    for (var mb = 0; mb < blocks.length; mb++) {
+                        var blk = blocks[mb];
+                        if (!blk || !blk.marks || !blk.marks.length) continue;
+                        fresh[blk.line] = blk.marks.map(function (m) {
+                            var o = {
+                                start: m.start,
+                                end: m.end,
+                                label: m.label
+                            };
+                            if (m.field) o.field = m.field;
+                            if (typeof m.ref === 'number') o.ref = m.ref;
+                            return o;
+                        });
+                    }
+                    labels = fresh;
+                    trace('reader:md', 'labels from md: ' +
+                        Object.keys(fresh).length + ' blocks');
+                }
+            }
+
             blocks = dropContainedBlocks(blocks);
         }
 
@@ -5920,6 +6289,20 @@
             bodyEl.scrollTop = 0;
         }
 
+        /*
+          ⚠️ md 路径下 `text` 可能是 null → 从块拼一份用于目录识别。
+             （目录是版式启发式，需要"正文行"这个形态。）
+        */
+        if (text == null) {
+            var joined = [];
+            for (var lb = 0; lb < (docModel.blocks || []).length; lb++) {
+                var bt = String(docModel.blocks[lb].text || '');
+                if (!bt) continue;
+                var seg = bt.split('\n');
+                for (var sg = 0; sg < seg.length; sg++) joined.push(seg[sg]);
+            }
+            text = joined.join('\n');
+        }
         textLines = text.split('\n');
 
         /*
@@ -7507,6 +7890,24 @@ function tocTitleFrom(text) {
         close: close,
         isOpen: isOpen,
         setText: setText,
+        /**
+         * 原生读 `doc.md` 之后推过来的块（v0.1.92）。
+         *
+         * ══ ⚠️⚠️ 与 setText 的分工 ══
+         *
+         *   · `setText`  —— 老路径：PDF 提取出来的 text/outline/meta/blocks。
+         *   · `setMd`    —— 新主路径：从 **doc.md 解析出来**的块，已含标注。
+         *
+         * ✅ md 是本地存储的唯一形态（用户裁决），所以正常情况下
+         *    只有 `setMd` 会被调用；`setText` 只在 md 生成失败时兜底。
+         *
+         * ⚠️ 块里带的 `marks` 要直接写进 `labels` —— 不再从
+         *    localStorage 读标注。否则用户手工编辑 doc.md 之后，
+         *    屏幕上显示的还是旧标注。
+         */
+        setMd: function (id, blocks) {
+            return setText(id, null, null, null, blocks, true);
+        },
         onExtractFailed: onExtractFailed,
         /** 目录（供测试与将来的大纲导出用） */
         getToc: function () {

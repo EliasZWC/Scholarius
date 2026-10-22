@@ -2419,6 +2419,32 @@ object PdfText {
      */
     private fun looksLikeHead(s: String): Boolean {
         if (s.isEmpty()) return false
+        /*
+          ══ ⚠️⚠️ 四位年份**不是**章节编号（v0.1.92 实测丢字）══
+
+          实测 Word2Vec 的参考文献：
+
+              [22] A. Mnih, G. Hinton. Three new graphical models for
+              statistical language modelling. ICML,
+              2007.
+              [23] A. Mnih, G. Hinton. A Scalable Hierarchical …
+
+          `2007.` 被 `NUMBER_ONLY` 当成"编号 2007 + 句点"→ 判定为标题
+          → `flush()` 另起一块 → 这条文献被劈成两段：
+
+              [22] … ICML,        ← 一块
+              2007.               ← 另一块（孤立）
+
+          ⚠️ 丢的不是字，而是**结构**：转 md 后前者是一个条目、
+             后者变成一个孤零零的段落，读者看到的是断开的文献。
+             用户要求：「pdf 转 md 的时候要确保文本不能少了」。
+
+          ✅ 判据：纯 4 位数字（1800–2099）+ 可选句点 → **不是标题**。
+             真正的章节编号极少是四位数，而文献年份几乎总是。
+        */
+        val bareYear = Regex("^\\s*(1[89]\\d{2}|20\\d{2})\\.?\\s*$")
+        if (bareYear.matches(s)) return false
+
         if (NUMBER_ONLY.matches(s)) return true
         if (UPPER_HEAD.matches(s) && s.length >= 3) return true
         if (HEADING_NUM_PREFIX.containsMatchIn(s) && s.length <= TITLE_MAX_CHARS) return true
@@ -2480,9 +2506,44 @@ object PdfText {
             val c = s[i]
             sb.append(c)
             if (i + 1 >= s.length) continue
-            if (ENGLISH_TRAILING_PUNCT.indexOf(c) < 0) continue
 
             val next = s[i + 1]
+
+            /*
+              ══ ⚠️⚠️ 左括号/左引号**前面**也要空格（v0.1.92）══
+
+              用户要求：
+                「pdf 转 md 的时候要确保文本不能少了，然后就是
+                  标点符号后面的空格也不能丢了」
+
+              实测 Word2Vec 的一句话：
+
+                  ... 58.9% accuracy(59.2% on the development part ...
+
+              `accuracy(` 之间应为 `accuracy (`。PDF 里字符是逐个摆的，
+              括号前那个空格有时根本没被提取出来。
+
+              ✅ 判据：**左括号/左引号 + 前一个字符是字母或数字** → 补空格。
+                 `accuracy(` → `accuracy (`
+                 `word"` 不处理（右引号在另一条规则里）
+
+              ⚠️ 不补的例外：
+                 · 函数调用/化学式这类看不出来，但本项目是论文阅读器，
+                   正文里的 `(` 要么是引用 `(Peters et al., 2018)` 要么是
+                   补充说明，两侧都该有空格 —— 补比不补更符合自然语言。
+                 · **数字 + `(`** 常见于编号 `1(a)`，但论文里也可能是
+                   `58.9%(59.2%` —— 后者才对。取"补"（见上面实测样本）。
+            */
+            if ((next == '(' || next == '[') && sb.length >= 2) {
+                val prev = s[i]
+                if (prev.isLetter() && prev.code < 0x2E80) {
+                    sb.append(' ')
+                    continue
+                }
+            }
+
+            if (ENGLISH_TRAILING_PUNCT.indexOf(c) < 0) continue
+
             val nextIsWord = next in 'a'..'z' || next in 'A'..'Z' || next in '0'..'9'
             if (!nextIsWord) continue
 

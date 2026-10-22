@@ -32,6 +32,7 @@
     var selectionCountEl = null;
     var selectionCloseEl = null;
     var selectionDeleteEl = null;
+    var selectionExportEl = null;
 
     /** 全部文献（原生推过来的，未过滤） */
     var docs = [];
@@ -83,6 +84,7 @@
         selectionCountEl = document.getElementById('selection-count');
         selectionCloseEl = document.getElementById('selection-close');
         selectionDeleteEl = document.getElementById('selection-delete');
+        selectionExportEl = document.getElementById('selection-export');
 
         if (!listEl) {
             return;
@@ -183,6 +185,53 @@
         if (selectionDeleteEl) {
             selectionDeleteEl.addEventListener('click', confirmDeleteSelected);
         }
+        if (selectionExportEl) {
+            selectionExportEl.addEventListener('click', confirmExportSelected);
+        }
+    }
+
+    /**
+     * 导出选中的文献（v0.1.92）。
+     *
+     * ══ 用户要求（原话）══
+     *
+     *   「应该是 vault 页选中后菜单栏删除按钮左边增加一个导出，
+     *     来导出整个 md 文件」
+     *   「对于阅读视图来说，导出是没有意义的，根本不需要」
+     *
+     * ✅ 导出的是**已经存在的 doc.md**（含用户的编辑与标注），
+     *    由原生走 SAF 让用户选保存位置（每篇一个文件）。
+     *
+     * ⚠️ 为什么不在网页侧自己生成 md：
+     *    文库页没有正文数据（那是阅读页才请求的），
+     *    而且导出的应该就是**磁盘上那份**，不是另算一份。
+     */
+    function confirmExportSelected() {
+        var ids = selectedIds();
+        if (!ids.length) {
+            exitSelection();
+            return;
+        }
+
+        var bridge = native();
+        if (!bridge || typeof bridge.exportDocs !== 'function') {
+            if (global.ScholariusUI && global.ScholariusUI.toast) {
+                global.ScholariusUI.toast(t('vault.exportUnavailable'));
+            }
+            return;
+        }
+
+        bridge.exportDocs(JSON.stringify(ids));
+    }
+
+    /** 原生报告一批导出完成（v0.1.92） */
+    function onExportFinished(count) {
+        if (global.ScholariusUI && global.ScholariusUI.toast) {
+            global.ScholariusUI.toast(
+                t('vault.exportDone').replace('{n}', String(count || 0)));
+        }
+        exitSelection();
+        return 'export-done';
     }
 
     function enterSelection(id) {
@@ -251,6 +300,10 @@
               ⚠️ 用 disabled 而不是隐藏 —— 位置固定，按钮不会跳。
             */
             selectionDeleteEl.disabled = ids.length === 0;
+        }
+        if (selectionExportEl) {
+            /* ⚠️ 与删除同一判据：没选东西就没有可导出的 */
+            selectionExportEl.disabled = ids.length === 0;
         }
 
         // 同步每张卡片的选中样式
@@ -839,6 +892,7 @@
             return !!selection;
         },
         exitSelection: exitSelection,
+        onExportFinished: onExportFinished,
         /** 供原生/其它模块查当前篇数 */
         count: function () {
             return docs.length;

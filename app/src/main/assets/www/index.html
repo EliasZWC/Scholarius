@@ -354,6 +354,28 @@
 
                     <span class="selection-count" id="selection-count"></span>
 
+                    <!--
+                      ══ 导出（v0.1.92）══
+
+                      用户要求原话：
+                        「应该是 vault 页选中后菜单栏删除按钮左边
+                          增加一个导出，来导出整个 md 文件」
+                        「对于阅读视图来说，导出是没有意义的，根本不需要」
+
+                      ✅ 位置：删除按钮**左边**。
+                      ✅ 图标：Material Icons 的 file_download（24 体系，
+                         与旁边垃圾桶用同一套，不混 960 体系）。
+                      ⚠️ 导出的是**已有的 doc.md**（含用户的编辑与标注），
+                         不是现场重新生成。
+                    -->
+                    <button class="icon-button" type="button" id="selection-export"
+                        aria-label="Export selected" data-i18n-aria-label="selection.export">
+                        <!-- Google Material Icons: file_download -->
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+                        </svg>
+                    </button>
+
                     <button class="icon-button" type="button" id="selection-delete"
                         aria-label="Delete selected" data-i18n-aria-label="selection.delete">
                         <!-- Google Material Icons: delete -->

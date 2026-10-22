@@ -53,6 +53,7 @@ object LibraryStore {
     private const val INDEX_FILE = "index.json"
     private const val PDF_FILE = "doc.pdf"
     private const val THUMB_FILE = "thumb.png"
+    private const val MD_FILE = "doc.md"
 
     /** 缩略图宽度（像素）。列表卡片里显示尺寸很小，够用且省空间 */
     private const val THUMB_WIDTH = 240
@@ -182,6 +183,68 @@ object LibraryStore {
         File(libraryDir(context), id)
 
     fun pdfFile(context: Context, id: String): File = File(docDir(context, id), PDF_FILE)
+
+    /**
+     * 正文的本地存储文件（v0.1.92）。
+     *
+     * ══ ⚠️⚠️ 为什么是 .md，而不是“.txt”或 JSON ══
+     *
+     * 用户裁决（原话）：
+     *   「pdf 转我们的文本时，原本保存的格式我不知道是什么？也许是 json？
+     *     现在直接改为 md 就可以了，就相当于这就是我们本地保存的形式，
+      *     而不是转换为 md」
+     *   「相当于 md 是我们的数据保存结构，但阅读器靠这个原文件来渲染」
+     *
+     * ✅ 所以 `doc.md` 是**唯一的数据源**：
+     *    · 导入时生成；
+     *    · 用户在阅读页编辑/标注后**重写**；
+     *    · 阅读页从它读回来渲染。
+     *    “导出”只是把这个已有文件拷到用户选的位置（见 exportDocs）。
+     *
+     * ⚠️ 但**不能只用 md 纯文本**：
+     *    阅读视图要的是“块 + 标注区间”，而 md 里没有字符区间信息。
+     *    所以文件里用 **HTML 注释**携带标注元数据（详见 MdDoc.kt）：
+     *    渲染器忽略注释，人读也是干净 md。
+     */
+    fun mdFile(context: Context, id: String): File = File(docDir(context, id), MD_FILE)
+
+    /** 读正文 md；文件不存在返回 null（调用方据此触发懒迁移） */
+    fun readMd(context: Context, id: String): String? {
+        val f = mdFile(context, id)
+        return if (!f.exists()) null else try {
+            f.readText()
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /** 写正文 md（原子替换：先写临时文件再改名，避免中途 killed 留下半截文件） */
+    fun writeMd(context: Context, id: String, content: String): Boolean {
+        return try {
+            val dir = docDir(context, id)
+            if (!dir.exists() && !dir.mkdirs()) {
+                false
+            } else {
+                val target = File(dir, MD_FILE)
+                val tmp = File(dir, "$MD_FILE.tmp")
+                tmp.writeText(content)
+                /*
+                  ⚠️ renameTo 在同目录下是原子的；失败则退回直接覆盖。
+                     目标已存在时某些设备上 renameTo 会返回 false，必须先删。
+                */
+                if (target.exists()) target.delete()
+                if (tmp.renameTo(target)) {
+                    true
+                } else {
+                    target.writeText(content)
+                    tmp.delete()
+                    true
+                }
+            }
+        } catch (t: Throwable) {
+            false
+        }
+    }
 
     fun thumbFile(context: Context, id: String): File = File(docDir(context, id), THUMB_FILE)
 

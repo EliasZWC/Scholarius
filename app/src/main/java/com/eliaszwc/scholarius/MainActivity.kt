@@ -411,6 +411,17 @@ class MainActivity : AppCompatActivity() {
                 },
                 onRequestLibrary = { runOnUiThread { pushLibraryToWeb() } },
                 onRequestDocText = { id -> requestDocText(id) },
+                /*
+                  ⚠️ 写 md 可能写几十 KB，不能在 JavaBridge 线程里同步做吗？
+                     可以（它本来就跑在后台线程），但写文件是 IO，
+                     放在单独的 thread 里更稳，且失败要能回报前端。
+                */
+                onSaveDocMd = { id, md ->
+                    thread { saveDocMd(id, md) }
+                },
+                onExportDocs = { idsJson ->
+                    runOnUiThread { exportDocs(idsJson) }
+                },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,
@@ -1061,6 +1072,157 @@ class MainActivity : AppCompatActivity() {
         return uri.lastPathSegment ?: "document.pdf"
     }
 
+    // -----------------------------------------------------------------------
+    // 正文 md（v0.1.92）—— 本地存储的唯一形态
+    // -----------------------------------------------------------------------
+
+    /**
+     * 前端回写完整 md（用户编辑/标注之后）。
+     *
+     * ⚠️ 在后台线程执行（调用方已经 `thread {}`），不阻塞界面。
+     * ⚠️ 失败要告诉前端 —— 否则用户以为标注已保存，重开却发现没了。
+     *    这正是 v0.1.70 那个「改了没保存」bug 的同类。
+     */
+    private fun saveDocMd(id: String, md: String) {
+        val ok = try {
+            LibraryStore.writeMd(this, id, md)
+        } catch (t: Throwable) {
+            Log.w(TAG, "[md] 写入失败 $id", t)
+            false
+        }
+        debugLog("[md] save $id ${md.length} chars -> $ok")
+        evaluateInWeb(
+            "window.ScholariusShell && window.ScholariusShell.docMdSaved(" +
+                "${org.json.JSONObject.quote(id)}, $ok);"
+        )
+    }
+
+    /**
+     * 导出若干文献的 md 到用户选的位置。
+     *
+     * ══ ⚠️⚠️ 为什么用 SAF，不直接写目录 ══
+     *
+     * Android 10+ 的分区存储下，应用不能随意写外部存储；
+     * 而且用户需要**知道文件去了哪**。所以对每篇文献依次弹
+     * `ACTION_CREATE_DOCUMENT`，由用户选择位置与文件名。
+     *
+     * ⚠️ 多选时**逐篇**弹选择器（用户确认了「每篇导出一个 .md」）。
+     *    用队列串行：上一步返回才弹下一步，否则多个 chooser
+     *    同时存在会互相顶掉（Android 只允许一个前台 Activity）。
+     *
+     * ⚠️ 导出的是**已有的 doc.md**，不是重新生成 ——
+     *    这样导出的就是用户看到的内容（含编辑与标注）。
+     */
+    private fun exportDocs(idsJson: String) {
+        val ids: List<String> = try {
+            val arr = org.json.JSONArray(idsJson)
+            (0 until arr.length()).mapNotNull {
+                arr.optString(it).takeIf { s -> s.isNotEmpty() }
+            }
+        } catch (t: Throwable) {
+            debugLog("[export] ids 解析失败：$idsJson")
+            return
+        }
+        if (ids.isEmpty()) return
+
+        pendingExports.clear()
+        pendingExports.addAll(ids)
+        nextExport()
+    }
+
+    /** 待导出的文献 id 队列（逐篇弹 SAF 选择器） */
+    private val pendingExports = ArrayDeque<String>()
+
+    /** 弹下一个导出选择器；队列空了就提示完成 */
+    private fun nextExport() {
+        val id = pendingExports.removeFirstOrNull()
+        if (id == null) {
+            evaluateInWeb(
+                "window.ScholariusShell && window.ScholariusShell.exportFinished(" +
+                    "${exportedCount});"
+            )
+            exportedCount = 0
+            return
+        }
+
+        val md = LibraryStore.readMd(this, id)
+        if (md == null) {
+            /*
+              ⚠️ 没有 md（老数据、尚未打开过）→ 先补生成，再导出。
+                 不能静默跳过：用户选了 10 篇，结果只导出 7 篇，
+                 而且没有任何提示，那是最糟的体验。
+            */
+            thread {
+                PdfText.ensureInitialised(this)
+                val pdf = LibraryStore.pdfFile(this, id)
+                val result = if (pdf.exists()) PdfText.extract(pdf) else null
+                if (result != null) {
+                    val generated = mdFromExtract(result)
+                    LibraryStore.writeMd(this, id, generated)
+                    runOnUiThread { launchExportChooser(id, generated) }
+                } else {
+                    runOnUiThread { nextExport() }
+                }
+            }
+            return
+        }
+        launchExportChooser(id, md)
+    }
+
+    /** 已成功导出的篇数（用于完成提示） */
+    private var exportedCount = 0
+
+    /** 记住这次导出请求的 code，onActivityResult 里用它续队列 */
+    private fun launchExportChooser(id: String, md: String) {
+        val doc = LibraryStore.list(this).firstOrNull { it.id == id }
+        val base = (doc?.title?.takeIf { it.isNotBlank() } ?: id)
+            .replace(Regex("[\\\\/:*?\"<>|\\n\\r]"), "_")
+            .take(80)
+        val name = if (base.endsWith(".md")) base else "$base.md"
+
+        try {
+            /*
+              ⚠️ 内容必须先存进 exportBuffer —— 选择器返回前
+                 我们不能把 md 一直挂在闭包里（onActivityResult 拿不到）。
+            */
+            exportBuffer = md
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "text/markdown"
+                putExtra(Intent.EXTRA_TITLE, name)
+            }
+            startActivityForResult(intent, REQ_EXPORT_MD)
+        } catch (t: Throwable) {
+            debugLog("[export] 无法打开保存对话框：${t.message}")
+            exportBuffer = null
+            nextExport()
+        }
+    }
+
+    /** onActivityResult 里收到导出目标 URI 后写入内容 */
+    private fun writeExportTo(uri: Uri) {
+        val md = exportBuffer
+        exportBuffer = null
+        thread {
+            val ok = try {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write((md ?: "").toByteArray(Charsets.UTF_8))
+                }
+                true
+            } catch (t: Throwable) {
+                Log.w(TAG, "[export] 写入失败", t)
+                false
+            }
+            runOnUiThread {
+                if (ok) exportedCount++
+                nextExport()
+            }
+        }
+    }
+
+    /** 当前这一次导出要写入的内容（SAF 返回后才知道目标 URI） */
+    private var exportBuffer: String? = null
+
     /**
      * 把文献列表推给网页。
      *
@@ -1227,19 +1389,102 @@ class MainActivity : AppCompatActivity() {
      *    若将来发现打开太慢，再引入一个「只缓存最近一篇」的 LRU。
      */
     private fun requestDocText(id: String) {
-        debugLog("[reader] extracting text for $id")
+        debugLog("[reader] loading text for $id")
 
         thread {
             /*
-              ⚠️ PDFBox 要求先用 assets 里的 cmap/glyphlist 初始化资源加载器，
-                 否则解析字体时抛异常。放在后台线程调用 ——
-                 它要读 assets，在主线程不做 IO 是原则，
-                 而且 PdfText.ensureInitialised 自带双检锁，重复调用无开销。
+              ══ ⚠️⚠️ 先读 md，没有再回退到 PDF 提取（v0.1.92）══
+
+              用户裁决：
+                「现在直接改为 md 就可以了，就相当于这就是我们本地保存的形式，
+                  而不是转换为 md」
+                「相当于 md 是我们的数据保存结构，但阅读器靠这个原文件来渲染」
+
+              ✅ 所以 `doc.md` 是**唯一数据源**：
+                 ① 有 doc.md  → 直接解析渲染（快，且反映了用户的编辑/标注）；
+                 ② 没有（老数据）→ 从 PDF 提取，**顺手生成 doc.md**（懒迁移），
+                    再渲染。用户无感，只有第一次打开稍慢。
+
+              ⚠️ 不能每次打开都重新提取 PDF —— 那样用户在阅读页做的编辑
+                 永远回不来（编辑结果只写进 md）。
             */
+            val cached = LibraryStore.readMd(this, id)
+            val parsed: MdDoc.Parsed? = if (cached != null) {
+                try {
+                    MdDoc.parse(cached)
+                } catch (t: Throwable) {
+                    debugLog("[reader] md parse failed for $id: ${t.message}")
+                    null
+                }
+            } else null
+
+            if (parsed != null && parsed.recognised && parsed.blocks.isNotEmpty()) {
+                val blocksJson = mdBlocksToJson(parsed.blocks)
+                debugLog("[reader] md hit ${parsed.blocks.size} blocks for $id")
+                runOnUiThread {
+                    evaluateInWeb(
+                        "window.ScholariusShell && window.ScholariusShell.readerMd(" +
+                            "${org.json.JSONObject.quote(id)}, $blocksJson);"
+                    )
+                }
+                return@thread
+            }
+
+            /* ② 懒迁移：从 PDF 提取，转成 md 存下来 */
             PdfText.ensureInitialised(this)
 
             val file = LibraryStore.pdfFile(this, id)
             val result = if (file.exists()) PdfText.extract(file) else null
+
+            if (result != null) {
+                /*
+                  ══ ⚠️⚠️ 生成 md 之后**必须走 md 路径**（v0.1.92 实测丢字）══
+
+                  之前这里是"写完 md，但仍然把 PDF 的 blocks 推给前端"。
+                  后果：前端走 `dropContainedBlocks` 的几何去重，
+                  把标题第二行 `Vector Space` 当成"被第一行包含的重复块"丢掉
+                  —— 磁盘上的 md 是对的，屏幕上的正文却少一句。
+
+                 用户要求原话：
+                    「pdf 转 md 的时候要确保文本不能少了」
+
+                  ✅ 正确流程：
+                     PDF 提取 → 生成 md → **解析这份 md** → 推给前端。
+                     这样"屏幕上看到的"和"磁盘上存的"是同一份数据，
+                     不存在两条不同的处理链，也就不会出现
+                     "文件对、显示错"这种最难查的问题。
+
+                  ⚠️ 不要在失败时回退成推 PDF 块 ——
+                     那等于把两条链的差异重新引入。md 生成不出就报错，
+                     让用户知道这篇打不开，比"少一段但看起来正常"好。
+                */
+                val md = mdFromExtract(result)
+                val written = try {
+                    LibraryStore.writeMd(this, id, md)
+                } catch (t: Throwable) {
+                    debugLog("[reader] md write failed for $id: ${t.message}")
+                    false
+                }
+                debugLog("[reader] md generated for $id (written=$written)")
+
+                val generated = try {
+                    MdDoc.parse(md)
+                } catch (t: Throwable) {
+                    debugLog("[reader] md parse failed for $id: ${t.message}")
+                    null
+                }
+
+                if (generated != null && generated.blocks.isNotEmpty()) {
+                    val mdBlocksJson = mdBlocksToJson(generated.blocks)
+                    runOnUiThread {
+                        evaluateInWeb(
+                            "window.ScholariusShell && window.ScholariusShell.readerMd(" +
+                                "${org.json.JSONObject.quote(id)}, $mdBlocksJson);"
+                        )
+                    }
+                    return@thread
+                }
+            }
 
             runOnUiThread {
                 /*
@@ -1255,14 +1500,17 @@ class MainActivity : AppCompatActivity() {
                             "${org.json.JSONObject.quote(id)}, null, null, null, null);"
                     )
                 } else {
+                    /*
+                      ⚠️ 走到这里说明 md 生成/解析失败（极罕见）→
+                         退回直接推 PDF 块，至少让用户能读。
+                         但**不回写 md** —— 保留磁盘上可能存在的旧 md。
+                    */
                     val outlineJson = outlineToJson(result.outline)
                     val linesJson = linesToJson(result.lines)
                     val blocksJson = blocksToJson(result.blocks)
                     debugLog(
-                        "[reader] pushing ${result.text.length} chars, " +
-                            "${result.lines.size} lines, " +
-                            "${result.blocks.size} blocks, " +
-                            "${result.outline.size} outline entries for $id"
+                        "[reader] fallback: pushing ${result.text.length} chars, " +
+                            "${result.blocks.size} blocks for $id"
                     )
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.readerText(" +
@@ -1273,6 +1521,91 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * 把提取结果转成 md 文本（v0.1.92，**唯一**的存储形态）。
+     *
+     * ══ 规则（与 www/md.js 一致，别再各写一套）══
+     *
+     *   文章标题（首块 heading）→ `#`
+     *   一级 / 二级 / 三级标题  → `##` / `###` / `####`
+     *   正文                     → 普通段落（**不用列表**）
+     *
+     * ⚠️ 提取阶段还没有用户标注，所以没有子标签/引用注释 ——
+     *    用户标注之后会由前端回写（见 WebAppBridge.saveDocMd）。
+     */
+    private fun mdFromExtract(result: PdfText.Result): String {
+        val blocks = ArrayList<MdDoc.Block>(result.blocks.size)
+        for ((i, b) in result.blocks.withIndex()) {
+            val text = b.text.trim()
+            if (text.isEmpty()) continue
+            blocks.add(
+                MdDoc.Block(
+                    line = blocks.size,
+                    kind = b.kind,
+                    level = b.level,
+                    text = text,
+                    lines = b.lines,
+                    mdPrefix = b.mdHeadingPrefix
+                )
+            )
+        }
+        return MdDoc.serialize(blocks)
+    }
+
+    /**
+     * md 解析出的块 → 前端用的 JS 数组。
+     *
+     * ⚠️ 字段名与 `blocksToJson()` 保持一致（kind/text/level/line/lines），
+     *    这样 `reader.js` 的既有渲染路径**一行都不用改**。
+     * ⚠️ 额外带上 `marks`（标注数组）—— 前端直接从它恢复 `labels`，
+     *    不再读 localStorage。
+     */
+    private fun mdBlocksToJson(blocks: List<MdDoc.Block>): String {
+        if (blocks.isEmpty()) return "[]"
+        val sb = StringBuilder(blocks.size * 96)
+        sb.append('[')
+        for ((i, b) in blocks.withIndex()) {
+            if (i > 0) sb.append(',')
+            sb.append("{\"kind\":").append(org.json.JSONObject.quote(b.kind))
+            sb.append(",\"text\":").append(org.json.JSONObject.quote(b.text))
+            sb.append(",\"level\":").append(b.level)
+            sb.append(",\"line\":").append(b.line)
+            /*
+              ⚠️ listMarker 也要传：前端据此决定作者/文献是列表项，
+                 md 里 `- ` / `1. ` 的记号不能只留在原生侧。
+            */
+            if (b.listMarker.isNotEmpty()) {
+                sb.append(",\"listMarker\":").append(org.json.JSONObject.quote(b.listMarker))
+            }
+            if (b.lines.size > 1) {
+                sb.append(",\"lines\":[")
+                for ((li, l) in b.lines.withIndex()) {
+                    if (li > 0) sb.append(',')
+                    sb.append(org.json.JSONObject.quote(l))
+                }
+                sb.append(']')
+            }
+            if (b.marks.isNotEmpty()) {
+                sb.append(",\"marks\":[")
+                for ((mi, m) in b.marks.withIndex()) {
+                    if (mi > 0) sb.append(',')
+                    sb.append("{\"start\":").append(m.start)
+                    sb.append(",\"end\":").append(m.end)
+                    sb.append(",\"label\":").append(org.json.JSONObject.quote(m.label))
+                    if (m.field != null) {
+                        sb.append(",\"field\":").append(org.json.JSONObject.quote(m.field))
+                    }
+                    if (m.ref != null) sb.append(",\"ref\":").append(m.ref)
+                    sb.append('}')
+                }
+                sb.append(']')
+            }
+            sb.append('}')
+        }
+        sb.append(']')
+        return sb.toString()
     }
 
     /**
@@ -1598,6 +1931,31 @@ class MainActivity : AppCompatActivity() {
         leftForegroundAt = SystemClock.elapsedRealtime()
     }
 
+    /**
+     * 导出 md 的 SAF 回调（v0.1.92）。
+     *
+     * ⚠️ 这个 Activity 的其余文件选择走的是 Activity Result API
+     *    （见 importPdf 上方的说明），但导出是**多次串行**的选择器：
+     *    每一次的"下一步"依赖上一次的返回。用 onActivityResult
+     *    配一个队列最简单，也不必为每篇注册一个 launcher。
+     */
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_EXPORT_MD) return
+
+        val uri = if (resultCode == RESULT_OK) data?.data else null
+        if (uri == null) {
+            /* 用户取消 → 结束这一轮导出（不再弹后面的） */
+            pendingExports.clear()
+            exportBuffer = null
+            exportedCount = 0
+            return
+        }
+        writeExportTo(uri)
+    }
+
+
     override fun onDestroy() {
         // 页面销毁时停掉轮询，否则后台线程还在打 GitHub API
         GitHubAuth.cancel()
@@ -1632,6 +1990,9 @@ class MainActivity : AppCompatActivity() {
             "https://appassets.androidplatform.net/assets/www/index.html"
 
         const val JS_BRIDGE_NAME = "ScholariusNative"
+
+        /** 导出 md 的 startActivityForResult 请求码（v0.1.92） */
+        const val REQ_EXPORT_MD = 4097
 
         /** 网页一直没通知启动动画结束时的兜底时长（网页那边约 2.2s） */
         const val SPLASH_TIMEOUT_MS = 4000L

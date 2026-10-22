@@ -218,6 +218,7 @@
             'reader.selectMd': 'Markdown',
             'reader.mdCopied': 'Markdown Copied.',
             'reader.mdCopyFailed': 'Could Not Copy Markdown.',
+            'reader.mdSaveFailed': 'Could Not Save Document.',
 
             // 编辑表单（v0.1.45）
             'reader.editTitle': 'Edit',
@@ -260,6 +261,9 @@
             'selection.cancel': 'Cancel Selection',
             'selection.delete': 'Delete Selected',
             'selection.count': '{n} Selected',
+            'selection.export': 'Export Selected',
+            'vault.exportDone': 'Exported {n} File(s).',
+            'vault.exportUnavailable': 'Export Is Unavailable.',
 
             'action.cancel': 'Cancel',
             'action.confirm': 'Confirm',
@@ -532,6 +536,7 @@
             'reader.selectMd': 'Markdown',
             'reader.mdCopied': '已复制 Markdown。',
             'reader.mdCopyFailed': '复制 Markdown 失败。',
+            'reader.mdSaveFailed': '文档保存失败。',
 
             // 编辑表单（v0.1.45）
             'reader.editTitle': '编辑',
@@ -574,6 +579,9 @@
             'selection.cancel': '取消选择',
             'selection.delete': '删除所选',
             'selection.count': '已选 {n} 项',
+            'selection.export': '导出所选',
+            'vault.exportDone': '已导出 {n} 个文件。',
+            'vault.exportUnavailable': '当前无法导出。',
 
             'action.cancel': '取消',
             'action.confirm': '确定',
