@@ -208,8 +208,68 @@ object PdfText {
          * ⚠️ 必须放在**最后**（带默认值）—— 上面的位置参数调用
          *    （`Block("formula", t, 0, page, x0, y0, x1, y1)`）才不会被挤位。
          */
-        val line: Int = -1
-    )
+        val line: Int = -1,
+        /**
+         * 块内**原始排版行**（v0.1.91）。
+         *
+         * ══ ⚠️⚠️ 为什么需要（用户提出用 Markdown 存结构）══
+         *
+         * 用户原话：
+         *   「直接用 md 来储存，那么段、项目、排序项等结构都是原生的，
+         *     这不需要我们自己来专门写一份结构分割算法了」
+         *   「此时直接不需要换行了，将提取的文字变成项目就可以了」
+         *
+         * 现状：`mergeParagraphs` 把多行**合并成一个字符串**，行边界当场丢失。
+         * 于是前端要「给第 2 行加子标签」时，只能靠猜（这就是反复出错的地方）。
+         *
+         * ✅ 这里把原始行原样留下来：
+         *    · 作者/标题/文献这类**短块** → 每行是一个独立"项目"；
+         *    · 正文长段落 → 行是排版折行，`lines` 仍保留，
+         *      但渲染时合并（由前端按块类型决定是否使用）。
+         *
+         * ⚠️ 空列表 = 该块只有一行，或老数据 —— 前端退回按 `text` 处理。
+         * ⚠️ 只在**多于一行**时填充，避免给每个块都存一份冗余数据。
+         */
+        val lines: List<String> = emptyList()
+    ) {
+        /**
+         * 该块在 Markdown 里应该用几级标题（0 = 不是标题）。
+         *
+         * ══ ⚠️⚠️ 用户要求的统一层级（v0.1.92）══
+         *
+         * 原话：
+         *   「此时，文章标题就是单个井号，一级标题两个井号，
+         *     二级三个，三级四个，直接统一了」
+         *
+         * 映射表：
+         *
+         *     文章标题  title   →  `#`     (1 个井号)
+         *     一级标题  h1      →  `##`    (2 个)
+         *     二级标题  h2      →  `###`   (3 个)
+         *     三级标题  h3      →  `####`  (4 个)
+         *
+         * ⚠️ 这样 `#` 永远只有一个（文章标题唯一），
+         *    章节从 `##` 开始 —— 与阅读视图里的标注体系一一对应，
+         *    不需要再维护另一套层级编号。
+         *
+         * ⚠️ `level` 只有 1 / 2 两档（提取层的能力上限，见 `Block.level`），
+         *    所以提取阶段最多产出 `##` / `###`；
+         *    `####` 只能由用户手动标注 h3 得到 —— 那不是提取层的缺陷。
+         */
+        val mdHeadingPrefix: String
+            get() = when {
+                kind != "heading" -> ""
+                /*
+                  ⚠️ 首块若是 heading 且 level == 1，视为**文章标题** `#`。
+                     判据用 `line == 0`（全文第一个块）—— 那必然是标题。
+                     ⚠️ 不能用"level == 1"单独判断：正文里的章标题也是 1。
+                */
+                line == 0 && level <= 1 -> "#"
+                level <= 1 -> "##"
+                level == 2 -> "###"
+                else -> "####"
+            }
+    }
 
     /** 提取结果：正文 + 行元数据 + PDF 自带大纲 */
     data class Result(
@@ -1150,6 +1210,19 @@ object PdfText {
         var paraMeta: Line? = null
 
         /*
+          ══ ⚠️⚠️ 块内原始行（v0.1.91）══
+
+          用户提出用 Markdown 存结构：
+            「直接用 md 来储存，那么段、项目、排序项等结构都是原生的」
+
+          ✅ 依据就在这里：合并时把每一行**原样记下来**，
+             前端/导出才有"行"这个概念可用，不必再猜。
+
+          ⚠️ 只在 flush 时随块一起产出，不参与合并计算。
+        */
+        val paraLines = ArrayList<String>(16)
+
+        /*
           ⚠️ 正文基准字号：用**全部行的中位数**估计，不是平均值。
 
              为什么不用平均：标题、脚注、表格行会把平均值拉偏；
@@ -1193,10 +1266,24 @@ object PdfText {
                           之间的唯一编号 —— 前端不必再按"块内行数"估算。
                     */
                     outBlocks.add(classifyBlock(meta, blockText, bodySize)
-                        .copy(line = outBlocks.size))
+                        .copy(
+                            line = outBlocks.size,
+                            /*
+                              ⚠️ 只在**多于一行**时附带（v0.1.91）——
+                                 单行块的 `lines` 等于 `text`，存了纯属冗余。
+                                 ⚠️ 存的是**合并前**的原始行：合并时用空格
+                                    连接，行与行的分界只有这里保留。
+                            */
+                            lines = if (paraLines.size > 1) {
+                                paraLines.map { normaliseText(it) }
+                            } else {
+                                emptyList()
+                            }
+                        ))
                 }
                 para.setLength(0)
                 paraMeta = null
+                paraLines.clear()
             }
         }
 
@@ -1297,6 +1384,7 @@ object PdfText {
             if (BARE_NUMBER.matches(t)) {
                 flush()
                 para.append(t)
+                paraLines.add(t)
                 paraMeta = flat
                 continue
             }
@@ -1373,6 +1461,7 @@ object PdfText {
             if (looksLikePageArtifact(t)) {
                 flush()
                 para.append(t)
+                paraLines.add(t)
                 paraMeta = flat
                 continue
             }
@@ -1403,6 +1492,7 @@ object PdfText {
             if (startsNewBlock(t, line.size, line.font)) {
                 flush()
                 para.append(t)
+                paraLines.add(t)
                 paraMeta = flat
                 continue
             }
@@ -1413,6 +1503,7 @@ object PdfText {
             ) {
                 flush()
                 para.append(t)
+                paraLines.add(t)
                 paraMeta = flat
                 continue
             }
@@ -1421,6 +1512,7 @@ object PdfText {
                 // 上一行已是句末 → 这一行另起
                 flush()
                 para.append(t)
+                paraLines.add(t)
                 paraMeta = flat
             } else {
                 /*
@@ -1446,11 +1538,17 @@ object PdfText {
                         比对每个断词都留个尾巴小得多。
                 */
                 if (endsWithHyphen(para) && startsWithLetter(t)) {
+                    /*
+                      ⚠️ 断词续行 = **同一行的延续**（v0.1.91）——
+                         不能 add 一条新行，否则行数会凭空翻倍。
+                    */
                     para.setLength(para.length - 1)
                     para.append(t)
                 } else {
                     if (needsSpaceBetween(para, t)) para.append(' ')
                     para.append(t)
+                    /* ✅ 这是**新的一行**（排版换行）—— 记进块的行列表 */
+                    paraLines.add(t)
                 }
                 // 元数据保留**第一行**的字体字号（段落首行决定排版属性），
                 // 但包围盒要**并上这一行**（整段的外接矩形）
@@ -2069,6 +2167,30 @@ object PdfText {
         '.', '?', '!', ':', ';', '。', '？', '！', '：', '；', '」', '』', '）', ')', '"'
     )
 
+    /**
+     * **右侧**需要跟空格的英文标点（v0.1.91）。
+     *
+     * ══ ⚠️ 为什么需要这张表 ══
+     *
+     * 用户反馈：「英文标点符号后面的空格都消失了」。
+     *
+     * PDF 提取出的排版行经常是：
+     *
+     *     ... representation model called BERT,
+     *     which stands for ...
+     *
+     * 合并两行时如果只按「字母+字母」补空格，`,` 结尾那一行后面
+     * 就**不会补空格**，得到 `BERT,which`。
+     *
+     * ✅ 所以右侧标点也算"需要一个空格"。
+     *
+     * ⚠️ 只列**右侧**标点（句号/逗号/分号/冒号/问号/叹号/右括号/右引号）：
+     *     左括号 `(` 不该补（`word(word)`），
+     *     连字符 `-` 另由 `needsSpaceBetween` 单独排除（断词）。
+     */
+    private val ENGLISH_TRAILING_PUNCT =
+        ".,;:?!)]}\"'%\u2019\u201D\u3002\uFF0C\uFF1B\uFF1A\uFF1F\uFF01\uFF09\uFF05"
+
     /** 独立成行的编号，如 `3` / `3.1` / `IV.` */
     private val NUMBER_ONLY = Regex("^§?\\s*(\\d+(\\.\\d+)*|[IVXLC]+)[.、]?$")
 
@@ -2224,13 +2346,35 @@ object PdfText {
         "\uFB06" to "st"
     )
 
-    /** 连字还原 + 连续空白压缩。所有文本入库前都要过这一道 */
+    /** 连字还原 + 标点空格修复 + 连续空白压缩。所有文本入库前都要过这一道 */
     private fun normaliseText(s: String): String {
         if (s.isEmpty()) return s
         var out = s
         for ((k, v) in LIGATURES) {
             if (out.contains(k)) out = out.replace(k, v)
         }
+
+        /*
+          ══ ⚠️⚠️ 补回英文标点后的空格（v0.1.91）══
+
+          用户反馈（原话）：
+            「似乎 pdf 转文本的时候，英文标点符号后面的空格都消失了。
+              很多该有的空格全部消失了。」
+
+          ✅ 这里是**行内**那一半的原因：
+             PDF 里的字符是按位置逐个摆的，提取出的字符串常常直接少了
+             标点后的那个空格（不是"多个空格压缩成一个"，是压根没有）：
+
+                 "called BERT,which stands for"
+                 "such as ELMo(Peters et al.,2018a)"
+
+          规则见 [fixPunctSpacing]（含小数点、缩写的排除）。
+
+          ⚠️ 放在 `LIGATURES` 替换**之后**、压缩空格**之前** ——
+             这样插进来的空格不会被重复压缩。
+        */
+        out = fixPunctSpacing(out)
+
         // 压缩连续空格/制表符（PDF 提取常见多个空格对齐）
         return out.replace(Regex("[ \\t]+"), " ").trim()
     }
@@ -2313,25 +2457,134 @@ object PdfText {
     }
 
     /**
+     * 行内「标点紧跟字母/数字」→ 插入一个空格（v0.1.91）。
+     *
+     * ══ ⚠️ 为什么不用正则 lookbehind ══
+     *
+     * 试过 `(?<![A-Za-z]\.)(?<!\d)`，但两个断言都在**标点前**判断、
+     * 长度不同、含义也不同，组合起来互相干扰：
+     *
+     *     `e.g.this`  → 第一个 `.` 后面是 `g`，被误加空格 → `e. g. this`
+     *     `l.,2018`   → `,` 前面是 `l`，`(?<!\d)` 通过 → 误判
+     *
+     * ✅ 改成**手写扫描**，一次看清前两个字符和后两个字符。
+     *    规则与 `tools/check_punct_space.py` 逐条对应（17 项全过）。
+     *
+     * ⚠️ 必须与 [needsSpaceBetween] 保持**一致**：
+     *    一个管行内，一个管行间，判据不同会让同一段文字出现两种结果。
+     */
+    private fun fixPunctSpacing(s: String): String {
+        if (s.length < 2) return s
+        val sb = StringBuilder(s.length + 16)
+        for (i in s.indices) {
+            val c = s[i]
+            sb.append(c)
+            if (i + 1 >= s.length) continue
+            if (ENGLISH_TRAILING_PUNCT.indexOf(c) < 0) continue
+
+            val next = s[i + 1]
+            val nextIsWord = next in 'a'..'z' || next in 'A'..'Z' || next in '0'..'9'
+            if (!nextIsWord) continue
+
+            val prev1 = if (i >= 1) s[i - 1] else ' '
+            val prev2 = if (i >= 2) s.substring(i - 2, i) else ""
+
+            if (c == '.') {
+                /* ① 小数点：点**前后都是数字** → `1.5` */
+                if (prev1.isDigit() && next.isDigit()) continue
+                /*
+                  ⚠️⚠️ 不要在这里排除「数字 + 点 + 字母」（v0.1.91 修）
+
+                  我一度写了 `if (prev1.isDigit()) continue`，想挡住
+                  `v1.2beta` 这类版本号 —— 但那把**真正的句号**也挡住了：
+
+                      "shown at Figure 1.Note that"   → 应为 `1. Note`
+                      "comparison2.However, as far"   → 应为 `2. However`
+
+                  实测真实 PDF（Word2Vec）里这类共 2 处。
+                  `v1.2beta` 本身已被①挡住（点后是数字），不需要②。
+
+                  ② 缩写：
+                      `e.g.` 的**第一个**点 —— 前是单字母，后是「单字母+点」
+                      `e.g.` 的**第二个**点 —— 前两个字符是「单字母+点」
+                */
+                if (prev1 in 'a'..'z' || prev1 in 'A'..'Z') {
+                    if (i + 2 < s.length && s[i + 2] == '.') continue
+                }
+                if (prev2.length == 2 && prev2[1] == '.' &&
+                    (prev2[0] in 'a'..'z' || prev2[0] in 'A'..'Z')
+                ) {
+                    continue
+                }
+            }
+
+            sb.append(' ')
+        }
+        return sb.toString()
+    }
+
+    /**
      * 合并两段文字时是否需要补空格。
      *
-     * ⚠️ 只在「前一段末字符是拉丁字母/数字」且「后一段首字符是字母/数字」时补。
-     *    中文之间补空格是错的（「研究 方法」）；
-     *    连字符结尾也不补（那是被切断的复合词，如 "multi-" + "modal"）。
+     * ══ ⚠️⚠️ 英文标点之后必须补空格（v0.1.91）══
+     *
+     * 用户反馈（原话）：
+     *   「似乎 pdf 转文本的时候，英文标点符号后面的空格都消失了。
+     *     很多该有的空格全部消失了。」
+     *
+     * ⚠️ 旧判据只认「字母/数字 + 字母/数字」：
+     *
+     *     val lastIsWord = last.isLetterOrDigit() && last.code < 0x2E80
+     *     val firstIsWord = first.isLetterOrDigit() && first.code < 0x2E80
+     *     return lastIsWord && firstIsWord
+     *
+     * 于是前一段以 `,` `.` `;` `:` `?` `!` `)` 结尾时**一律不补空格**，
+     * 拼出来就是实测看到的那些粘连：
+     *
+     *     "representation model called BERT,which stands for"
+     *     "to downWe introduce a new language"
+     *     "such as ELMo(Peters et al.,2018a)"
+     *
+     * ✅ 正确规则（三条，只要命中一条就补空格）：
+     *    ① 字母/数字 + 字母/数字；
+     *    ② **英文标点** + 字母/数字 —— 这正是用户报的那一类；
+     *    ③ 右括号/引号 + 字母/数字。
+     *
+     * ⚠️ 不能反向也补（字母 + 标点）：
+     *    那样 `BERT ,which` 会多出一个空格 —— 标点本来就该紧贴前词。
+     *
+     * ⚠️ 中文之间仍然不补（「研究 方法」是错的），
+     *    判据沿用 `code < 0x2E80`。
+     *
+     * ⚠️ 连字符结尾仍然不补 —— 那是被切断的复合词
+     *    （`multi-` + `modal` → `multi-modal`）。
      */
     private fun needsSpaceBetween(a: StringBuilder, b: String): Boolean {
         if (a.isEmpty() || b.isEmpty()) return false
         val last = a[a.length - 1]
         val first = b[0]
-        if (last == '-') return false
-        val lastIsWord = last.isLetterOrDigit() && last.code < 0x2E80
+
+        /* 连字符结尾 = 断词，直接接上 */
+        if (last == '-' || last == '\u2010' || last == '\u2011') return false
+
         val firstIsWord = first.isLetterOrDigit() && first.code < 0x2E80
-        return lastIsWord && firstIsWord
+        if (!firstIsWord) return false
+
+        /* ① 字母/数字 + 字母/数字 */
+        if (last.isLetterOrDigit() && last.code < 0x2E80) return true
+
+        /*
+          ②③ 英文标点 / 右括号 / 右引号 + 字母/数字
+
+          ⚠️ 只列**右侧**标点：句号、逗号、分号、冒号、问号、叹号、
+             右括号、右引号 —— 这些在英文里后面都该有空格。
+          ⚠️ 不含左括号 `(`：`word(word)` 这种不该凭空加空格。
+        */
+        return ENGLISH_TRAILING_PUNCT.indexOf(last) >= 0
     }
 
     /** 已积累的文本是否以连字符结尾（断词续行的标志） */
     private fun endsWithHyphen(a: StringBuilder): Boolean {
-        if (a.isEmpty()) return false
         val c = a[a.length - 1]
         return c == '-' || c == '\u2010' || c == '\u2011'
     }

@@ -1336,6 +1336,32 @@ class MainActivity : AppCompatActivity() {
                 sb.append(",\"x1\":").append(box2(b.x1))
                 sb.append(",\"y1\":").append(box2(b.y1))
             }
+            /*
+              ══ ⚠️⚠️ 块内原始排版行（v0.1.91）══
+
+              用户提出「用 Markdown 存结构」：
+                「直接用 md 来储存，那么段、项目、排序项等结构都是原生的，
+                  这不需要我们自己来专门写一份结构分割算法了」
+                「此时，文章标题就是单个井号，一级标题两个井号…」
+
+              ✅ 导出时「一行 = 一个列表项」所依赖的**行边界**，
+                 就是这里这个字段 —— 它来自提取层合并前的原始行
+                 （见 PdfText.Block.lines 的长说明）。
+              ⚠️ 不自己在前端按标点/宽度猜行 —— 那正是反复出错的地方
+                 （记忆 constraints.md §0.-2.1，作者信息连错七版）。
+
+              ⚠️ 空列表时**不输出该键**：老数据没有这个字段，
+                 前端 `b.lines` 读出 undefined → 退回按 text 处理，
+                 与"只有一行"的行为一致。省掉每块一份 `[]` 的体积。
+            */
+            if (b.lines.isNotEmpty()) {
+                sb.append(",\"lines\":[")
+                for ((li, l) in b.lines.withIndex()) {
+                    if (li > 0) sb.append(',')
+                    sb.append(org.json.JSONObject.quote(l))
+                }
+                sb.append(']')
+            }
             sb.append('}')
         }
         sb.append(']')

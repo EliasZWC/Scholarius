@@ -1433,6 +1433,13 @@
          「谁依赖谁」在加载顺序里就能看出来。
     -->
     <script src="detail.js"></script>
+    <!--
+      ⚠️ md.js（文本 → Markdown）必须在 reader.js **之前** ——
+         reader.js 的"复制为 Markdown"要在加载时就拿到
+         ScholariusMarkdown。它不依赖任何模块（纯函数），
+         放在这里也让"导出规则"独立于阅读器实现，便于单测。
+    -->
+    <script src="md.js"></script>
     <script src="reader.js"></script>
     <script src="login.js"></script>
     <script src="update.js"></script>

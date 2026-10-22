@@ -465,9 +465,13 @@
      *
      * ✅ 现在把 blocks 也存下来，打开时优先用它。
      *
-     * ⚠️ 只存 `line / page / text` 三个字段 ——
-     *    `docModel.blocks` 里可能挂着渲染期的临时字段，
-     *    序列化它们会让存储膨胀且不稳定。
+     * ⚠️ 存 `line / page / text` 三个必备字段，
+     *    **另外带上 `kind` / `level` / `lines`**（v0.1.91）——
+     *    它们不影响重排逻辑，但缺了之后 Markdown 导出会退化成
+     *    "全部按正文处理"（标题没了、作者项不成分行了）。
+     *    `lines` 只在非空时写，避免给每个块存一份冗余空数组。
+     *
+     * ⚠️ 仍然**不存**渲染期的临时字段（那会让存储膨胀且不稳定）。
      */
     function saveDocBlocks() {
         if (!docStoreKey) return;
@@ -477,11 +481,15 @@
             for (var i = 0; i < list.length; i++) {
                 var b = list[i];
                 if (!b) continue;
-                plain.push({
+                var item = {
                     line: b.line,
                     page: (b.page == null) ? null : b.page,
                     text: (b.text == null) ? '' : b.text
-                });
+                };
+                if (b.kind) item.kind = b.kind;
+                if (b.level != null) item.level = b.level;
+                if (b.lines && b.lines.length) item.lines = b.lines;
+                plain.push(item);
             }
             writeStore('scholarius.blocks.' + docStoreKey,
                 JSON.stringify(plain));
@@ -1662,6 +1670,24 @@
         actions.appendChild(makeSelAction('label', 'reader.selectLabel', 'annoText',
             function () { openLabelSheet(); }));
 
+        /*
+          ══ 「复制为 Markdown」（v0.1.91）══
+
+          用户要求（原话）：
+            「我知道了，也许我们保存的形式可以不是纯文本，而是md？」
+            「直接用 md 来储存，那么段、项目、排序项等结构都是原生的，
+              这不需要我们自己来专门写一份结构分割算法了」
+
+          ⚠️ 它是**全文导出**，不是"复制选中范围" ——
+             所以放在操作条最后一个，并且图标用 download
+             （与"取出整篇"一致），避免和第一个"复制"按钮混淆。
+
+          ⚠️ 不用内联 `data-action="copy"` 的样式类，
+             但保留同一套 `.sel-action` 外观，与既有两个按钮对齐。
+        */
+        actions.appendChild(makeSelAction('md', 'reader.selectMd', 'download',
+            function () { copyMarkdown(); }));
+
         selBarEl.appendChild(actions);
         root.appendChild(selBarEl);
 
@@ -1878,6 +1904,147 @@
 
         if (legacyCopy(text)) done();
         else global.ScholariusUI.toast(t('reader.selectCopyFailed'));
+    }
+
+    /**
+     * 全文导出为 Markdown（v0.1.91）。
+     *
+     * ══ ⚠️⚠️ 为什么导出走"块数据"而不是 DOM ══
+     *
+     * DOM 里混着**界面文字**：区域标签段「作者信息」、作者项名
+     * 「Name」「Affiliation」、正文段编号（B1/B2）、引用的 `[12]`…
+     * 直接从 `textContent` 抓会把这些一起导出（本项目为这类问题
+     * 反复踩坑，见 `isNonContentNode`）。
+     *
+     * ✅ 所以从 `docModel.blocks` + `edits` + `labels` 重建 ——
+     *    这三份数据是唯一事实来源（见 docModel 的说明），
+     *    文本是 PDF 原文/用户编辑结果，标注是**字符区间**。
+     *
+     * ══ 块类型的判定顺序 ══
+     *
+     *   ① 用户标注（`labels[line]`）—— 覆盖整块的那一条，优先
+     *   ② 提取层的 `kind` / `level`（原生识别）
+     *   ③ 都没有 → 正文
+     *
+     * ⚠️ 只认**覆盖整块**的标注。部分标注（只标了一行里的几个词）
+     *    仍按提取层类型处理 —— 因为"这一整块是什么"不能用一小段决定，
+     *    那些子标签的语义在 Markdown 里也有别的方式表达（作者项、引用）。
+     */
+    function markdownOfDoc() {
+        var md = global.ScholariusMarkdown;
+        if (!md) return '';
+
+        var list = docModel.blocks || [];
+        if (!list.length) {
+            /* 老文献（没有块数据）→ 整篇一个段落，至少不要空手而归 */
+            return lastText ? String(lastText).replace(/\r\n?/g, '\n') + '\n' : '';
+        }
+
+        /*
+          ══ 作者区：整块覆盖的 author 标注 → 无序列表 ══
+          ══ 文献区：整块覆盖的 reference 标注 → 有序列表 ══
+
+          ⚠️ 用户裁决：
+             「作者项可以直接分为一个个无序列表」
+             「文献用有序列表」
+             「正文当然肯定不能用列表，所以正文编号这个确实还得用算法添加」
+        */
+        var out = [];
+        for (var i = 0; i < list.length; i++) {
+            var b = list[i];
+            var line = b.line;
+            var text = blockTextOf(line);
+            if (!text || !text.replace(/\s+/g, '')) continue;
+
+            var kind = b.kind || 'body';
+            var level = b.level;
+
+            var spans = (typeof line === 'number') ? labels[line] : null;
+            if (spans && spans.length) {
+                var whole = null;
+                for (var s = 0; s < spans.length; s++) {
+                    var sp = spans[s];
+                    if (!sp || !sp.label) continue;
+                    /*
+                      ⚠️ 覆盖整块才算"这一块的类型"。
+                         边界允许 1 个字符的误差（用户拖选时容易差一格）。
+                    */
+                    if ((sp.start || 0) <= 1 && (sp.end || 0) >= text.length - 1) {
+                        whole = sp;
+                        break;
+                    }
+                }
+                if (whole) {
+                    kind = whole.label;
+                    /*
+                      ⚠️ 用户把一段标成 h1/h2/h3 时，层级来自**标签**，
+                         不是提取层。提取层的 level 可能是 1，
+                         但用户标 h2 就该是 `###`。
+                    */
+                    if (whole.label === 'h1') level = 1;
+                    else if (whole.label === 'h2') level = 2;
+                    else if (whole.label === 'h3') level = 3;
+                    else if (whole.label === 'title') kind = 'heading';
+                }
+            }
+
+            out.push({
+                kind: kind,
+                level: level,
+                text: text,
+                lines: b.lines
+            });
+        }
+
+        /*
+          ⚠️ `listKinds` 只影响 **author / reference** 两类：
+             其他类型（abstract / heading…）不该变成列表项。
+        */
+        return md.toMarkdown(out, { listKinds: { author: true, reference: true } });
+    }
+
+    /**
+     * 把整篇导出为 Markdown 并复制到剪贴板。
+     *
+     * ⚠️ 走 `copyText()`（同一套 `navigator.clipboard` → `execCommand` 兜底），
+     *    不复用 `copySelection()` —— 那个读的是"当前选区"，
+     *    而这里要的是**整理过的全文**。
+     */
+    function copyMarkdown() {
+        var text = markdownOfDoc();
+        if (!text) return;
+
+        copyText(text, t('reader.mdCopied'), t('reader.mdCopyFailed'));
+    }
+
+    /**
+     * 通用复制（v0.1.91）。
+     *
+     * @param text     要复制的文本
+     * @param okMsg    成功提示
+     * @param failMsg  失败提示
+     */
+    function copyText(text, okMsg, failMsg) {
+        var done = function () {
+            /*
+              ⚠️ 避让选择操作条（v0.1.91）——
+                 实测点 Markdown 后 toast 正压在操作条上，挡住了按钮。
+                 详见 components.js 里 toast() 的 `avoid` 说明。
+            */
+            global.ScholariusUI.toast(okMsg, selBarEl);
+        };
+
+        try {
+            if (global.navigator.clipboard && global.navigator.clipboard.writeText) {
+                global.navigator.clipboard.writeText(text).then(done, function () {
+                    legacyCopy(text) ? done() : global.ScholariusUI.toast(failMsg);
+                });
+                return;
+            }
+        } catch (e) { /* 落到兜底 */ }
+
+        if (legacyCopy(text)) done();
+        else global.ScholariusUI.toast(failMsg);
     }
 
     /**
@@ -2886,7 +3053,16 @@
                 line: first + n,
                 page: (docModel.blocks && docModel.blocks.length)
                     ? docModel.blocks[0].page : null,
-                text: newTexts[n]
+                text: newTexts[n],
+                /*
+                  ⚠️ 重排出来的段落是**用户编辑的产物**，不是 PDF 块：
+                      没有 `kind`（→ 导出按正文处理，正确）、
+                      没有 `lines`（用户自己写了换行，导出按 text 处理）。
+                      只有这样一个来源，"重排后标题丢了"才是可预期的行为 ——
+                      要恢复标题就重新标注一次，那是标注该干的事。
+                */
+                kind: '',
+                level: 0
             });
         }
 
@@ -3589,15 +3765,26 @@
         /* ② 逐个片段输出：未标注文本 → 词条 → 未标注文本 → … */
         var cursor = 0;
 
+        /**
+         * 输出一段未标注文本。
+         *
+         * ⚠️ 按 `\n` 换行，**每一段输出一个普通行**。
+         *
+         * ══ 为什么不做"同一原行碎片合并"（v0.1.90 结论）══
+         *
+         * 我一度想让它把 `Jacob Devlin` 与 `, Ming-Wei Chang`
+         * 拼回同一视觉行，但那是**做不到**的：
+         *
+         *   · 词条是一个完整的"左右两列"行元素（左 = 项名，右 = 内容），
+         *     它自己就占一整行，无法与别的文字并排；
+         *   · 所以除非放弃"左列项名"的显示，
+         *     否则一行原文被词条切开后，两截必然各占一行。
+         *
+         * ✅ 用户已明确选择「按选区硬切」（见 v0.1.89 的确认），
+         *    所以这就是预期行为，不再尝试合并。
+         */
         function pushPlain(textChunk) {
             if (!textChunk) return;
-            /*
-              ⚠️ 未标注部分可能含 `\n` —— 每一行各输出一个普通行，
-                 保持"原文怎么排就怎么排"的观感。
-              ⚠️ **丢掉纯空白行**（v0.1.88）：两条词条之间只隔一个空格时，
-                 会冒出一个空行，看起来像多了个段落。
-                 作者区域里有意义的换行本来就少，纯空白行都是分隔残留。
-            */
             var rows = textChunk.split('\n');
             for (var r = 0; r < rows.length; r++) {
                 if (!rows[r].replace(/\s+/g, '')) continue;
@@ -5494,7 +5681,27 @@
                 return {
                     line: b.line,
                     page: b.page,
-                    text: b.text || ''
+                    text: b.text || '',
+                    /*
+                      ══ 块内原始排版行 + 类型（v0.1.91）══
+
+                      ⚠️ 为什么要一起留下来：
+                         · `lines` —— Markdown 导出的"一行 = 一个列表项"
+                           依赖它（作者项、文献）；
+                         · `kind` / `level` —— 导出的标题层级依赖它
+                           （`#` / `##` / `###` / `####`）。
+
+                      旧实现在这里只存了 {line, page, text}，
+                      把提取层的类型信息**丢掉了**。
+                      渲染不需要它（v0.1.39 起"无等级"），
+                      但导出需要 —— 两个需求不冲突，留着即可。
+
+                      ⚠️ 缺字段时用安全默认：`kind` 未给 → 空串（= 非标题），
+                         `lines` 未给 → undefined（`toMarkdown` 里退回按 text 处理）。
+                    */
+                    kind: b.kind || '',
+                    level: b.level,
+                    lines: b.lines
                 };
             });
 
@@ -5531,7 +5738,18 @@
                             restored.push({
                                 line: it.line,
                                 page: (it.page == null) ? null : it.page,
-                                text: it.text
+                                text: it.text,
+                                /*
+                                  ⚠️ 存档里没有 kind/level/lines（它只存"重排后的段落结构"，
+                                     见 reflowParagraphs）→ 保持 undefined。
+                                     ⚠️ 不要从 `blocks` 里按行号捞回来：重排之后
+                                        行号与原始块已经不是一一对应了，捞到的是**别的块**的类型。
+                                     导出时缺 kind 就按正文处理 —— 这是正确答案：
+                                     用户重排过的段落本来就该是正文。
+                                */
+                                kind: it.kind || '',
+                                level: it.level,
+                                lines: it.lines
                             });
                         }
                         if (ok && restored.length) {
@@ -7236,6 +7454,20 @@ function tocTitleFrom(text) {
         /** 当前设置（供测试用） */
         getSettings: function () {
             return { size: getSize(), color: getColor(), font: getFont() };
+        },
+        /**
+         * 整篇导出为 Markdown（v0.1.91，供测试与外部调用）。
+         *
+         * ⚠️ 暴露成公开方法而不是只做"复制" ——
+         *    剪贴板在模拟器/自动化里读不回来，
+         *    而**导出的字符串本身**才是要断言的东西。
+         */
+        toMarkdown: function () {
+            return markdownOfDoc();
+        },
+        /** 复制全文 Markdown 到剪贴板 */
+        copyMarkdown: function () {
+            copyMarkdown();
         },
         /**
          * 设字号（供测试与外部调用）。

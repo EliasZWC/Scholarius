@@ -56,7 +56,24 @@
        toast
        ---------------------------------------------------------------------- */
 
-    function toast(message) {
+    /**
+     * 弹一条 toast。
+     *
+     * ══ ⚠️⚠️ `avoid` 参数（v0.1.91）══
+     *
+     * 实测：点「复制为 Markdown」后，toast 正好压在选择操作条上，
+     * 挡住「标注」按钮 —— 用户以为按钮变了。
+     * 只抬高 z-index 不够：那样 toast **盖在**按钮上面，反而更糟
+     * （看得见、点不到）。
+     *
+     * ✅ 所以把 toast 抬到那个元素**上方**（留 8px 间隙）。
+     *    · 只在传入 `avoid` 时计算，其余场景位置完全不变；
+     *    · 元素不可见（宽高为 0）时忽略，避免把 toast 顶到屏幕外。
+     *
+     * @param message  文案
+     * @param avoid    可选，需要避让的元素（通常是 `.sel-bar`）
+     */
+    function toast(message, avoid) {
         var el = document.getElementById('toast');
         if (!el) {
             return;
@@ -65,11 +82,45 @@
         el.textContent = message;
         el.classList.add('is-visible');
 
+        var base = '';
+        if (avoid && avoid.getBoundingClientRect) {
+            var r = avoid.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+                /*
+                  ⚠️ 公式：toast 底边 = 视口高 - 元素顶边 + 间隙。
+                     toast 的 `bottom` 量的是底边距视口底的距离，
+                     所以"在元素上方"= 元素顶边到视口底的距离 + 间隙。
+
+                  ⚠️⚠️ 加 `--toast-h`（= toast 自身高度 + 2 × 位移幅度）：
+                     只加 8px 间隙**不够** —— 实测 toast 仍压住操作条顶部 10px。
+                     原因有两层：
+                       ① 定位量的是 toast 的**底边**，而这里要的是
+                          「toast 整体在元素上方」，必须再减掉自己的高度；
+                       ② `.toast` 的进入动画是 `translateY(8px) → 0`，
+                          过渡期间实际位置比计算值低 8px。
+                     所以常量取「高度 ≈ 30px + 动画位移 8px + 间隙 8px ≈ 46px」，
+                     由 CSS 的 `--toast-h` 给出，JS 只做加法。
+
+                  ⚠️ 夹一个下限：元素占满屏幕时不要算出负数
+                     （负 bottom 会让 toast 跑到屏幕外）。
+                */
+                var gap = parseInt(
+                    global.getComputedStyle(el).getPropertyValue('--toast-h'), 10);
+                if (!isFinite(gap) || gap <= 0) gap = 46;
+                var bottom = Math.max(0, Math.round(
+                    global.innerHeight - r.top + gap));
+                base = 'calc(' + bottom + 'px + var(--safe-bottom))';
+            }
+        }
+        el.style.bottom = base;
+
         if (toastTimer) {
             global.clearTimeout(toastTimer);
         }
         toastTimer = global.setTimeout(function () {
             el.classList.remove('is-visible');
+            /* ⚠️ 收起后必须清掉内联值，否则下一条普通 toast 会沿用这次的位置 */
+            el.style.bottom = '';
         }, 2200);
     }
 

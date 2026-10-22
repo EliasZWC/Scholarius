@@ -215,6 +215,9 @@
             'reader.selectCount': '{n} Characters Selected',
             'reader.selectEdit': 'Edit',
             'reader.selectLabel': 'Label',
+            'reader.selectMd': 'Markdown',
+            'reader.mdCopied': 'Markdown Copied.',
+            'reader.mdCopyFailed': 'Could Not Copy Markdown.',
 
             // 编辑表单（v0.1.45）
             'reader.editTitle': 'Edit',
@@ -526,6 +529,9 @@
             'reader.selectCount': '已选中 {n} 字',
             'reader.selectEdit': '编辑',
             'reader.selectLabel': '标注',
+            'reader.selectMd': 'Markdown',
+            'reader.mdCopied': '已复制 Markdown。',
+            'reader.mdCopyFailed': '复制 Markdown 失败。',
 
             // 编辑表单（v0.1.45）
             'reader.editTitle': '编辑',
