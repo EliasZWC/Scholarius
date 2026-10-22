@@ -3373,7 +3373,30 @@
             var sp = spans[i];
             if (!sp || sp.label !== 'author') return false;
         }
-        return true;
+        /*
+          ══ ⚠️⚠️ 只有**多条**标注才需要按行拆分（v0.1.82）══
+
+          用户反馈：
+            「其他没有添加子标签的也出现了这样的问题」
+
+          真因：v0.1.81 只要块是 author 就走 `makeAuthorLinesEl()`，
+          哪怕块里只有**一条**标注。那条路径会：
+
+            · 按换行切行 —— 但真机上很多块**没有换行符**
+              （PDF 提取时多行被合并成一行，用空格分隔）；
+            · 于是只切出 1 行，`hit` 命中唯一那条标注，
+              整块被当成"那一行"，子标签被应用到整块；
+            · 编号只加一次，其余行为空 → 看起来"超出区域、没有正文编号"。
+
+          ✅ 单条标注的块根本不需要按行拆分 ——
+             它就是一个普通的整块标注（老路径 `makeContentEl` 处理）。
+             只有**同一块里有 2 条以上** author 标注（逐行设子标签）
+             才进入按行渲染。
+
+          ⚠️ 这样"没加子标签的作者区域"完全不受影响，
+             仍走它们一直在用的稳定路径。
+        */
+        return spans.length > 1;
     }
 
     /**
@@ -3395,7 +3418,15 @@
         /* 按换行切行，同时记下每行在整块文本里的起止 */
         var segs = [];
         var pos = 0;
-        var parts = String(fullText).split('\n');
+        /*
+          ⚠️ 先把 CRLF 归一成 LF（v0.1.82）——
+             真机上 PDF 提取出的换行可能是 `\r\n`。
+             不归一的话每行末尾会多留一个 `\r`，
+             行区间与标注区间就差 1 个字符，
+             表现是"相邻行的子标签互串"。
+        */
+        var flatText = String(fullText).replace(/\r\n?/g, '\n');
+        var parts = flatText.split('\n');
         for (var i = 0; i < parts.length; i++) {
             /*
               ⚠️ 变量名**不能**用 `t` —— 它会遮蔽全局的文案函数 `t()`，
@@ -3407,6 +3438,45 @@
             pos += lnText.length + 1;
         }
 
+        /*
+          ══ ⚠️⚠️ 没有换行符时，按标注边界反推行（v0.1.82）══
+
+          真机上很多块**不含换行符** —— PDF 提取把多行合并成一行、
+          用空格分隔。此时 `split('\n')` 只能切出 1 行，
+          多条子标签标注全部挤在同一行里，只有一个能生效。
+
+          ✅ 兜底：把「每条标注的区间」当作一行。
+             这本来就是用户逐行标注时产生的划分，
+             用它是安全的，而且不会凭空猜测换行位置。
+
+          ⚠️ 只在这种情况下启用 —— 有换行符时以换行为准，
+             因为换行是 PDF 的原始结构，比标注区间更可信。
+        */
+        if (segs.length === 1 && spans.length > 1) {
+            var marks = [];
+            for (var mi = 0; mi < spans.length; mi++) {
+                var m = spans[mi];
+                if (!m) continue;
+                var ms = Math.max(0, Math.min(m.start || 0, flatText.length));
+                var me = Math.max(ms, Math.min(m.end || 0, flatText.length));
+                if (me <= ms) continue;
+                marks.push({ start: ms, end: me });
+            }
+            marks.sort(function (x, y) { return x.start - y.start; });
+
+            if (marks.length > 1) {
+                var rebuilt = [];
+                for (var qi = 0; qi < marks.length; qi++) {
+                    rebuilt.push({
+                        text: flatText.slice(marks[qi].start, marks[qi].end),
+                        start: marks[qi].start,
+                        end: marks[qi].end
+                    });
+                }
+                segs = rebuilt;
+            }
+        }
+
         var numbered = false;
 
         for (var s = 0; s < segs.length; s++) {
@@ -3415,17 +3485,53 @@
             /* 空行跳过 —— 不渲染空段落（渲染层既有规则） */
             if (!seg.text.replace(/\s+/g, '')) continue;
 
-            /* 找覆盖这一行的标注（取第一个命中的） */
+            /*
+              ══ ⚠️⚠️ 找覆盖这一行的标注（v0.1.82 改判据）══
+
+              用户反馈：
+                「非姓名行也增加了姓名子标签」
+                「其他没有添加子标签的也出现了这样的问题」
+
+              旧判据是"行区间与标注区间**有交集**就算命中，取第一个"：
+
+                  if (cs < seg.end && ce > seg.start) { hit = cand; break; }
+
+              ⚠️ 这个判据在块里**没有换行符**时会全面失效 ——
+                 整块只有一行，`seg` 就是 `[0, len)`，
+                 所有标注都与它"相交"，于是第一个标注被应用到整行，
+                 而且每一行（如果有）都会拿到同一个标注。
+
+              ✅ 改成**按行中心点归属**：
+                 先看哪个标注完整包含这一行的中心字符，
+                 没有则退回"交集最大"的那个。
+                 中心点落在哪个标注里，那一行就属于哪个标注 ——
+                 这与直观一致，也不会被相邻标注"抢走"。
+
+              ⚠️ 仍保留"交集"作为兜底：某些标注区间可能没覆盖整行
+                 （历史数据、编辑后偏移），交集最大的那个更可能是对的。
+            */
+            var mid = Math.floor((seg.start + seg.end) / 2);
             var hit = null;
+            var bestScore = -1;
+
             for (var k = 0; k < spans.length; k++) {
                 var cand = spans[k];
                 if (!cand) continue;
                 var cs = cand.start || 0;
                 var ce = cand.end || 0;
-                /* 行区间与标注区间有交集即算命中 */
-                if (cs < seg.end && ce > seg.start) {
+                if (ce <= seg.start || cs >= seg.end) continue;
+
+                /* ① 完整包含行中心 → 直接采用，不再比较 */
+                if (cs <= mid && mid < ce) {
                     hit = cand;
                     break;
+                }
+
+                /* ② 退回按交集长度取最大 */
+                var overlap = Math.min(ce, seg.end) - Math.max(cs, seg.start);
+                if (overlap > bestScore) {
+                    bestScore = overlap;
+                    hit = cand;
                 }
             }
 
@@ -3505,13 +3611,24 @@
         var a = Math.max(0, Math.min(start || 0, s.length));
         var b = Math.max(a, Math.min(end || 0, s.length));
 
-        /* 起点往前找到上一个 '\n' 之后 */
-        var ls = s.lastIndexOf('\n', a - 1);
+        /*
+          ⚠️ 必须同时认 `\n` 和 `\r\n`（v0.1.82）——
+             真机上 PDF 提取出的换行可能是 CRLF。
+             只找 `\n` 时行首位置是对的（`\r` 会被留在上一行末尾），
+             但行尾会**多带一个 `\r`**，导致区间与下一行的标注
+             相差 1 个字符，出现"相邻行互串"的现象。
+        */
+        var ls = Math.max(s.lastIndexOf('\n', a - 1), s.lastIndexOf('\r', a - 1));
         ls = (ls < 0) ? 0 : (ls + 1);
 
-        /* 终点往后找到下一个 '\n' 之前 */
-        var le = s.indexOf('\n', b);
-        le = (le < 0) ? s.length : le;
+        /* 终点往后找下一个换行（`\r` 或 `\n`）之前 */
+        var nl = s.indexOf('\n', b);
+        var cr = s.indexOf('\r', b);
+        var le;
+        if (nl < 0 && cr < 0) le = s.length;
+        else if (nl < 0) le = cr;
+        else if (cr < 0) le = nl;
+        else le = Math.min(nl, cr);
 
         return { start: ls, end: le };
     }
