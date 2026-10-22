@@ -3360,6 +3360,162 @@
         return out;
     }
 
+    /**
+     * 这块是不是「按行拆分的作者信息」（v0.1.81）。
+     *
+     * ⚠️ 判据：**全部**标注都是 author。混杂其他标签的块不算，
+     *    否则会把"一块里既有标题又有作者"的情况也拉进来，
+     *    那种情形应该由 `makeLabeledBlock()` 处理。
+     */
+    function isAuthorLineSet(spans) {
+        if (!spans || !spans.length) return false;
+        for (var i = 0; i < spans.length; i++) {
+            var sp = spans[i];
+            if (!sp || sp.label !== 'author') return false;
+        }
+        return true;
+    }
+
+    /**
+     * 渲染「一个块里的多行作者信息」（v0.1.81）。
+     *
+     * 每行输出一个 `<p class="reader-para is-labeled-body is-author-body">`，
+     * 行首按该行的子标签插入项名。
+     *
+     * ⚠️⚠️ 编号（A1/A2…）**整个块只加一次**，加在第一行 ——
+     *     用户在语义上只标了"一个作者条目"，
+     *     三行各加一个编号会显得像三个作者。
+     * ⚠️ 每行都带 `data-line`，编辑/标注的字符偏移才找得到块。
+     * ⚠️ 同一块的多行共享同一个 `data-line`，
+     *     与"部分标注拆残片"的既有约定一致。
+     */
+    function makeAuthorLinesEl(b, spans, fullText, bodyIndex, authorIndex, markTyped) {
+        var frag = document.createDocumentFragment();
+
+        /* 按换行切行，同时记下每行在整块文本里的起止 */
+        var segs = [];
+        var pos = 0;
+        var parts = String(fullText).split('\n');
+        for (var i = 0; i < parts.length; i++) {
+            /*
+              ⚠️ 变量名**不能**用 `t` —— 它会遮蔽全局的文案函数 `t()`，
+                 后面 `t('reader.field.…')` 就会抛 "t is not a function"，
+                 整个渲染直接白屏。这是实测踩到的坑。
+            */
+            var lnText = parts[i];
+            segs.push({ text: lnText, start: pos, end: pos + lnText.length });
+            pos += lnText.length + 1;
+        }
+
+        var numbered = false;
+
+        for (var s = 0; s < segs.length; s++) {
+            var seg = segs[s];
+
+            /* 空行跳过 —— 不渲染空段落（渲染层既有规则） */
+            if (!seg.text.replace(/\s+/g, '')) continue;
+
+            /* 找覆盖这一行的标注（取第一个命中的） */
+            var hit = null;
+            for (var k = 0; k < spans.length; k++) {
+                var cand = spans[k];
+                if (!cand) continue;
+                var cs = cand.start || 0;
+                var ce = cand.end || 0;
+                /* 行区间与标注区间有交集即算命中 */
+                if (cs < seg.end && ce > seg.start) {
+                    hit = cand;
+                    break;
+                }
+            }
+
+            var p = document.createElement('p');
+            p.className = 'reader-para is-labeled-body is-author-body';
+            p.setAttribute('data-label', 'author');
+
+            if (hit && hit.field === 'name') {
+                p.classList.add('is-author-name');
+            }
+
+            if (hit && hit.field) {
+                var fieldEl = document.createElement('span');
+                fieldEl.className = 'reader-author-field';
+                fieldEl.textContent = t('reader.field.' + hit.field);
+                p.appendChild(fieldEl);
+            }
+
+            var valEl = document.createElement('span');
+            valEl.className = 'reader-author-value';
+            valEl.textContent = seg.text;
+            p.appendChild(valEl);
+
+            if (b.page) p.setAttribute('data-page', String(b.page));
+            if (typeof b.line === 'number' && b.line >= 0) {
+                p.setAttribute('data-line', String(b.line));
+            }
+
+            if (!numbered && markTyped) {
+                markTyped(p, 'author');
+                numbered = true;
+            }
+
+            frag.appendChild(p);
+        }
+
+        /* 极端情况：所有行都是空白 → 至少给个空占位，避免块整个消失 */
+        if (!numbered) {
+            var empty = makePlainPara(fullText, b);
+            return empty;
+        }
+
+        return frag;
+    }
+
+    /**
+     * 求「覆盖 [start, end) 的完整行」的字符区间（v0.1.81）。
+     *
+     * ══ 用户要求（原话）══
+     *
+     *   「子标签对应的是段内的行，不是整个段」
+     *   「那肯定是1啊，如果要分段来确定作者名和作者机构的话，
+     *     同一个作者的信息就分开了」
+     *
+     * ══ 背景 ══
+     *
+     * PDF 的一个块里经常含多行：
+     *
+     *     Jacob Devlin, Ming-Wei Chang
+     *     Google AI Language
+     *     {jacobdevlin}@google.com
+     *
+     * 这三行属于**同一个作者**，拆成三个块会把同一个人的信息割裂；
+     * 但子标签（姓名 / 单位 / 邮箱）必须能分别标在其中一行上。
+     *
+     * ✅ 所以把选区向外扩到"最近的两个换行符之间"：
+     *    用户选一行里的任意几个字 → 自动扩展成那一整行。
+     *
+     * ⚠️ 选区跨越多个行时（用户一次拖了几行），扩到最外圈 ——
+     *    这种用法是把几行作为同一个子标签，语义上也合理。
+     * ⚠️ 没有换行符时（单行块）返回整块区间，退化行为和以前一致。
+     *
+     * @return {{start:number, end:number}}
+     */
+    function lineRangeAt(text, start, end) {
+        var s = String(text == null ? '' : text);
+        var a = Math.max(0, Math.min(start || 0, s.length));
+        var b = Math.max(a, Math.min(end || 0, s.length));
+
+        /* 起点往前找到上一个 '\n' 之后 */
+        var ls = s.lastIndexOf('\n', a - 1);
+        ls = (ls < 0) ? 0 : (ls + 1);
+
+        /* 终点往后找到下一个 '\n' 之前 */
+        var le = s.indexOf('\n', b);
+        le = (le < 0) ? s.length : le;
+
+        return { start: ls, end: le };
+    }
+
     function closeLabelSheet() {
         if (!labelSheetEl) return;
         labelSheetEl.classList.remove('is-open');
@@ -3404,14 +3560,39 @@
             var cur = labels[line] || [];
 
             /*
-              ⚠️ 计算**实际要写入**的区间（作者/文献扩展到整块）。
-                 重叠剔除必须用这个区间，而不是用户拖出来的那一小截 ——
-                 否则原来覆盖整块的记录会被保留，与新记录重叠，
-                 同一段文字出现两条标注。
+              ══ ⚠️⚠️ 计算**实际要写入**的区间 ══
+
+              用户要求（v0.1.81）：
+                「子标签对应的是段内的行，不是整个段」
+                「如果要分段来确定作者名和作者机构的话，
+                  同一个作者的信息就分开了」
+
+              ⚠️⚠️ 关键：PDF 的一个块里经常含多行，例如
+
+                  Jacob Devlin, Ming-Wei Chang
+                  Google AI Language
+                  {jacobdevlin}@google.com
+
+               这三行属于**同一个作者**，必须留在同一个块里
+               （拆成三个块会把同一个作者的信息切开）。
+               但子标签（姓名/单位/邮箱）要能分别指定**其中某一行**。
+
+              ✅ 所以作者信息的区间不再是"整块"，而是
+                 **选中文字所覆盖的完整行**：把选区向外扩展到
+                 最近的两个换行符之间。
+
+              ⚠️ 参考文献仍是整段语义（一条文献就是一个条目），
+                 `cite` 保持精确区间。
             */
             var wa = labelSpan.start;
             var wb = labelSpan.end;
-            if (labelDraft === 'author' || labelDraft === 'reference') {
+
+            if (labelDraft === 'author') {
+                var whole = blockTextOf(line);
+                var lr = lineRangeAt(whole, labelSpan.start, labelSpan.end);
+                wa = lr.start;
+                wb = lr.end;
+            } else if (labelDraft === 'reference') {
                 wa = 0;
                 wb = blockTextOf(line).length;
             }
@@ -3561,17 +3742,32 @@
           ⚠️ 用 `labels` 全量扫描而不是只看本次标注的那一段 ——
              用户可能先标了别处，这次标的是第二个人，
              两个人都该进元数据。
+
+          ⚠️⚠️ 必须按**行区间**取文字，不能取整块（v0.1.81）：
+             一个块里可能同时有姓名行、单位行、邮箱行，
+             取整块会把单位邮箱也当成作者名写进元数据。
         */
         var names = [];
         for (var key in labels) {
             if (!Object.prototype.hasOwnProperty.call(labels, key)) continue;
-            var list = labels[key];
-            if (!list || list.length !== 1) continue;
-            var sp = list[0];
-            if (!sp || sp.label !== 'author' || sp.field !== 'name') continue;
+            var line = parseInt(key, 10);
+            if (!isFinite(line)) continue;
 
-            var text = String(blockTextOf(parseInt(key, 10)) || '').trim();
-            if (text) names.push(text.replace(/\s+/g, ' '));
+            var list = labels[key];
+            if (!list || !list.length) continue;
+
+            var full = String(blockTextOf(line) || '');
+            if (!full) continue;
+
+            for (var li = 0; li < list.length; li++) {
+                var sp = list[li];
+                if (!sp || sp.label !== 'author' || sp.field !== 'name') continue;
+
+                var s = Math.max(0, Math.min(sp.start || 0, full.length));
+                var e2 = Math.max(s, Math.min(sp.end || 0, full.length));
+                var text = full.slice(s, e2).replace(/\s+/g, ' ').trim();
+                if (text) names.push(text);
+            }
         }
         if (!names.length) return;
 
@@ -4102,9 +4298,35 @@
         var spans = labels[b.line];
         if (!spans || !spans.length) return '';
 
+        /*
+          ══ ⚠️⚠️ 同一类型重复只算一次（v0.1.81）══
+
+          用户要求：
+            「子标签对应的是段内的行，不是整个段」
+
+          ✅ 一行一个子标签 ⇒ 一个块里会有**多条同类型**的 author 标注：
+
+              {start:0,  end:28, label:'author', field:'name'}
+              {start:29, end:47, label:'author', field:'affiliation'}
+
+          ⚠️ 旧实现把每条都拼进签名，得到 `author|author` ——
+             与相邻单条 `author` 的块（`author`）签名不同，
+             于是这个块被划进独立的 run，
+             跑到"一块多标签"的 `makeLabeledBlock()` 分支里，
+             整个作者区域被拆开。
+
+          ✅ 用**去重后**的标签集合做签名：
+             上面两条都产出 `author`，与相邻块同签名，
+             仍然合并成同一个作者区域。
+        */
+        var seen = {};
         var keys = [];
         for (var i = 0; i < spans.length; i++) {
-            if (spans[i] && spans[i].label) keys.push(spans[i].label);
+            var sp = spans[i];
+            if (!sp || !sp.label) continue;
+            if (seen[sp.label]) continue;
+            seen[sp.label] = true;
+            keys.push(sp.label);
         }
         keys.sort();
         return keys.join('|');
@@ -4172,7 +4394,24 @@
              标签段表达整个区域，退化为"逐块带标签"——
              宁可多显示几个标签，也不能漏掉某个标签的信息。
         */
-        var hasMultiple = spans.length > 1;
+        /*
+          ⚠️ 判据改成"是否有**不同类型**的标签"（v0.1.81）：
+
+             旧判据 `spans.length > 1` 会把"一个块里多条同类型
+             作者行标注"也当成多标签，于是整块被拆散。
+
+             ✅ 现在只有真有两种以上不同标签时才退化，
+                同类型的多条（逐行子标签）走正常路径。
+        */
+        var kindCount = 0;
+        var kindSeen = {};
+        for (var kk = 0; kk < spans.length; kk++) {
+            var ksp = spans[kk];
+            if (!ksp || !ksp.label || kindSeen[ksp.label]) continue;
+            kindSeen[ksp.label] = true;
+            kindCount++;
+        }
+        var hasMultiple = kindCount > 1;
 
         if (hasMultiple) {
             for (var m = 0; m < run.blocks.length; m++) {
@@ -4284,6 +4523,29 @@
         var fullText = blockTextOf(b.line);
 
         var spans = (typeof b.line === 'number') ? labels[b.line] : null;
+
+        /*
+          ══ ⚠️⚠️ 作者信息：一块可能有多条「按行」的子标签（v0.1.81）══
+
+          用户要求：
+            「子标签对应的是段内的行，不是整个段」
+            「如果要分段来确定作者名和作者机构的话，
+              同一个作者的信息就分开了」
+
+          ⚠️ 旧的渲染前提是"一块只有一条标注"（`spans.length === 1`）。
+             一旦同一块里的姓名行、单位行各有一条 author 标注，
+             这个前提就不成立 → 整块退化成普通正文段。
+
+          ✅ 所以作者信息单独走一条路径：
+             按换行拆成若干行，每行按覆盖它的那条标注渲染，
+             未覆盖的行按普通行渲染。
+             整个块的子标签编号（A1/A2…）只算**一次**，
+             因为它们在语义上属于同一个作者条目。
+        */
+        if (spans && spans.length > 0 && isAuthorLineSet(spans)) {
+            return makeAuthorLinesEl(b, spans, fullText, bodyIndex, authorIndex, markTyped);
+        }
+
         var sp = (spans && spans.length === 1) ? spans[0] : null;
 
         /*
