@@ -3563,6 +3563,30 @@
             if (!numbered && markTyped) {
                 markTyped(p, 'author');
                 numbered = true;
+            } else {
+                /*
+                  ══ ⚠️⚠️ 后续行也要挂 gutter，只是**不写编号**（v0.1.83）══
+
+                  用户反馈：
+                    「所有作者信息的第一行都还在作者信息区域内，
+                      但后面的行都出现了超出作者区域且也没有正文段编号」
+
+                  真因：`attachBodyMarker()` 给段落加上 `is-body-para` 后，
+                  该段落变成 flex 容器并带 `margin-left:-16px`；
+                  被它抵消的是 `.reader-para` 的 `padding-left:16px`。
+
+                  ⚠️ 于是同一块里：
+                     第一行  → 有 `is-body-para`，向左让出 gutter；
+                     其余行  → 没有 → 仍按原 padding 起排，
+                                视觉上"缩进偏右"，看起来跑出了作者区域。
+
+                  ✅ 所以每一行都调用 `attachBodyMarker()`，
+                     但只有第一行传真实编号，其余行传空串 ——
+                     竖线与编号列照样占位，文字左边缘完全对齐。
+                     `data-body-no=""` 时 CSS 的 `::before` 不显示内容，
+                     但 `width` 固定，占位不变。
+                */
+                attachBodyMarker(p, '');
             }
 
             frag.appendChild(p);
