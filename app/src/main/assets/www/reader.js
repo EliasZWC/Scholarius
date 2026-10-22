@@ -4411,6 +4411,15 @@
             if (sp.label === 'author' && sp.field) {
                 whole.classList.add('is-author-body');
 
+                /*
+                  ⚠️ 姓名用正常颜色，其他作者项保持淡色（v0.1.79）——
+                     用户要求：「作者姓名不用淡色，用正常颜色，其他作者项不变。」
+                     判定逻辑放 CSS（`.is-author-name`），这里只管挂类。
+                */
+                if (sp.field === 'name') {
+                    whole.classList.add('is-author-name');
+                }
+
                 var fieldEl = document.createElement('span');
                 fieldEl.className = 'reader-author-field';
                 fieldEl.textContent = t('reader.field.' + sp.field);

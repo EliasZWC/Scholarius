@@ -126,6 +126,18 @@
       ⚠️ 必须带主题值 —— 日间的淡黄铺到暗色底上会刺眼。
     */
     --sel-bg: #F2E7C4;
+    /*
+      ══ 界面“选中/提示”底色（v0.1.79）══
+
+      用户要求：
+        「提示色不要用黄色，不符合我们的配色方案，用灰色就好」
+
+      ⚠️ 不能直接改 `--sel-bg` —— 它是**正文字符选区**的高亮色，
+         改了会让阅读页的选中文字变灰，那是另一回事。
+      ✅ 界面元素（标注选项、子标签、引用目标…）单独用一个灰色变量，
+         与整个 App 的中性色系一致。
+    */
+    --ui-active-bg: #E4E4E2;
     /* 悬浮按钮 / 主按钮：反色，跟随当前主题最强的前景色 */
     --fab-bg: var(--nav-active);
     --fab-fg: var(--bg);
@@ -149,6 +161,8 @@
         --success: #7EE2A8;
         /* 暗色下的选中高亮：深棕黄，与 #1E1E1E 明显区分又不刺眼 */
         --sel-bg: #4A3F24;
+        /* 暗色界面选中项：比 surface 亮一档的中性灰 */
+        --ui-active-bg: #333333;
     }
 }
 
@@ -167,6 +181,7 @@
     --danger: #E06C5E;
     --success: #7EE2A8;
     --sel-bg: #4A3F24;
+    --ui-active-bg: #333333;
 }
 
 /* 让原生表单控件（如下拉框）的配色也跟随手动主题 */
@@ -1832,6 +1847,23 @@ body {
 }
 
 /*
+  ══ ⚠️ 作者「姓名」用正常颜色（v0.1.79）══
+
+  用户要求：
+    「作者姓名不用淡色，用正常颜色，其他作者项不变。」
+
+  ⚠️ 名字是整篇文献最关键的身份信息之一，淡色会让它淹没在
+     "单位 / 邮箱"这些次要项里。只把姓名那一行提回正文色，
+     其余作者项（单位、邮箱、联系方式）仍用 `--on-surface-variant`。
+
+  ⚠️ 类名由 JS 按 `field === 'name'` 添加（见 makeContentEl）。
+  ⚠️ 字体族保持不变（Times New Roman）—— 用户只要求改颜色。
+*/
+.reader-para.is-author-body.is-author-name {
+    color: var(--on-surface);
+}
+
+/*
   ══ 作者信息区域：左项名 + 右对齐内容（v0.1.74 / v0.1.75 修）══
 
   用户要求：
@@ -2287,12 +2319,18 @@ body {
 }
 
 /*
-  ⚠️ 选中项用 `--sel-bg`（与选区高亮同色）而不是 --primary：
-     绿色在全站只表示"确认操作"（见 .btn-primary 的注释），
-     用它标"当前选中项"会让用户以为点了就直接生效了。
+  ⚠️ 选中项底色用 `--ui-active-bg`（中性灰）而不是 `--sel-bg`（黄色）：
+
+     用户要求：
+       「提示色不要用黄色，不符合我们的配色方案，用灰色就好」
+
+     ⚠️ `--sel-bg` 是**正文字符选区**的高亮色，属于阅读体验，
+        不能拿来当界面控件的选中色 —— 两者含义不同，也不该同色。
+     ⚠️ 也不用 `--primary`：绿色在全站只表示"确认操作"，
+        用它标"当前选中项"会让用户以为点了就直接生效了。
 */
 .sel-label-item.is-active {
-    background: var(--sel-bg);
+    background: var(--ui-active-bg);
     font-weight: 600;
 }
 
@@ -2379,7 +2417,7 @@ body {
 }
 
 .sel-label-sub-toggle:active {
-    background: var(--sel-bg);
+    background: var(--ui-active-bg);
 }
 
 /*
@@ -2467,7 +2505,11 @@ body {
 }
 
 .sel-cite-item.is-active {
-    background: var(--sel-bg);
+    /*
+      ⚠️ 与 `.sel-label-item.is-active` 统一用中性灰（v0.1.79）——
+         引用目标、子标签都是同一类"界面选中项"，不该出现两种提示色。
+    */
+    background: var(--ui-active-bg);
     font-weight: 600;
 }
 
