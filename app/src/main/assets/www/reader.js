@@ -314,20 +314,26 @@
      */
     function labelSplitsPerBlock(key) {
         /*
-          ⚠️ 参考文献与作者信息都要拆成独立区域（v0.1.72）。
-
-          用户要求：
-            「关于通过段自动识别，我希望作者信息也这么样，
-              可以通过段来自动分别成不同的作者信息区域。」
-
-          理由：一条文献、一位作者都是一个独立条目；
-          合并成一个大区域会丢失它们的个体身份，
-          也无法给每条单独编号。
-
-          ⚠️ 引用标记（`cite`）**不拆** —— 它是行内小标记，
-             夹在句子中间，拆段会把句子劈开。
+          ══ ⚠️⚠️ 只有「参考文献」每块独立成区（v0.1.77 改）══
+ 
+          用户反馈：
+            「当给某个作者信息部分的某一行添加作者信息具体项目的时候，
+              整个作者信息区域直接被破坏了，选择具体项的一行单独成了
+              一个区域，而不是在作者区域中，
+              然后原作者区域的其他行直接成了正文段。」
+ 
+          真因：v0.1.72 把 `author` 也放进了这个函数，
+          于是**每一行**都是独立区域（A1/A2/A3/A4），
+          本来就没有"一个作者区域"可言 —— 再加上子标签，就更像散了。
+ 
+          ✅ 现在 `author` 回到「相邻同标签合并成一个区域」的默认行为：
+             多行作者信息 = 一个 `.reader-label-head` + 多行内容，
+             子标签只是每一行前面的一小段说明文字。
+ 
+          ⚠️ `reference` 仍每块独立：每条文献都是独立的条目，
+             需要各自的 R 编号。
         */
-        return key === 'reference' || key === 'author';
+        return key === 'reference';
     }
 
     /**
@@ -3294,6 +3300,19 @@
             var cur = labels[line] || [];
 
             /*
+              ⚠️ 计算**实际要写入**的区间（作者/文献扩展到整块）。
+                 重叠剔除必须用这个区间，而不是用户拖出来的那一小截 ——
+                 否则原来覆盖整块的记录会被保留，与新记录重叠，
+                 同一段文字出现两条标注。
+            */
+            var wa = labelSpan.start;
+            var wb = labelSpan.end;
+            if (labelDraft === 'author' || labelDraft === 'reference') {
+                wa = 0;
+                wb = blockTextOf(line).length;
+            }
+
+            /*
               ⚠️ 先移除与本次区间**有重叠**的标注 ——
                  一个字符只能属于一个标签。
                  用严格不相交判断（sp.end <= start || sp.start >= end）
@@ -3303,15 +3322,35 @@
             for (var i = 0; i < cur.length; i++) {
                 var sp = cur[i];
                 if (!sp) continue;
-                if (sp.end <= labelSpan.start || sp.start >= labelSpan.end) {
+                if (sp.end <= wa || sp.start >= wb) {
                     kept.push(sp);
                 }
             }
 
             if (labelDraft && labelDraft !== 'body') {
+                /*
+                  ══ ⚠️⚠️ 作者信息：区间强制扩展到**整块**（v0.1.77）══
+
+                  用户反馈：
+                    「给某个作者信息部分的某一行添加作者信息具体项目的
+                      时候，整个作者信息区域直接被破坏了。」
+
+                  真因：用户为了选子标签，只选中了行内的**一部分文字**，
+                  于是 writer 存下 `{start:0, end:10}` —— 这只是块的一截。
+                  `makeContentEl()` 看到区间不覆盖整块，就把它当"部分标注"
+                  处理：拆成 before / marked / after 三段残片，
+                  内容不再带 `is-author-body`，那一行就从作者区域里消失了。
+
+                  ⚠️ 作者信息、参考文献都是**整段语义** ——
+                     一行就是一个条目，不存在"只有半行是单位"这种事。
+                     所以这两类标签一律按整块记录，
+                     用户选了几个字都当作"选中了这一段"。
+
+                  ⚠️ `cite` 相反：它是行内的 `[12]`，必须保留精确区间。
+                */
                 var newSpan = {
-                    start: labelSpan.start,
-                    end: labelSpan.end,
+                    start: wa,
+                    end: wb,
                     label: labelDraft
                 };
                 /*
