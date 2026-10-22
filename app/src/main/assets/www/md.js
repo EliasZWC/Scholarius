@@ -98,6 +98,63 @@
     var REF_START_RE = /^\s*(\[\d+\]|\d+[.、])\s/;
 
     /**
+     * 渲染**带子标签的作者项**（v0.1.91）。嵌套输出。
+     *
+     * 用户原话：「内部的嵌套项则是子标签」
+     * 用户认可的形式：
+     *
+     *     - Jacob Devlin
+     *       - 单位：Google AI Language
+     *       - 邮箱：jacobdevlin@google.com
+     *
+     * ══ ⚠️⚠️ 为什么"父项"是**未标注的普通行**，不是姓名字段 ══
+     *
+     * 实测 Word2Vec 的作者块：
+     *
+     *     Tomas Mikolov Kai Chen                      ← 未标注（父）
+     *     Google Inc., Mountain View, CA …            ← field=affiliation
+     *     tmikolov@google. com kaichen@google. com    ← field=email
+     *
+     * 父项（姓名行）**没有**子标签 —— 用户只给下面两行加了「单位」「邮箱」。
+     * 所以父项 = 按原文顺序排的、没有 `field` 的行。
+     *
+     * ⚠️ 但用户也可能给姓名行加 `field=name`。那种情况下**不能**输出
+     *    `- 姓名：Tomas Mikolov` —— 姓名是父项本身，加标签反而啰嗦。
+     *    ✅ 所以 `name` 作父项内容（不带前缀），其余 field 作子项。
+     *
+     * @param items  [{ text, field }] —— 按原文顺序，field 可为 null
+     * @param labelFn  field → 显示名（i18n）
+     * @return {string[]} 若干行（已含缩进）
+     */
+    function authorNested(items, labelFn) {
+        var lines = [];
+        var children = [];
+
+        for (var i = 0; i < items.length; i++) {
+            var it = items[i];
+            var text = pad(it.text);
+            if (!text) continue;
+            if (!it.field || it.field === 'name') {
+                /*
+                  ⚠️ 遇到新的"无标签行"/姓名字段 → 它自己是一个父项。
+                     ⚠️ 先把上一组的子项挂上去，否则子项会跑到下一个父项下面。
+                */
+                flushChildren();
+                lines.push('- ' + text);
+            } else {
+                children.push('  - ' + labelFn(it.field) + '：' + text);
+            }
+        }
+        flushChildren();
+        return lines;
+
+        function flushChildren() {
+            for (var k = 0; k < children.length; k++) lines.push(children[k]);
+            children = [];
+        }
+    }
+
+    /**
      * 把若干排版行按「条目起始标记」重新分组。
      *
      * ══ ⚠️ 为什么需要 ══
@@ -172,18 +229,46 @@
     /**
      * 把块数组翻译成 Markdown。
      *
-     * @param blocks  形如 `[{ kind, level, text, lines }]`。
+     * @param blocks  形如 `[{ kind, level, text, lines, authorItems }]`。
      *                `kind` 应当是**用户标注生效后**的类型，
-     *                `lines` 可选（提取层给的多行原文）。
-     * @param opts    { listKinds: { author: true, reference: true } }
+     *                `lines` 可选（提取层给的多行原文），
+     *                `authorItems` 可选（`[{text, field}]`，仅作者块用）。
+     * @param opts    { listKinds: {...}, fieldLabel: function(field)->string }
+     *                ⚠️ `fieldLabel` 缺省时直接把 field 当显示名 ——
+     *                    测试里不必准备 i18n。
      * @return Markdown 字符串（以 `\n` 结尾）
      */
     function toMarkdown(blocks, opts) {
         var o = opts || {};
         var listKinds = o.listKinds || {};
+        if (typeof o.fieldLabel !== 'function') {
+            o.fieldLabel = function (f) { return String(f || ''); };
+        }
         var out = [];
         var seenBlock = false;
         var refCounter = 0;
+        /*
+          ══ 连续的 author 块要合成**一个**列表（v0.1.91 实测）══
+
+          实测 Word2Vec：姓名行在块 2，单位/邮箱在块 3（提取层各成一个块）。
+
+              - Tomas Mikolov Kai Chen          ← 块 2 的父项
+              - Affiliation：Google Inc., …      ← 块 3 的子项
+
+          块 3 单独作为一个列表时**没有父项**，渲染出来是两个
+          游离的子项（多缩进一级、看着像孤儿）。
+
+          ✅ 按"连续的 author 块"分组：把它们的 items 拼起来，
+             再一次性做嵌套。父项 = 组内第一个无 field/姓名的行。
+        */
+        var authorBuf = [];
+
+        function flushAuthor() {
+            if (!authorBuf.length) return;
+            var lines = authorNested(authorBuf, o.fieldLabel);
+            for (var k = 0; k < lines.length; k++) out.push(lines[k]);
+            authorBuf = [];
+        }
 
         for (var i = 0; i < blocks.length; i++) {
             var b = blocks[i] || {};
@@ -193,6 +278,9 @@
             var kind = b.kind || 'body';
             var isFirst = !seenBlock;
             seenBlock = true;
+
+            /* ⚠️ 非 author 块出现 → 上一段作者区结束，必须先刷出去 */
+            if (kind !== 'author') flushAuthor();
 
             // ① 标题：一行，不需要列表也不需要换行处理
             var pref = headingPrefix(kind, b.level, isFirst);
@@ -249,13 +337,25 @@
                     }
                 } else {
                     /*
-                      ⚠️ 作者项：一行一项（用户裁决「作者项可以直接分为
-                         一个个无序列表」）。这里**不**做编号分组 ——
-                         「Tomas Mikolov Kai Chen」和「Google Inc., …」
-                         本来就是两个独立的项，都该有 `- `。
+                      ══ 作者项：收集到缓冲区，等这一组结束再统一嵌套（v0.1.91）══
+
+                      用户裁决：
+                        「作者项可以直接分为一个个无序列表」
+                        「内部的嵌套项则是子标签」
+
+                      ⚠️ 子标签来自 `b.authorItems`（reader.js 从
+                         `labels[line]` 的 `field` 算出，按原文顺序）。
+                         没有 `authorItems` 时按"一行一项"补进去，
+                         仍然与相邻块的子项合成同一个列表。
                     */
-                    for (var a = 0; a < rows.length; a++) {
-                        out.push(listItem('- ', [rows[a]], LIST_CONT_WIDTH));
+                    if (b.authorItems && b.authorItems.length) {
+                        for (var q = 0; q < b.authorItems.length; q++) {
+                            authorBuf.push(b.authorItems[q]);
+                        }
+                    } else {
+                        for (var a = 0; a < rows.length; a++) {
+                            authorBuf.push({ text: rows[a], field: null });
+                        }
                     }
                 }
                 continue;
@@ -290,7 +390,52 @@
             if (body) out.push(body);
         }
 
-        return out.length ? out.join('\n\n') + '\n' : '';
+        /*
+          ⚠️ 收尾：最后一组如果是作者区，必须刷出来 ——
+             漏掉这一步会让文末的作者块整个消失（静默丢内容）。
+        */
+        flushAuthor();
+        return joinBlocks(out);
+    }
+
+    /** 一个不可再分的行是不是列表项（`- x` / `1. x` / 缩进的子项） */
+    function isListItemLine(s) {
+        return /^\s*([-*+]|\d+[.)])\s/.test(s);
+    }
+
+    /**
+     * 拼接各"块"：普通块之间空一行，**连续的列表行之间只换行**。
+     *
+     * ══ ⚠️⚠️ 为什么必须区分（v0.1.91 实测踩到）══
+     *
+     * 作者块嵌套输出：
+     *
+     *     - Tomas Mikolov Kai Chen
+     *       - affiliation：Google Inc., …
+     *
+     * 如果用 `\n\n` 连接，Markdown 会把它读成**两个独立列表**，
+     * 子项就不再属于父项（渲染出来是并列的两个项目符号）。
+     * 序号同理：文献每块一个 `1.` `2.`，用 `\n\n` 连接会被
+     * 各自重新编号，全变成 1。
+     *
+     * ✅ 规则：相邻两个单元**都是列表行** → 只用一个 `\n`；
+     *    否则用空行（正文段落之间必须空行，这是 Markdown 语法）。
+     */
+    function joinBlocks(units) {
+        if (!units.length) return '';
+        var s = units[0];
+        for (var i = 1; i < units.length; i++) {
+            var prev = units[i - 1];
+            var cur = units[i];
+            /*
+              ⚠️ 只看两个单元**各自的首行** —— 一个单元可能是多行文本
+                 （正文段落带硬换行），那种后面必须空行。
+            */
+            var both = isListItemLine(prev) && isListItemLine(cur) &&
+                prev.indexOf('\n') < 0;
+            s += (both ? '\n' : '\n\n') + cur;
+        }
+        return s + '\n';
     }
 
     global.ScholariusMarkdown = {

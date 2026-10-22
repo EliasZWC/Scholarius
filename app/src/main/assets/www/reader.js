@@ -1985,6 +1985,31 @@
                     else if (whole.label === 'h2') level = 2;
                     else if (whole.label === 'h3') level = 3;
                     else if (whole.label === 'title') kind = 'heading';
+                } else {
+                    /*
+                      ══ ⚠️⚠️ 没有"整块标注"时的判定（v0.1.91，实测踩到）══
+
+                      作者块的典型标注是**每行一条**（`affiliation` / `email`），
+                      没有任何一条覆盖整块 → 上面那个 `whole` 恒为 null
+                      → 整块退回 `b.kind`（提取层判成 paragraph）
+                      → **作者区变成普通正文，子标签全丢**。
+
+                      ✅ 判据：**这一块的标注是否全部是 author**。
+                         这正是渲染层 `isAuthorLineSet()` 用的同一条判据，
+                         两边保持一致（否则会出现"屏幕上对了、导出错了"）。
+
+                      ⚠️ 只认 author —— 其他标签（h1/reference…）的部分标注
+                         不改这一块的类型，保持"这一块主要是什么"。
+                         部分标注的语义在导出时无处安放，宁可当正文。
+                    */
+                    var allAuthor = true;
+                    for (var t2 = 0; t2 < spans.length; t2++) {
+                        if (!spans[t2] || spans[t2].label !== 'author') {
+                            allAuthor = false;
+                            break;
+                        }
+                    }
+                    if (allAuthor) kind = 'author';
                 }
             }
 
@@ -1992,15 +2017,123 @@
                 kind: kind,
                 level: level,
                 text: text,
-                lines: b.lines
+                lines: b.lines,
+                /*
+                  ⚠️ 作者块的子标签（v0.1.91）—— 只有 author 才需要。
+                     见 authorItemsOf() 的说明。
+                */
+                authorItems: (kind === 'author' && spans)
+                    ? authorItemsOf(text, b.lines, spans)
+                    : null
             });
         }
 
         /*
           ⚠️ `listKinds` 只影响 **author / reference** 两类：
              其他类型（abstract / heading…）不该变成列表项。
+          ⚠️ `fieldLabel` 把 `name` / `affiliation` … 翻成中文显示名，
+             导出的是**给用户看的文档**，不能出现原始键名。
         */
-        return md.toMarkdown(out, { listKinds: { author: true, reference: true } });
+        return md.toMarkdown(out, {
+            listKinds: { author: true, reference: true },
+            fieldLabel: function (f) {
+                return t('reader.field.' + f) || f;
+            }
+        });
+    }
+
+    /**
+     * 把作者块切成 `[{text, field}]`（v0.1.91），供 Markdown 嵌套导出。
+     *
+     * ══ 为什么要单独算，不能直接用 `lines` ══
+     *
+     * 用户给作者块的**某些行**加了子标签（`field`），
+     * 而这些子标签是**字符区间**（`{start, end, field}`），
+     * 与 `lines`（排版折行）不是同一套切法 —— 用户可能只选了
+     * 一行里的一部分。所以：
+     *
+     *   ① 有 `lines`（多行）→ 按行切，逐行判断"这一行是否整行被某条
+     *      带 field 的标注覆盖"；
+     *   ② 没有 `lines` → 按标注区间切（与渲染层 makeAuthorLinesEl 同精神）。
+     *
+     * ══ ⚠️⚠️ 关键：**行偏移必须加上分隔符长度** ══
+     *
+     * `lines` 各行在 `text` 里是用 `\n` 连起来的（提取层用空格连接？
+     * 不 —— `lines` 是原始行，`text` 是**用空格合并**后的结果）。
+     * 所以不能简单累加各行的长度去找偏移：合并时行与行之间插入了
+     * 一个空格，而折行处还可能被去掉/补上。
+     *
+     * ✅ 稳妥做法：**在 text 里按顺序查找每一行的起点**（indexOf from cursor）。
+     *    找不到（行被合并改写）→ 该行按"无子标签"处理，不瞎猜。
+     *
+     * @param text   块文本（已含编辑）
+     * @param lines  原始排版行（可为空）
+     * @param spans  该块的标注数组
+     * @return {Array<{text:string, field:string|null}>|null} 无标注时返回 null
+     */
+    function authorItemsOf(text, lines, spans) {
+        /* 只保留**带 field** 的 author 标注 —— 其余标注与本功能无关 */
+        var marks = [];
+        for (var i = 0; i < spans.length; i++) {
+            var sp = spans[i];
+            if (!sp || sp.label !== 'author' || !sp.field) continue;
+            marks.push({
+                start: Math.max(0, Math.min(sp.start || 0, text.length)),
+                end: Math.max(0, Math.min(sp.end || 0, text.length)),
+                field: sp.field
+            });
+        }
+        if (!marks.length) return null;
+        marks.sort(function (x, y) { return x.start - y.start; });
+
+        var rows = (lines && lines.length > 1) ? lines : cleanLinesOf(text);
+        var items = [];
+        var cursor = 0;
+
+        for (var r = 0; r < rows.length; r++) {
+            var row = String(rows[r] == null ? '' : rows[r]).replace(/^\s+|\s+$/g, '');
+            if (!row) continue;
+
+            /*
+              在 text 里定位这一行。
+              ⚠️ 从 cursor 往后找，保证"第 2 行的第二次出现"不会被当成第 1 行。
+              ⚠️ 找不到（提取层合并时改写过）→ 偏移记为 -1，这条行无子标签。
+            */
+            var at = text.indexOf(row, cursor);
+            if (at < 0) at = text.indexOf(row);
+            var rowEnd = (at < 0) ? -1 : (at + row.length);
+
+            var field = null;
+            if (at >= 0) {
+                for (var m = 0; m < marks.length; m++) {
+                    var mk = marks[m];
+                    /*
+                      ⚠️ "这一行整行被覆盖"才算 —— 用户在行中间只选了几个词时，
+                         整行不能归给那个子标签（那会把半行静默丢掉）。
+                         判据：标注起点 ≤ 行起点 + 1，终点 ≥ 行终点 - 1。
+                    */
+                    if (mk.start <= at + 1 && mk.end >= rowEnd - 1) {
+                        field = mk.field;
+                        break;
+                    }
+                }
+                cursor = rowEnd;
+            }
+
+            items.push({ text: row, field: field });
+        }
+        return items;
+    }
+
+    /** 按 `\n` 拆行、去空行、去首尾空白（与 md.js 的 cleanLines 同义） */
+    function cleanLinesOf(text) {
+        var src = String(text == null ? '' : text).split('\n');
+        var out = [];
+        for (var i = 0; i < src.length; i++) {
+            var s = src[i].replace(/^\s+|\s+$/g, '');
+            if (s) out.push(s);
+        }
+        return out;
     }
 
     /**
