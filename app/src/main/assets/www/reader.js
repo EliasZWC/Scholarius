@@ -3433,99 +3433,31 @@
     function makeAuthorLinesEl(b, spans, fullText, bodyIndex, authorIndex, markTyped) {
         var frag = document.createDocumentFragment();
 
-        /* 按换行切行，同时记下每行在整块文本里的起止 */
-        var segs = [];
-        var pos = 0;
         /*
-          ⚠️ 先把 CRLF 归一成 LF（v0.1.82）——
-             真机上 PDF 提取出的换行可能是 `\r\n`。
-             不归一的话每行末尾会多留一个 `\r`，
-             行区间与标注区间就差 1 个字符，
-             表现是"相邻行的子标签互串"。
-        */
-        var flatText = String(fullText).replace(/\r\n?/g, '\n');
-        var parts = flatText.split('\n');
-        for (var i = 0; i < parts.length; i++) {
-            /*
-              ⚠️ 变量名**不能**用 `t` —— 它会遮蔽全局的文案函数 `t()`，
-                 后面 `t('reader.field.…')` 就会抛 "t is not a function"，
-                 整个渲染直接白屏。这是实测踩到的坑。
-            */
-            var lnText = parts[i];
-            segs.push({ text: lnText, start: pos, end: pos + lnText.length });
-            pos += lnText.length + 1;
-        }
-
-        /*
-          ══ ⚠️⚠️ 没有换行符时，按标注边界反推行（v0.1.82）══
-
-          真机上很多块**不含换行符** —— PDF 提取把多行合并成一行、
-          用空格分隔。此时 `split('\n')` 只能切出 1 行，
-          多条子标签标注全部挤在同一行里，只有一个能生效。
-
-          ✅ 兜底：把「每条标注的区间」当作一行。
-             这本来就是用户逐行标注时产生的划分，
-             用它是安全的，而且不会凭空猜测换行位置。
-
-          ⚠️ 只在这种情况下启用 —— 有换行符时以换行为准，
-             因为换行是 PDF 的原始结构，比标注区间更可信。
-        */
-        if (segs.length === 1 && spans.length > 1) {
-            var marks = [];
-            for (var mi = 0; mi < spans.length; mi++) {
-                var m = spans[mi];
-                if (!m) continue;
-                var ms = Math.max(0, Math.min(m.start || 0, flatText.length));
-                var me = Math.max(ms, Math.min(m.end || 0, flatText.length));
-                if (me <= ms) continue;
-                marks.push({ start: ms, end: me });
-            }
-            marks.sort(function (x, y) { return x.start - y.start; });
-
-            if (marks.length > 1) {
-                var rebuilt = [];
-                for (var qi = 0; qi < marks.length; qi++) {
-                    rebuilt.push({
-                        text: flatText.slice(marks[qi].start, marks[qi].end),
-                        start: marks[qi].start,
-                        end: marks[qi].end
-                    });
-                }
-                segs = rebuilt;
-            }
-        }
-
-        var numbered = false;
-
-        /*
-          ══ ⚠️⚠️ 一个块 = **一个** `<p>`，多行放在它内部（v0.1.86）══
+          ══ ⚠️⚠️ 按 `\n` 切行（v0.1.87 重写）══
 
           用户要求（原话）：
-            「整个段不应该断开啊，你看提示条是断开的。」
-            「明明在元素内一个左对齐元素一个右对齐元素就可以了啊。」
+            「左边一个元素，右边一个元素，右边元素就是作者信息文本（右对齐），
+              左边就是子标签名（左对齐），两个元素行数量和行高保持相等，
+              视觉上完全一样。到时候选中一个姓名，就在左边元素增加一个
+              对应行位置的标识文本，然后姓名的只需要把选中的右边作者信息
+              文本改色就行了，不需要你切分。」
 
-          ⚠️⚠️ 我之前的实现是"每行一个 `<p>`"，于是每行各带一条竖线
-             （`.reader-rule` 的 `align-self: stretch` 只撑满**自己那一段**），
-             三段之间还有段间距 —— 视觉上就是**提示条断成三截**。
+          ✅ 所以不再"推断行的边界" —— 文本里本来就有 `\n`，
+             按它切就是行。每行输出**一对**左右元素，放在同一个 flex 行里：
 
-          ✅ 正确结构：整块只输出一个 `<p>`（带 gutter），
-             行是它内部的普通块级元素：
+              <span class="reader-author-line">      ← flex 行，行高由它决定
+                <span class="reader-author-field">Name</span>   ← 左，可空
+                <span class="reader-author-value">Jacob…</span> ← 右，右对齐
+              </span>
 
-              <p class="reader-para is-body-para is-author-body" data-no="A1">
-                <span class="reader-rule"></span>        ← 一条竖线，撑满整块
-                <span class="reader-author-lines">       ← 右列：所有行
-                  <span class="reader-author-line">
-                    <span class="reader-author-field">Name</span>        ← 左对齐
-                    <span class="reader-author-value">Jacob…</span>      ← 右对齐
-                  </span>
-                  …
-                </span>
-              </p>
-
-          ✅ 每行就是用户说的「一个左对齐元素 + 一个右对齐元素」，
-             用 `.reader-author-line` 的 `display:flex` 排开。
-          ✅ 竖线只有一条，`align-self: stretch` 自动贯穿整个段落 —— 天然连续。
+          ✅ 行高天然相等 —— 左右在**同一个** flex 行里，
+             不是两个各自排版的容器，不存在"对不齐"。
+          ✅ 左边没标签时输出空元素占位，保证列宽与行高一致。
         */
+        var flatText = String(fullText == null ? '' : fullText).replace(/\r\n?/g, '\n');
+        var parts = flatText.split('\n');
+
         var p = document.createElement('p');
         p.className = 'reader-para is-labeled-body is-author-body';
         p.setAttribute('data-label', 'author');
@@ -3535,88 +3467,70 @@
             p.setAttribute('data-line', String(b.line));
         }
 
-        /* 右列容器：装所有行 */
-        var linesEl = document.createElement('span');
-        linesEl.className = 'reader-author-lines';
+        var boxEl = document.createElement('span');
+        boxEl.className = 'reader-author-box';
 
-        for (var s = 0; s < segs.length; s++) {
-            var seg = segs[s];
+        var pos = 0;
+        for (var i = 0; i < parts.length; i++) {
+            var lnText = parts[i];
+            var start = pos;
+            var end = pos + lnText.length;
+            pos = end + 1;
 
-            /* 空行跳过 —— 不渲染空行 */
-            if (!seg.text.replace(/\s+/g, '')) continue;
+            /*
+              ⚠️ 空行仍然输出，保持左右行数一致 ——
+                 跳过的话两边的行序号就对不上，
+                 "在第 2 行放标签"会落到第 3 行去。
+            */
+            var lineEl = document.createElement('span');
+            lineEl.className = 'reader-author-line';
 
             /*
               ══ 找覆盖这一行的标注 ══
 
-              ✅ 按**行中心点归属**：
-                 先看哪个标注完整包含这一行的中心字符，
-                 没有则退回"交集最大"的那个。
-                 中心点落在哪个标注里，那一行就属于哪个标注 ——
-                 这与直观一致，也不会被相邻标注"抢走"。
-            */
-            var mid = Math.floor((seg.start + seg.end) / 2);
-            var hit = null;
-            var bestScore = -1;
+              ✅ 用**字符区间相交**判断：标注区间与这一行的区间有交集，
+                 这一行就属于该标注。区间来自文本坐标，不需要猜。
 
+              ⚠️ 一行只能有一个子标签 → 取交集最大的那个
+                 （同名行被重复标注时，后写的区间更贴合）。
+            */
+            var hit = null;
+            var bestOverlap = 0;
             for (var k = 0; k < spans.length; k++) {
                 var cand = spans[k];
                 if (!cand) continue;
-                var cs = cand.start || 0;
-                var ce = cand.end || 0;
-                if (ce <= seg.start || cs >= seg.end) continue;
-
-                /* ① 完整包含行中心 → 直接采用，不再比较 */
-                if (cs <= mid && mid < ce) {
-                    hit = cand;
-                    break;
-                }
-
-                /* ② 退回按交集长度取最大 */
-                var overlap = Math.min(ce, seg.end) - Math.max(cs, seg.start);
-                if (overlap > bestScore) {
-                    bestScore = overlap;
+                var cs = Math.max(0, cand.start || 0);
+                var ce = Math.max(cs, cand.end || 0);
+                var ov = Math.min(ce, end) - Math.max(cs, start);
+                if (ov > bestOverlap) {
+                    bestOverlap = ov;
                     hit = cand;
                 }
             }
 
-            var lineEl = document.createElement('span');
-            lineEl.className = 'reader-author-line';
             if (hit && hit.field === 'name') {
                 lineEl.classList.add('is-author-name');
             }
 
-            /* 左：项名（只有设了子标签才有） */
-            if (hit && hit.field) {
-                var fieldEl = document.createElement('span');
-                fieldEl.className = 'reader-author-field';
-                fieldEl.textContent = t('reader.field.' + hit.field);
-                lineEl.appendChild(fieldEl);
-            }
+            /* 左：项名（没设子标签时是空占位，保持列宽） */
+            var fieldEl = document.createElement('span');
+            fieldEl.className = 'reader-author-field';
+            fieldEl.textContent = (hit && hit.field)
+                ? t('reader.field.' + hit.field) : '';
+            lineEl.appendChild(fieldEl);
 
-            /* 右：内容 */
+            /* 右：原文，右对齐 */
             var valEl = document.createElement('span');
             valEl.className = 'reader-author-value';
-            valEl.textContent = seg.text;
+            valEl.textContent = lnText;
             lineEl.appendChild(valEl);
 
-            linesEl.appendChild(lineEl);
+            boxEl.appendChild(lineEl);
         }
 
         /* 整块一个编号，加在这一整个 `<p>` 上 */
-        if (markTyped) {
-            markTyped(p, 'author');
-            numbered = true;
-        }
-        p.appendChild(linesEl);
-
-        /*
-          ⚠️ 极端情况：所有行都是空白 → 块会整个消失。
-             此时退回普通段落占位，保证块仍然存在于 DOM 里
-             （否则 `data-line` 找不到，编辑/标注会失效）。
-        */
-        if (!numbered) {
-            return makePlainPara(fullText, b);
-        }
+        if (markTyped) markTyped(p, 'author');
+        p.appendChild(boxEl);
 
         frag.appendChild(p);
         return frag;
