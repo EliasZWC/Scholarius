@@ -2301,6 +2301,109 @@ body {
 }
 
 /*
+  ══ 标注选项 + 行内子标签（v0.1.78）══
+
+  用户要求：
+    「既然 author field 可以出现，那么干脆就直接给划一个子标签区。
+      每个标签选项有子标签的直接在选项最右边增加一个子标签的图标，
+      点击图标之后则展示子标签选项，这样就避免了重叠问题。」
+
+  结构：
+
+      ┌──────────────────────────────┐
+      │ 作者信息                   › │  ← 点 › 展开
+      ├──────────────────────────────┤
+      │   不设置 / 姓名 / 单位 / 邮箱… │  ← 子标签区
+      └──────────────────────────────┘
+      ┌──────────────────────────────┐
+      │ 一级标题                     │  ← 无子标签就不显示图标
+      └──────────────────────────────┘
+*/
+
+/* li 自己不再是纯容器：它可能含"选项 + 子标签区"两行 */
+.sel-label-row {
+    display: block;
+}
+
+/*
+  ⚠️ 选项本身变成 flex 行，让文字和右侧图标分开：
+     `justify-content: space-between` 把图标推到最右边。
+*/
+.sel-label-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+/* 标签名：允许省略号，避免长标签把图标挤出去 */
+.sel-label-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/*
+  子标签图标（一个右尖角）。
+
+  ⚠️ 保持**小**且有足够点击区（32×32）：
+     用户要"点图标展开"，点太小会点不准。
+  ⚠️ 用 `›` 字符而不是 SVG —— 旋转 90° 就变成"展开"的向下箭头，
+     不需要两套图标。
+*/
+.sel-label-sub-toggle {
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    margin: -4px -6px -4px 0;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--on-surface-variant);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    /*
+      ⚠️ 收起时是 `›`（指向右），展开时转 90° 指向下。
+         用 transition 让手感连贯。
+    */
+    transition: transform 0.15s ease;
+}
+
+.sel-label-sub-toggle.is-open {
+    transform: rotate(90deg);
+}
+
+.sel-label-sub-toggle:active {
+    background: var(--sel-bg);
+}
+
+/*
+  子标签展开区。
+
+  ⚠️ 左侧缩进 + 顶部细线：视觉上明确"这是上一项的子级"，
+     而不是又一批平级标签。
+  ⚠️ 不再单独限制高度 —— 它在 `.sel-label-list` 内部，
+     那个容器已经有 `overflow-y: auto`。
+*/
+.sel-sub-list {
+    list-style: none;
+    margin: 2px 0 8px;
+    padding: 4px 0 0 14px;
+    border-top: 1px solid var(--outline);
+}
+
+.sel-sub-list .sel-cite-item {
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+/*
   ══ 引用目标选择器（v0.1.71）══
 
   用户要求：

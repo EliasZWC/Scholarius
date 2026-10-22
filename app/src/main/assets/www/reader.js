@@ -2916,6 +2916,15 @@
     /** 选中的作者项键（null = 不设置） */
     var fieldDraft = null;
 
+    /**
+     * 子标签展开区是否展开（v0.1.78）。
+     *
+     * ⚠️ 单一布尔值而不是"每个标签一个" ——
+     *    用户点开一个标签的子选项时，其他标签的应当自动收起。
+     *    这也符合"点图标展开、再点收起"的手感。
+     */
+    var subOpen = false;
+
     function mountLabelSheet() {
         if (labelSheetEl) return;
 
@@ -2980,6 +2989,13 @@
              应该看到它现在是「单位」还是「未设置」。
         */
         fieldDraft = findExistingAuthorField(labelSpan);
+
+        /*
+          ⚠️ 子标签区默认**收起**（v0.1.78）——
+             用户要求"点击图标之后则展示子标签选项"，
+             所以打开表单时不能自动展开。
+        */
+        subOpen = false;
 
         renderLabelOptions();
 
@@ -3070,6 +3086,11 @@
 
         LABEL_KEYS.forEach(function (key) {
             var li = document.createElement('li');
+            /*
+              ⚠️ 子标签展开时要占满整行，所以 li 自己做纵向容器。
+            */
+            li.className = 'sel-label-row';
+            if (key === labelDraft) li.classList.add('is-active');
 
             var btn = document.createElement('button');
             btn.type = 'button';
@@ -3079,14 +3100,80 @@
             btn.setAttribute('aria-checked', key === labelDraft ? 'true' : 'false');
             if (key === labelDraft) btn.classList.add('is-active');
 
-            btn.textContent = t('reader.label.' + key);
+            /*
+              ══ ⚠️ 标签文字与子标签图标并排（v0.1.78）══
+
+              用户要求：
+                「每个标签选项有子标签的直接在选项最右边增加一个子标签的图标，
+                  点击图标之后则展示子标签选项，这样就避免了重叠问题。」
+
+              ⚠️ 文字用 span 包起来（而不是直接写 btn.textContent）——
+                 否则无法在同一行里再放一个独立的图标按钮。
+            */
+            var nameEl = document.createElement('span');
+            nameEl.className = 'sel-label-name';
+            nameEl.textContent = t('reader.label.' + key);
+            btn.appendChild(nameEl);
+
+            if (labelHasSub(key)) {
+                var subBtn = document.createElement('button');
+                subBtn.type = 'button';
+                subBtn.className = 'sel-label-sub-toggle';
+                subBtn.setAttribute('aria-label', t('reader.fieldPick'));
+                subBtn.setAttribute('aria-expanded',
+                    (key === labelDraft && subOpen) ? 'true' : 'false');
+                if (key === labelDraft && subOpen) subBtn.classList.add('is-open');
+                subBtn.textContent = '›';
+
+                /*
+                  ⚠️ 必须 `stopPropagation` —— 否则点图标会同时触发
+                     外层的"选择该标签"点击，导致每点一次都重渲染整个列表，
+                     展开状态立刻被重置。
+                */
+                subBtn.addEventListener('click', function (ev) {
+                    ev.stopPropagation();
+                    ev.preventDefault();
+                    if (labelDraft !== key) {
+                        labelDraft = key;
+                        fieldDraft = null;
+                    }
+                    subOpen = !subOpen;
+                    renderLabelOptions();
+                });
+
+                btn.appendChild(subBtn);
+            }
 
             btn.addEventListener('click', function () {
-                labelDraft = key;
+                /*
+                  ⚠️ 切换到别的标签时收起子标签 ——
+                     否则「作者信息」的展开状态会跟着跑到别的标签上。
+                */
+                if (labelDraft !== key) {
+                    labelDraft = key;
+                    fieldDraft = null;
+                    subOpen = false;
+                } else {
+                    labelDraft = key;
+                }
                 renderLabelOptions();
             });
 
             li.appendChild(btn);
+
+            /*
+              ══ 子标签展开区（v0.1.78）══
+
+              ⚠️ 只有「当前选中的标签」且 `subOpen` 时才展开 ——
+                 用户要求"点击图标之后展示子标签选项"，
+                 所以它默认收起，不会和标签列表"重叠"。
+              ⚠️ 展开区放在**这一项里面**（li 的子元素），
+                 视觉上就挂在它下面，不会跑到列表末尾去。
+            */
+            if (key === labelDraft && subOpen && labelHasSub(key)) {
+                li.appendChild(buildSubList(key));
+            }
+
             labelListEl.appendChild(li);
         });
 
@@ -3095,62 +3182,79 @@
     }
 
     /**
-     * 渲染「作者项」选择器（v0.1.74）。
+     * 这个标签是否有子标签（v0.1.78）。
+     *
+     * ⚠️ 目前只有「作者信息」有。以后要加别的（比如文献的子类型），
+     *    在这个函数里登记即可，列表渲染代码不用改。
+     */
+    function labelHasSub(key) {
+        return key === 'author';
+    }
+
+    /**
+     * 造「作者项」子标签列表（v0.1.78）。
      *
      * 用户要求：
-     *   「再选中作者信息区域的文本应该为其设置项，项名左对齐，
-     *     但没有添加设置项的时候不显示。」
+     *   「干脆就直接给划一个子标签区……点击图标之后则展示子标签选项」
      *
-     * ✅ 只在 `labelDraft === 'author'` 时显示；
-     *    首项是「不设置」（对应 `fieldDraft === null`）。
-     *
-     * ⚠️ 项名可选 —— 用户把一段话标成作者信息但不想细分时，
-     *    直接确认即可，不强迫他选一项。
+     * ⚠️ 首项是「不设置」—— 用户说过「没有添加设置项的时候不显示」，
+     *    所以子标签是**可选**的，必须能退回"无"。
      */
-    function renderFieldPicker() {
-        if (!fieldPickerEl || !fieldListEl) return;
+    function buildSubList(key) {
+        var box = document.createElement('ul');
+        box.className = 'sel-sub-list';
+        box.setAttribute('role', 'radiogroup');
 
-        if (labelDraft !== 'author') {
-            fieldPickerEl.hidden = true;
-            return;
+        /* ① 「不设置」 */
+        box.appendChild(makeSubItem(t('reader.fieldNone'), fieldDraft == null,
+            function () {
+                fieldDraft = null;
+                renderLabelOptions();
+            }));
+
+        /* ② 各子标签 */
+        if (key === 'author') {
+            AUTHOR_FIELDS.forEach(function (f) {
+                box.appendChild(makeSubItem(t('reader.field.' + f),
+                    fieldDraft === f, function () {
+                        fieldDraft = f;
+                        renderLabelOptions();
+                    }));
+            });
         }
 
-        fieldPickerEl.hidden = false;
-        fieldListEl.textContent = '';
+        return box;
+    }
 
-        /* 首项：“不设置” */
-        var nullLi = document.createElement('li');
-        var nullBtn = document.createElement('button');
-        nullBtn.type = 'button';
-        nullBtn.className = 'sel-cite-item';
-        nullBtn.setAttribute('role', 'radio');
-        nullBtn.setAttribute('aria-checked', fieldDraft == null ? 'true' : 'false');
-        if (fieldDraft == null) nullBtn.classList.add('is-active');
-        nullBtn.textContent = t('reader.fieldNone');
-        nullBtn.addEventListener('click', function () {
-            fieldDraft = null;
-            renderFieldPicker();
-        });
-        nullLi.appendChild(nullBtn);
-        fieldListEl.appendChild(nullLi);
+    /** 造一条子标签选项 */
+    function makeSubItem(text, active, onClick) {
+        var li = document.createElement('li');
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'sel-cite-item';
+        btn.setAttribute('role', 'radio');
+        btn.setAttribute('aria-checked', active ? 'true' : 'false');
+        if (active) btn.classList.add('is-active');
+        btn.textContent = text;
+        btn.addEventListener('click', onClick);
+        li.appendChild(btn);
+        return li;
+    }
 
-        AUTHOR_FIELDS.forEach(function (key) {
-            var li = document.createElement('li');
-            var btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'sel-cite-item';
-            btn.setAttribute('role', 'radio');
-            btn.setAttribute('data-field', key);
-            btn.setAttribute('aria-checked', key === fieldDraft ? 'true' : 'false');
-            if (key === fieldDraft) btn.classList.add('is-active');
-            btn.textContent = t('reader.field.' + key);
-            btn.addEventListener('click', function () {
-                fieldDraft = key;
-                renderFieldPicker();
-            });
-            li.appendChild(btn);
-            fieldListEl.appendChild(li);
-        });
+    /**
+     * 旧的「作者项」选择器 —— 已由行内子标签区取代（v0.1.78）。
+     *
+     * ⚠️ 保留成空函数而不是直接删掉调用点：
+     *    底部区块 `#sheet-field-picker` 仍在 HTML 里，
+     *    这里只负责把它**永远隐藏**，避免残留显示。
+     *
+     * 用户要求变更：
+     *   「既然 author field 可以出现，那么干脆就直接给划一个子标签区。
+     *     每个标签选项有子标签的直接在选项最右边增加一个子标签的图标，
+     *     点击图标之后则展示子标签选项，这样就避免了重叠问题。」
+     */
+    function renderFieldPicker() {
+        if (fieldPickerEl) fieldPickerEl.hidden = true;
     }
 
     /**
