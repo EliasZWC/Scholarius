@@ -2039,6 +2039,30 @@ body {
     */
     white-space: nowrap;
     /*
+      ══ ⚠️⚠️ 项名不可选中（v0.1.89）══
+
+      用户要求：
+        「同时，标识文本应该不可选中」
+
+      ⚠️ 项名（Name / Affiliation / Email …）是**界面文字**，不是原文。
+         用户选中一段文字去标注/编辑时，不该把项名一起框进去：
+
+           · 框选会带上 "Name"，看起来选到了奇怪的东西；
+           · 即使 `selectedTextExact()` 会过滤，
+             原生选择器仍会把它们高亮出来，视觉上很乱；
+           · 复制时会把项名一起复制走（`Range.toString()` 不看 CSS）。
+
+      ✅ 双保险：
+         ① CSS 这里禁止选中（阻止原生选择器高亮）；
+         ② JS 侧 `selectedTextExact()` / `nodeOriginInBlock()` /
+            `offsetWithin()` 都经 `isNonContentNode()` **按节点过滤** ——
+            Android WebView 并不完全遵守 `user-select: none`，
+            长按拖动时仍会把它们框进 Range，所以 JS 过滤是必需的。
+    */
+    -webkit-user-select: none;
+    user-select: none;
+    pointer-events: none;
+    /*
       ⚠️ 与右列一起垂直居中（见 `.reader-author-line` 的 `stretch` 说明）。
     */
     display: flex;

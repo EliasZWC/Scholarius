@@ -2073,9 +2073,7 @@
         }
         if (!segs.length) return null;
 
-        /*
-          ③ 累加：从该块第一段开始，到目标节点之前的所有正文文字。
-        */
+        /* ③ 累加：从该块第一段开始，到目标节点之前的所有正文文字。 */
         var total = 0;
 
         for (var s = 0; s < segs.length; s++) {
@@ -2098,7 +2096,7 @@
                     var r = document.createRange();
                     r.setStart(p, 0);
                     r.setEnd(node, 0);
-                    total += String(r).length;
+                    total += textLenOf(r);
                 } catch (e) {
                     /* 兜底：按纯文本长度算到段首 */
                     total += 0;
@@ -2106,10 +2104,108 @@
                 return { line: line, offset: total };
             }
 
-            total += (p.textContent || '').length;
+            total += textLenOf(p);
         }
 
         return null;
+    }
+
+    /**
+     * 求一个节点（或 Range）里**属于原文**的字符数。
+     *
+     * ══ ⚠️⚠️ 为什么不能用 `textContent.length`（v0.1.89）══
+     *
+     * 用户反馈（原话）：
+     *   「第一个切的很好办，第二个呢？假如第一行选中的文本已经有了子标签，
+     *     当给第二行的选中文本进行标签时就会出错。」
+     *
+     * 作者信息区域的一行长这样：
+     *
+     *     <span class="reader-author-line">
+     *       <span class="reader-author-field">Name</span>      ← 界面文字
+     *       <span class="reader-author-value">Jacob Devlin</span>
+     *     </span>
+     *
+     * `textContent` = `"NameJacob Devlin"` —— **多出 `"Name"` 5 个字符**。
+     *
+     * ⚠️ 后果链：
+     *   ① 偏移累加时多算；
+     *   ② 第二次标注算出的 `[wa, wb)` 落在原文的**错误位置**；
+     *   ③ 于是要么切错、"要么把第一条词条的区间覆盖掉"。
+     *   第一次标注时前面还没有词条，偏移没被污染，所以"第一次总是好的"。
+     *
+     * ✅ 正确做法：跳过 `.reader-author-field`（项名）和
+     *    `.reader-rule`（竖线）这类**非原文**元素，只数正文文字。
+     *
+     * ⚠️ 用 `Range` 求长度而不是 `textContent`，是为了让"到某个节点为止"
+     *    这种部分取值也走同一套规则。
+     */
+    function textLenOf(nodeOrRange) {
+        /* Range：先转成片段再数 */
+        if (nodeOrRange && typeof nodeOrRange.cloneContents === 'function') {
+            return textLenOf(nodeOrRange.cloneContents());
+        }
+        var root = nodeOrRange;
+        if (!root) return 0;
+
+        function walk(n) {
+            if (!n) return 0;
+            if (n.nodeType === 3) {
+                return isNonContentNode(n) ? 0 : (n.nodeValue ? n.nodeValue.length : 0);
+            }
+            if (n.nodeType !== 1 && n.nodeType !== 11) return 0;
+
+            var sum = 0;
+            for (var c = n.firstChild; c; c = c.nextSibling) sum += walk(c);
+            return sum;
+        }
+
+        return walk(root);
+    }
+
+    /**
+     * 这个节点（或其祖先）是不是**界面元素** —— 不属于原文。
+     *
+     * ══ ⚠️⚠️ 唯一判据来源（v0.1.89）══
+     *
+     * 用户反馈（原话）：
+     *   「假如第一行选中的文本已经有了子标签，
+     *     当给第二行的选中文本进行标签时就会出错。」
+     *
+     * 作者信息区域的行是「项名 + 原文」并排：
+     *
+     *     <span class="reader-author-line">
+     *       <span class="reader-author-field">Name</span>      ← 界面
+     *       <span class="reader-author-value">Jacob Devlin</span> ← 原文
+     *     </span>
+     *
+     * `textContent` 会把 `Name` 一起算进去 → 字符偏移整体偏大 →
+     * 第二次标注的区间落到错位置。**第一行标完就有了项名**，
+     * 所以"第一次总是对、第二次就错"。
+     *
+     * ✅ 必须跳过：
+     *      · `.reader-author-field`  作者项名（Name / Affiliation …）
+     *      · `.reader-rule`          左侧竖线占位
+     *      · `.reader-label-head`    区域标题（「作者信息」）
+     *
+     * ⚠️ 任何"给 DOM 加界面文字"的地方，都要同步加到这张表里，
+     *    否则偏移就会错。`textLenOf` 与 `offsetWithin` 共用它，
+     *    保证两处规则永远一致。
+     */
+    function isNonContentNode(n) {
+        if (!n) return false;
+        var el = (n.nodeType === 1) ? n : n.parentNode;
+        while (el && el !== contentEl) {
+            if (el.classList) {
+                if (el.classList.contains('reader-author-field') ||
+                    el.classList.contains('reader-rule') ||
+                    el.classList.contains('reader-label-head')) {
+                    return true;
+                }
+            }
+            el = el.parentNode;
+        }
+        return false;
     }
 
 
@@ -2192,7 +2288,7 @@
                 inRange = false;
             }
 
-            if (inRange && !isInsideLabelTag(cur, root)) {
+            if (inRange && !isInsideLabelTag(cur, root) && !isNonContentNode(cur)) {
                 /* 截出 Range 与该文本节点实际重叠的那一段 */
                 var value = cur.nodeValue || '';
                 var start = 0;
@@ -2469,7 +2565,28 @@
                 break;
             }
 
-            if (!isInsideLabelTag(cur, el)) {
+            /*
+              ══ ⚠️⚠️ 必须跳过**所有非原文**的文本（v0.1.89）══
+
+              用户反馈：
+                「第二个呢？假如第一行选中的文本已经有了子标签，
+                  当给第二行的选中文本进行标签时就会出错。」
+
+              作者信息区域的行里有两类文字：
+
+                <span class="reader-author-line">
+                  <span class="reader-author-field">Name</span>     ← 界面文字
+                  <span class="reader-author-value">Jacob…</span>   ← 原文
+                </span>
+
+              ⚠️ 旧实现只跳过 `isInsideLabelTag`（区域标题），
+                 于是项名 `Name` 被算进偏移 → 后续每一行的起点都偏移，
+                 标注区间落到错位置，甚至覆盖掉已有的词条。
+
+              ✅ 统一交给 `isNonContentNode` 判断，
+                 与 `textLenOf()` 用**同一套规则**。
+            */
+            if (!isInsideLabelTag(cur, el) && !isNonContentNode(cur)) {
                 total += cur.nodeValue ? cur.nodeValue.length : 0;
             }
 
