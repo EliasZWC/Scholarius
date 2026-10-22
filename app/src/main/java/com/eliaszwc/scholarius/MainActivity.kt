@@ -422,6 +422,29 @@ class MainActivity : AppCompatActivity() {
                 onExportDocs = { idsJson ->
                     runOnUiThread { exportDocs(idsJson) }
                 },
+                /*
+                  ⚠️ 这两个是**同步/异步分界**：
+                    · semanticModelReady 只是查文件是否存在，很快，
+                      可以在 JS 线程直接返回（文件 stat 级开销）。
+                    · semanticDownloadModel 要几十秒，必须立即返回、
+                      完成后回调网页。
+
+                  ⚠️⚠️ 必须写 `this@MainActivity` ——
+                     这里的 lambda 是在 `webView.apply { ... }` 之类的
+                     接收者作用域里，`this` 是 **WebView**，不是 Context。
+                     实测报错：「actual type is WebView, but Context was expected」。
+                */
+                onSemanticModelReady = { SemanticModel.isReady(this@MainActivity) },
+                onSemanticDownloadModel = {
+                    SemanticModel.download(this@MainActivity) { ok ->
+                        runOnUiThread {
+                            evaluateInWeb(
+                                "window.ScholariusSemantic && " +
+                                    "window.ScholariusSemantic.downloadFinished($ok);"
+                            )
+                        }
+                    }
+                },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,

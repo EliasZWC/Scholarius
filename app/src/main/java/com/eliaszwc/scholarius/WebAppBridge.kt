@@ -48,6 +48,10 @@ class WebAppBridge(
     private val onSaveDocMd: (String, String) -> Unit,
     /** 导出若干文献的 md 到用户选择的位置（v0.1.92） */
     private val onExportDocs: (String) -> Unit,
+    /** 语义模型是否在本地（v0.1.94）。见 semanticModelReady */
+    private val onSemanticModelReady: () -> Boolean,
+    /** 开始下载语义模型（v0.1.94）。见 semanticDownloadModel */
+    private val onSemanticDownloadModel: () -> Unit,
     // --- 临时诊断（v0.0.6，定位完删）---
     private val onTrace: (String) -> Unit,
 ) {
@@ -191,6 +195,32 @@ class WebAppBridge(
     @JavascriptInterface
     fun exportDocs(idsJson: String) {
         onExportDocs(idsJson)
+    }
+
+    // -----------------------------------------------------------------------
+    // 语义分段（v0.1.94）
+    // -----------------------------------------------------------------------
+
+    /**
+     * 语义模型是否已下载到本地。
+     *
+     * ⚠️ 这个方法是**设置开关的唯一事实来源**：
+     *    网页先问它，得到 false 就弹下载表单，得到 true 才允许打开。
+     *    见 semantic.js 文件头那段"开关不能假装打开"的说明。
+     */
+    @JavascriptInterface
+    fun semanticModelReady(): Boolean = onSemanticModelReady()
+
+    /**
+     * 开始下载语义模型。
+     *
+     * ⚠️ 异步：立即返回，完成后原生调
+     *    `ScholariusSemantic.downloadFinished(ok)` 通知网页。
+     *    下载可能要几十秒到几分钟，不能阻塞 JS 线程。
+     */
+    @JavascriptInterface
+    fun semanticDownloadModel() {
+        onSemanticDownloadModel()
     }
 
 

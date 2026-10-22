@@ -161,6 +161,22 @@
             */
             'setting.group.vault': 'Vault',
             'setting.venueShortcut': 'Venue Abbreviations',
+            /*
+              语义分段（v0.1.94）。
+              ❗ 措辞要点：说清“下载”与“本地运行”，
+                 别让用户以为文献会被传到服务器上。
+            */
+            'setting.semanticSeg': 'Semantic Paragraphs',
+            'semantic.title': 'Semantic Paragraphs',
+            'semantic.off': 'Off',
+            'semantic.on': 'On',
+            'semantic.desc': 'Split paragraphs by meaning instead of punctuation.',
+            'semantic.needModel': 'Semantic paragraph splitting needs a model file (~23 MB). It runs entirely on your device - documents are never uploaded.',
+            'semantic.download': 'Download',
+            'semantic.cancel': 'Cancel',
+            'semantic.downloading': 'Downloading…',
+            'semantic.failed': 'Download failed. Check your connection and try again.',
+            'semantic.ready': 'Ready',
             'shortcut.title': 'Venue Abbreviations',
             'shortcut.empty': 'No Abbreviations Yet.',
             'shortcut.emptyHint': 'Add one to shorten long venue names on cards.',
@@ -490,6 +506,18 @@
             */
             'setting.group.vault': '文库',
             'setting.venueShortcut': '发表物简称',
+            /* 语义分段（v0.1.94）—— 强调本地运行，不上传文献 */
+            'setting.semanticSeg': '语义分段',
+            'semantic.title': '语义分段',
+            'semantic.off': '关闭',
+            'semantic.on': '开启',
+            'semantic.desc': '按语义而不是标点划分段落。',
+            'semantic.needModel': '语义分段需要一个模型文件（约 23 MB）。它完全在本地运行，文献不会被上传。',
+            'semantic.download': '下载',
+            'semantic.cancel': '取消',
+            'semantic.downloading': '下载中…',
+            'semantic.failed': '下载失败，请检查网络后重试。',
+            'semantic.ready': '已就绪',
             'shortcut.title': '发表物简称',
             'shortcut.empty': '还没有添加简称。',
             'shortcut.emptyHint': '添加后，卡片上会显示短名而不是一长串全名。',

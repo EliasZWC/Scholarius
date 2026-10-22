@@ -420,6 +420,15 @@
             window.ScholariusShortcut.init();
         }
         /*
+          语义分段设置的开关（v0.1.94）。
+          ⚠️ 必须在原生桥就绪后初始化 —— 它要问原生"模型在不在"。
+             这里已经是 DOMContentLoaded 之后的初始化序列，
+             桥（ScholariusNative）在此之前已注入。
+        */
+        if (window.ScholariusSemantic) {
+            window.ScholariusSemantic.init();
+        }
+        /*
           ⚠️ detail.js 要在 reader.js **之前**初始化。
              reader 的详情按钮回调会调 ScholariusDetail.open() ——
              虽然那是事件触发、晚于两者初始化，
@@ -795,6 +804,26 @@
             window.ScholariusDetail.isOpen()) {
             window.ScholariusDetail.close();
             trace('back', 'closed detail page');
+            return true;
+        }
+
+        /*
+          ⓹ 语义模型下载确认表单（v0.1.94）。
+
+          ⚠️ 它是 `semantic.js` 里**动态创建**的，没有写在 index.html 里，
+             所以 tools/check_back_layers.py 的静态扫描看不到它 ——
+             但不加这一段，用户按返回会**直接退出应用**。
+             （这就是那张检查表存在的意义：它列的是"已知的全屏层"，
+               动态创建的必须自己记得补。）
+
+          ⚠️ 顺序：放在最前面。它是最上层的模态框，
+             开着时按返回只该关它，不该动下面的设置页/阅读页。
+        */
+        if (window.ScholariusSemantic &&
+            typeof window.ScholariusSemantic.isSheetOpen === 'function' &&
+            window.ScholariusSemantic.isSheetOpen()) {
+            window.ScholariusSemantic.closeSheet();
+            trace('back', 'closed semantic sheet');
             return true;
         }
 

@@ -494,6 +494,32 @@
                                 <span class="setting-value" id="setting-venue-shortcut-value">&mdash;</span>
                             </button>
                         </li>
+                        <!--
+                          ══ 语义模型分段（v0.1.94）══
+
+                          用户要求（原话）：
+                            「这个吧，我觉得可以放在设置里面，到时候用户自己选择
+                              要不要用语义模型来分，如果要，让用户自己下载，
+                              这就和安装包解体了」
+                            「设置的 Vault 区新加一个语义模型选项，然后选择关闭，
+                              也可以选开启，选开启后自动检测是否本地下了模型，
+                              没有就弹出表单下载，否则回到 off 状态」
+
+                          ✅ 语义：
+                            · 关闭 —— 提取时按句末标点+空行分段（默认，零依赖）
+                            · 开启 —— 下载语义模型后，按句子相似度分段
+
+                          ⚠️ 关键是「没有模型就弹下载，取消则回到 off」——
+                             不能让开关**假装**打开了却没有模型可用，
+                             那样用户会以为分段变好了，其实没变。
+                        -->
+                        <li class="setting-item">
+                            <button class="setting-action" type="button" id="setting-semantic"
+                                aria-haspopup="dialog" aria-expanded="false">
+                                <span class="setting-label" data-i18n="setting.semanticSeg">Semantic paragraphs</span>
+                                <span class="setting-value" id="setting-semantic-value">Off</span>
+                            </button>
+                        </li>
                     </ul>
                 </section>
 
@@ -1463,6 +1489,8 @@
          虽然有兜底（未加载时查不到简称），但先加载能一次渲染到位。
     -->
     <script src="shortcut.js"></script>
+    <!-- 语义分段设置（v0.1.94）：只负责开关与模型存在性，见 semantic.js 文件头 -->
+    <script src="semantic.js"></script>
     <script src="vault.js"></script>
     <!--
       ⚠️ detail.js 要在 reader.js **之前** ——

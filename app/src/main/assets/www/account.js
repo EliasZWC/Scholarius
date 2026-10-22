@@ -403,6 +403,14 @@
             global.ScholariusShortcut.refresh();
         }
 
+        /*
+          语义分段那一行的值是动态的（Off / 开启），
+          不在 data-i18n 词条里 —— 切语言后同样要单独刷新。
+        */
+        if (global.ScholariusSemantic) {
+            global.ScholariusSemantic.refresh();
+        }
+
         // 详情页里的值不在 data-i18n 词条里，i18n.apply() 不会碰它们；
         // 但名字/ID 是运行时数据，这里重绘一次保证与 currentXxx 一致
         renderDetail();
