@@ -155,14 +155,30 @@
         }
 
         if (!hasField) {
-            /* ① 整组合成一条，前缀 `Author:` */
-            var parts = [];
-            for (var i = 0; i < items.length; i++) {
-                var t0 = pad(items[i] && items[i].text);
-                if (t0) parts.push(t0);
-            }
-            if (parts.length) {
-                lines.push('- ' + labelFn('__whole') + ': ' + parts.join(' '));
+            /*
+              ══ ⚠️ **每条一行**（v0.2.31 改）══
+
+              用户原话：
+                「算了，我不加子标签了，我觉得你怎么都弄不好，
+                  直接到标签那一级就停下吧」
+
+              ⚠️ 上一版（v0.2.23）在这里把所有项**用空格拼成一条**：
+
+                  - Author: Ashish Vaswani Google Brain avaswani@...
+
+              那是在子标签时代的权宜 —— 因为"整块"就是一条作者信息。
+              **但作者块的常见形态是多行、一行一位作者**，
+              拼成一条就把多行并成一行，正是反复出现的"换行/拆行" bug 的
+              另一个面：渲染侧拆碎、导出侧粘连。
+
+              ✅ 现在子标签停用，`items` 就是**逐行的作者**。
+                 一条一个 `- Author: …`，与渲染侧一行一条完全对应。
+              ⚠️ 只有一个 item 时结果与旧行为一致，不引入变化。
+            */
+            for (var k = 0; k < items.length; k++) {
+                var tk = pad(items[k] && items[k].text);
+                if (!tk) continue;
+                lines.push('- ' + labelFn('__whole') + ': ' + tk);
             }
             return lines;
         }
@@ -392,32 +408,48 @@
                             原样写回（不重新拼）。
                     */
                     var rawBullet = String(b.text || '');
-                    if (/^Author\b/i.test(rawBullet)) {
-                        flushAuthor();
-                        out.push('- ' + rawBullet.replace(/\s*\n\s*/g, ' '));
+                    /*
+                      ══ ⚠️⚠️ `authorItems` 优先，且**不依赖 `kind`**（v0.2.31 修）══
+
+                      旧代码把 `authorItems` 的判断挂在 `b.kind === 'author'` 下。
+                      但 `kind` 只有在**用户整块标注**时才被赋成 'author'；
+                      从 md 读进来的作者块、或只靠 `listMarker` 识别的块，
+                      `kind` 是空的 → 落到最后那个 `else`
+                      「普通无序列表项：原样输出」：
+
+                          out.push('- ' + text.replace(所有换行 → 空格))
+
+                      于是多行作者区在导出时被**压成一行**，
+                      正是用户反复遇到的「行没了」。
+
+                      ✅ `authorItems` 是渲染侧按行算好的，只要它存在就是
+                         作者区，与 `kind` 无关。放在最前面处理。
+                    */
+                    if (b.authorItems && b.authorItems.length) {
+                        for (var aq0 = 0; aq0 < b.authorItems.length; aq0++) {
+                            authorBuf.push(b.authorItems[aq0]);
+                        }
                         continue;
                     }
                     /*
-                      ⚠️ **优先用 `authorItems`**（v0.2.23）——
-                         它带着 field 信息（用户标注的子标签）。
-                         直接 push `{text, field:null}` 会丢掉子标签，
-                         导致 `- Author Name: ...` 退化成 `- Author: ...`。
+                      ══ ⚠️ 兜底：多行无序项 → 每行一条（v0.2.31）══
+
+                      走到这里说明 `authorItems` 不存在（块不是作者区）。
+                      但**多行**的无序项仍不能压成一行 —— 那会让行消失。
+                      只有当它是"用户自己写的普通列表项"且确实单行时才原样输出。
                     */
-                    if (b.kind === 'author' && b.authorItems && b.authorItems.length) {
-                        for (var aq2 = 0; aq2 < b.authorItems.length; aq2++) {
-                            authorBuf.push(b.authorItems[aq2]);
+                    var rawLines = String(text || '').split(/\r?\n/).filter(function (z) {
+                        return String(z || '').replace(/\s+/g, '') !== '';
+                    });
+                    if (b.kind === 'author' || rawLines.length > 1) {
+                        for (var aq3 = 0; aq3 < rawLines.length; aq3++) {
+                            var at3 = String(rawLines[aq3]).replace(/^\s+|\s+$/g, '');
+                            if (at3) authorBuf.push({ text: at3, field: null });
                         }
-                    } else if (b.kind === 'author') {
-                        /*
-                          ⚠️ 只有**确实是作者块**才加 `Author:` 前缀（v0.2.23）。
-                             普通的 md 无序列表（用户自己写的 `- 某个条目`）
-                             不应该被当成作者区。
-                        */
-                        authorBuf.push({ text: text.replace(/\s*\n\s*/g, ' '), field: null });
                     } else {
-                        /* 普通无序列表项：原样输出 */
+                        /* 普通单行无序列表项：原样输出 */
                         flushAuthor();
-                        out.push('- ' + text.replace(/\s*\n\s*/g, ' '));
+                        out.push('- ' + rawLines[0]);
                     }
                     continue;
                 }
@@ -473,17 +505,43 @@
             }
             if (kind === 'author') {
                 /*
-                  ⚠️ author 走缓冲区，与相邻 author 块合并 ——
-                     用户把连续几块都标成作者时，它们是一个作者区，
-                     应该合成 `- Author: 全文` 一条。
+                  ══ ⚠️⚠️ 绝不把多行压成一行（v0.2.31 修）══
+
+                  旧代码先把整块文本压成一行（把所有换行替换成空格）：
+                  那一步对"多行作者区"是破坏性的。
+
+                  后果：一个作者区域里
+                      · 一行多位作者（`Ashish Vaswani Noam Shazeer`）→ 没问题
+                      · **多行分别是姓名 / 单位 / 邮箱** → 全被空格连成一句
+
+                          - Author: Ashish Vaswani Google Brain avaswani@...
+
+                  用户看到的就是"行没了"。这与渲染侧的"拆行"是同一个
+                  问题的两个面：渲染侧拆碎、导出侧粘连。
+
+                  ✅ `authorBuf` 是**按条**聚合的，一条 = 一行。
+                     多行就多 push 几条，`md.authorNested` 逐条输出。
+                  ✅ 有 `authorItems`（渲染侧已按行算好）优先用它。
                 */
-                var authorText = text.replace(/\s*\n\s*/g, ' ');
                 if (b.authorItems && b.authorItems.length) {
                     for (var aq = 0; aq < b.authorItems.length; aq++) {
                         authorBuf.push(b.authorItems[aq]);
                     }
                 } else {
-                    authorBuf.push({ text: authorText, field: null });
+                    var aRows = (b.lines && b.lines.length > 1)
+                        ? b.lines
+                        : String(text || '').split(/\r?\n/);
+                    var aPushed = 0;
+                    for (var ar2 = 0; ar2 < aRows.length; ar2++) {
+                        var aTxt = String(aRows[ar2] == null ? '' : aRows[ar2])
+                            .replace(/^\s+|\s+$/g, '');
+                        if (!aTxt) continue;
+                        authorBuf.push({ text: aTxt, field: null });
+                        aPushed += 1;
+                    }
+                    if (!aPushed) {
+                        authorBuf.push({ text: String(text || ''), field: null });
+                    }
                 }
                 continue;
             }

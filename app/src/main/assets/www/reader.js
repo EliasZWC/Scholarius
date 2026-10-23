@@ -465,6 +465,17 @@
     var AUTHOR_FIELDS = ['name', 'affiliation', 'email', 'contact'];
 
     /**
+     * 作者子标签开关（v0.2.31）。
+     *
+     * 用户决定：**标注只到 `author` 整块**，不再往下分姓名/单位/邮箱。
+     * 关掉后标注面板里作者那一行不再出现子标签入口。
+     *
+     * ⚠️ 只是**入口**关掉，数据格式与渲染/导出全保留 ——
+     *    老文档里的子标签照旧能正确显示。
+     */
+    var KEY_AUTHOR_FIELD_ENABLED = false;
+
+    /**
      * 取文案，可选做 `{name}` 插值。
      *
      * ⚠️ `ScholariusI18n.t()` **只做查表，不做插值** ——
@@ -808,7 +819,24 @@
                             }
                         }
                     }
-                    parts.push((marker === '1. ' ? '1. ' : '- ') + row + rowTag);
+                    /*
+                      ⚠️ 作者行要带 `Author:` 前缀（v0.2.31）——
+                         这是用户认可的形式：
+                             - Author: Ashish Vaswani
+                             - Author: Google Brain
+                         ⚠️ 没有前缀的话，回读时 `MdDoc.parse` 认不出
+                             `- xxx` 是作者项，只当成普通列表项 → 作者标签丢失。
+                         ⚠️ 文献同理用 `Ref:`，由 parse 侧剥离显示。
+                    */
+                    var rowPrefix;
+                    if (marker === '1. ') {
+                        rowPrefix = '1. ' + t('reader.field.__ref') + ': ';
+                    } else if (marker === '- ') {
+                        rowPrefix = '- ' + t('reader.field.__whole') + ': ';
+                    } else {
+                        rowPrefix = marker;
+                    }
+                    parts.push(rowPrefix + row + rowTag);
                 }
                 body = parts.join('\n\n');
                 marker = '';
@@ -2922,24 +2950,45 @@
                     */
                     listMarker: (pieces.length === 1) ? mdListMarker : '',
                     /*
-                      ⚠️ 作者项（v0.2.23）：
-                         · 有子标签 → 每个 field 一条
-                         · 无子标签 → 合成**一条**，由 authorNested 加 `Author:` 前缀
+                      ⚠️ 作者项（v0.2.23 / v0.2.31）：
+                         · 有子标签 → 交给 `authorItemsOf`，按行归属 field
+                         · 无子标签 → **按行拆成多条**（v0.2.31 修）
+                    */
+                    /*
+                      ══ ⚠️⚠️ 判据是「有没有**带 field** 的 author 标注」（v0.2.31 修）══
+
+                      旧代码用 `pieceSpans && pieceSpans.length` 判断 ——
+                      但 `pieceSpans` 里只要有**任何**标注就算真，
+                      而 `authorItemsOf` 只认带 `field` 的 author，其余一律 `null`。
+                      于是"整块标成 author、没有子标签"这种最常见的情形：
+
+                          authorItemsOf(...) → null
+                          || [{ text: pieceText }]   ← 整块压成**一条**，换行还在里面
+
+                      导出结果就是：
+
+                          - Author: A1
+                          B2           ← 裸行
+                          C3           ← 裸行
+
+                      正是用户说的「子标签换行」那个老 bug 在导出侧的表现。
+
+                      ✅ 先看有没有带 field 的 author 标注：
+                         · 有  → `authorItemsOf`（按行归属 field）
+                         · 没有 → `plainAuthorItems`（按行拆条，每行一条）
                     */
                     authorItems: (pieceKind === 'author')
-                        ? ((pieceSpans && pieceSpans.length)
+                        ? (((pieceSpans || []).some(function (z) {
+                            return z && z.label === 'author' && z.field;
+                        }))
                             ? (authorItemsOf(
                                 pieceText,
-                                /*
-                                  ⚠️ **必须传行边界**（v0.2.30）——
-                                     之前传 `null`，导致 `authorItemsOf` 走
-                                     "按区间切"的分支，把原文一行切成多条，
-                                     正是"子标签换行"那个老 bug 的导出侧根源。
-                                */
                                 (pieces.length === 1) ? b.lines : null,
                                 pieceSpans) ||
-                               [{ text: pieceText, field: null }])
-                            : [{ text: pieceText, field: null }])
+                               plainAuthorItems(pieceText,
+                                (pieces.length === 1) ? b.lines : null))
+                            : plainAuthorItems(pieceText,
+                                (pieces.length === 1) ? b.lines : null))
                         : null
                 });
             }
@@ -4869,7 +4918,26 @@
         box.setAttribute('role', 'listbox');
 
         var options = [{ value: '', label: t('reader.fieldNone') }];
-        if (key === 'author') {
+        /*
+          ══ 🛑 作者子标签已停用（v0.2.31，用户决定）══
+
+          用户原话：
+
+            「算了，我不加子标签了，我觉得你怎么都弄不好，
+              直接到标签那一级就停下吧」
+
+          子标签（姓名 / 单位 / 邮箱 / 联系方式）不断把原文行拆碎，
+          反复修了 v0.2.27 → v0.2.30 仍未稳定。用户决定放弃这一级，
+          标注**只到 `author` 整块**为止。
+
+          ⚠️ 底层能力（AUTHOR_FIELDS、`span.field`、md 的
+             `- Author <Field>:` 解析）**全部保留** ——
+             已存在的文档里若有子标签，仍能正确渲染与导出，
+             不会因为拿掉入口而丢数据。
+
+          ⚠️ 想恢复：把下面 `KEY_AUTHOR_FIELD_ENABLED` 改回 true 即可。
+        */
+        if (key === 'author' && KEY_AUTHOR_FIELD_ENABLED) {
             AUTHOR_FIELDS.forEach(function (f) {
                 options.push({ value: f, label: t('reader.field.' + f) });
             });
@@ -4961,12 +5029,55 @@
     }
 
     /**
+     * 无子标签的作者块 → **每行一条**（v0.2.31）。
+     *
+     * 用户决定不再用子标签（「直接到标签那一级就停下吧」），
+     * 所以这条路径成为作者导出的**主路径**，不能只是"整块一条"。
+     *
+     * ══ ⚠️ 每条为什么要带 `Author:` 前缀 ══
+     *
+     * 它们在 md 里都是**无序列表项**，一条一个作者：
+     *
+     *     - Author: Ashish Vaswani Noam Shazeer
+     *     - Author: Google Brain Google Research
+     *
+     * 前缀由 `md.authorNested` 统一添加（它看到所有 item 都没有 `field`
+     * 就合成 `- Author: <各行用空格连起来>`）。**但那样会把多行并成一行** ——
+     * 正是要修的 bug。
+     *
+     * ✅ 所以这里给每行一个**独立的 item**，`md.authorNested` 会逐条输出。
+     *
+     * @param text  块文本
+     * @param lines 原始排版行（可为空）
+     * @return {Array<{text:string, field:null}>}
+     */
+    function plainAuthorItems(text, lines) {
+        var src = (lines && lines.length > 1)
+            ? lines
+            : String(text == null ? '' : text).split(/\r?\n/);
+        var out = [];
+        for (var i = 0; i < src.length; i++) {
+            var t = String(src[i] == null ? '' : src[i]).replace(/^\s+|\s+$/g, '');
+            if (!t) continue;
+            out.push({ text: t, field: null });
+        }
+        if (!out.length) out.push({ text: String(text || ''), field: null });
+        return out;
+    }
+
+    /**
      * 这个标签是否有子标签（v0.1.78）。
      *
      * ⚠️ 目前只有「作者信息」有。以后要加别的（比如文献的子类型），
      *    在这个函数里登记即可，列表渲染代码不用改。
      */
     function labelHasSub(key) {
+        /*
+          ⚠️ 作者子标签入口已停用（v0.2.31，见 `KEY_AUTHOR_FIELD_ENABLED`）。
+             返回 false 后，标注面板里作者那一行**不再出现** `▾` 和下拉，
+             点击它就是普通选中 —— 标注到 `author` 整块为止。
+        */
+        if (key === 'author' && !KEY_AUTHOR_FIELD_ENABLED) return false;
         return key === 'author';
     }
 
@@ -6398,8 +6509,36 @@
                         /* 单行带字段前缀（`- Author Name: xxx`）*/
                         authorRows.push({ text: m2[2], field: m2[1].toLowerCase() });
                     } else {
-                        /* 无子标签 → 一行，左栏留空（用原文，不带 md 前缀）*/
-                        authorRows.push({ text: rawText, field: null });
+                        /*
+                          ══ ⚠️ 无子标签 → **每行一条**（v0.2.31 修）══
+
+                          用户原话：
+
+                            「算了，我不加子标签了……直接到标签那一级就停下吧」
+
+                          既然子标签停用，这条分支就是**唯一**路径了，
+                          它必须是正确的。
+
+                          ⚠️ 旧写法 `authorRows.push({ text: rawText })` 有 bug：
+                             `rawText` 是**整块原文**，含换行符，
+                             塞进一个 `.reader-author-line` 后
+                             两行作者挤在同一行里显示。
+
+                          ✅ 按 `b.lines`（原始排版行）逐行输出 ——
+                             一个作者区域一行，与子标签时代的行为一致。
+                          ⚠️ 没有 `lines` 才退回整块（真正的单行块）。
+                        */
+                        var plainSrc = (b.lines && b.lines.length > 1)
+                            ? b.lines
+                            : String(rawText || '').split(/\r?\n/);
+                        for (var pi = 0; pi < plainSrc.length; pi++) {
+                            var pT = String(plainSrc[pi] || '').replace(/^\s+|\s+$/g, '');
+                            if (!pT) continue;
+                            authorRows.push({ text: pT, field: null });
+                        }
+                        if (!authorRows.length) {
+                            authorRows.push({ text: rawText, field: null });
+                        }
                     }
 
                     var ap = document.createElement('p');

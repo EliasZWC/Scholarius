@@ -4,6 +4,76 @@
 
 ---
 
+## [0.2.31] - 2026-10-24
+
+### 作者标注调整：只到 `author` 整块
+
+用户反馈：
+
+> 「还是没解决——算了，我不加子标签了，我觉得你怎么都弄不好，
+> 直接到标签那一级就停下吧」
+
+子标签（姓名 / 单位 / 邮箱 / 联系方式）从 v0.2.27 反复修到 v0.2.30
+仍不稳定，用户决定**放弃这一级**。
+
+**改动**：标注面板里作者那一行不再出现子标签下拉（`▾`），
+点击它就是普通选中，标注到 `author` 整块为止。
+
+⚠️ 底层能力**全部保留**：
+- `AUTHOR_FIELDS` / `span.field` 仍在
+- md 里的 `- Author <Field>: xxx` 仍能正确解析
+- 已有文档里的子标签照旧渲染/导出，不会丢数据
+
+想恢复：把 `reader.js` 里的 `KEY_AUTHOR_FIELD_ENABLED` 改回 `true` 即可。
+
+### 修掉「作者多行在导出时被压成一行」
+
+排查上面那个决定时发现的真 bug：
+
+```
+原文：
+  Ashish Vaswani Noam Shazeer
+  Google Brain Google Research
+  avaswani@google.com noam@google.com
+
+导出（错）：
+  - Author: Ashish Vaswani Noam Shazeer
+  Google Brain Google Research          ← 裸行，没有列表记号
+  avaswani@google.com noam@google.com   ← 也没有
+```
+
+渲染侧是 3 行，导出侧只有 1 条带记号 —— 两边不一致。
+
+**根因**（三处叠加）：
+
+1. `markdownOfDoc` 用 `pieceSpans.length` 判断要不要调 `authorItemsOf`，
+   而 `authorItemsOf` 只认**带 field** 的 author，其余一律返回 `null`。
+   于是「整块标成 author、无子标签」这个最常见情形拿到 `null`，
+   被 `|| [{ text: pieceText }]` 兜底成**一条带换行的整块**。
+
+2. `md.authorNested` 在「所有项都没有 field」时把所有项
+   **用空格拼成一条** —— 多行又变回一行。
+
+3. `md.toMarkdown` 的 `mdMarker` 分支里 `kind === 'author'` 的兜底
+   也把 `text` 的所有换行替换成空格。
+
+**修正**：
+
+- 判据改成「**有没有带 field 的 author 标注**」：有就按行归属字段，
+  没有就按行拆条（`plainAuthorItems`）。
+- `authorNested` 逐条输出 `- Author: …`，不再拼接。
+- `mdMarker` 分支里多行无序项按行拆条，只有真正单行才原样输出。
+
+现在渲染 3 行、导出 3 条，完全对应：
+
+```
+- Author: Ashish Vaswani Noam Shazeer
+- Author: Google Brain Google Research
+- Author: avaswani@google.com noam@google.com
+```
+
+---
+
 ## [0.2.30] - 2026-10-24
 
 ### 子标签不再把原文行拆碎
