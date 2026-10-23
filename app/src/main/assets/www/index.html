@@ -840,21 +840,7 @@
                 </svg>
             </button>
             <!--
-              详情按钮 —— 功能区的**第一个**（紧挨返回键）。
-
-              用户裁决：「功能按钮都在左边，但最左边是详情」
-
-              ⚠️ 不要给它加 `margin-left: auto`：那会把它顶到最右，
-                 后面的功能按钮反而挤到它右边，与要求相反。
-
-              图标由 JS 用 ScholariusUI.icon('moreHoriz') 填 ——
-              这样图标路径只有 components.js 一处定义，不在这里重复一遍。
-            -->
-            <button class="icon-button reader-detail-btn" type="button"
-                id="reader-detail" aria-haspopup="dialog" aria-expanded="false"
-                aria-label="Details" data-i18n-aria-label="reader.details"></button>
-            <!--
-              语义切分按钮（v0.1.98）—— 排在详情**之后**。
+              语义切分按钮（v0.1.98）—— 详情按钮**之前**。
 
               用户裁决：「点击图标后才触发整篇文章文本的重新切分」
 
@@ -872,6 +858,24 @@
                 id="reader-seg" hidden
                 aria-label="Re-split paragraphs"
                 data-i18n-aria-label="reader.resegment"></button>
+            <!--
+              详情按钮 —— 功能组的**最右**。
+
+              用户最终确认：
+                「我口误了，功能都在右边，最右边是详情」
+
+              所以整体是：返回 | 切分 | 详情
+
+              ⚠️ `margin-left: auto` 让它吃掉左侧剩余空间、把自己
+                 推到最右端；因为它在 DOM 里是最后一个功能按钮，
+                 整组（切分 + 详情）就都落在右边，详情最右。
+
+              图标由 JS 用 ScholariusUI.icon('moreHoriz') 填 ——
+              这样图标路径只有 components.js 一处定义，不在这里重复一遍。
+            -->
+            <button class="icon-button reader-detail-btn" type="button"
+                id="reader-detail" aria-haspopup="dialog" aria-expanded="false"
+                aria-label="Details" data-i18n-aria-label="reader.details"></button>
         </header>
 
         <!--

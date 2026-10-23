@@ -6480,6 +6480,28 @@
                 */
                 var runCount = parts.length;
                 return seg.segment(parts, {
+                    /*
+                      ══ 加载阶段进度（v0.2.1）══
+
+                      用户反馈：「加载直接从 0 跳到 100」。
+
+                      `onLoad` 覆盖"模型加载"这一段（0~40%），
+                      `onProgress` 覆盖"逐批推理"（40~100%）。
+                      两者合起来才是连续进度，缺任何一段都会看到跳跃。
+
+                      ⚠️ 加载只发生一次 —— 第二次切分时 onLoad 不会触发，
+                         那时进度条直接从推理段开始，这是对的。
+                    */
+                    onLoad: function (stage, frac) {
+                        if (!prog) return;
+                        /*
+                          ⚠️ 0~40% 留给加载，40~100% 留给推理。
+                             加载阶段走到 40% 就停住，等推理接手 ——
+                             否则用户看到 100% 却在等推理，体验更差。
+                        */
+                        prog.progress(Math.round(frac * 40), 100,
+                                      stage === 'runtime' ? 'loading' : null);
+                    },
                     onProgress: function (done, total) {
                         /*
                           ⚠️ 进度要**跨区段累加**。
@@ -6487,13 +6509,18 @@
                              进度条每次换区段就跌回 0 —— 看起来像重来。
                           ⚠️ 总数用第一次拿到的真实值校正预估：
                              模型的分句器切出的句子数通常比块数多。
+                          ⚠️ 推理段映射到 **40~100%**（加载占前 40%），
+                             这样加载与推理接得上，不会出现"0 跳 100"。
                         */
                         if (total > 0 && grandTotal !== total) {
                             /* 只校正一次，且只增不减，避免抖动 */
                             if (total > grandTotal) grandTotal = total;
                         }
                         if (prog) {
-                            prog.progress(doneSentences + done, grandTotal);
+                            var all = doneSentences + done;
+                            var frac = (grandTotal > 0)
+                                ? Math.min(1, all / grandTotal) : 0;
+                            prog.progress(Math.round(40 + frac * 60), 100);
                         }
                     }
                 }).then(function (res) {

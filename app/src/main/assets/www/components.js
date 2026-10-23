@@ -1218,20 +1218,23 @@
         add: 'M440-440H200v-80h240v-240h80v240h240v80H520v240h-80v-240Z',
 
         /*
-          resegment：语义重新分段（v0.2.0）
+          resegment：语义重新分段（v0.2.1）
 
-          用户裁决：「切分不要用这个图标」—— 原来用的是 `annoBody`
-          （三条等长横线），那是"正文段"的标注图标，语义是
-          **标出这一段是正文**，不是"重新切分"。
+          用户裁决：
 
-          ✅ 换成 Material 的 `format_line_spacing`：
-             左侧一根竖线 + 右侧三组"短横线对"，正是
-             「把长文本切成若干段」的视觉表达。
+            「图标还是不对，用这个：@drawable/split_scene_2_24
+              这个我给你的图标是谷歌的图标，名字叫做 Split Scene 2」
 
-          ⚠️ 逐字取自官方：tools/fetch_icon.py format_line_spacing
-             （该图标没有独立填充变体，outline 与 fill 逐字相同）
+          ✅ Material Symbols `split_scene_2`：一个被横向切开的框，
+             上半部分分成两栏 —— 正是「把整块内容重新分隔」的视觉表达。
+
+          ⚠️ 这是 **960 体系**（`viewBox: 0 -960 960 960`），
+             必须在 ICON_VIEWBOX 里登记，否则图标一个像素都不渲染且不报错。
+
+          ⚠️ 路径**逐字取自官方**（tools/fetch_icon.py split_scene_2），
+             不要手写 —— 手写 Material 路径在这个项目里出过三次事故。
         */
-        resegment: 'M6 7h2.5L5 3.5 1.5 7H4v10H1.5L5 20.5 8.5 17H6V7zm4-2v2h12V5H10zm0 14h12v-2H10v2zm0-6h12v-2H10v2z',
+        resegment: 'M240-120q-33 0-56.5-23.5T160-200v-160h80v160h480v-160h80v160q0 33-23.5 56.5T720-120H240ZM80-440v-80h80v-240q0-33 23.5-56.5T240-840h480q33 0 56.5 23.5T800-760v240h80v80H80Zm160-80h480v-240H240v240Zm480 320H240h480Zm0-560H240h480Z',
 
     };
 
@@ -1323,6 +1326,8 @@
         // 阅读页的「标注」入口，同样是 960 体系（见 ICON_PATHS 里的说明）
         annotateEdit: SYMBOLS_VIEWBOX,
         annotateEditOff: SYMBOLS_VIEWBOX,
+        // 语义重新分段（split_scene_2，960 体系）
+        resegment: SYMBOLS_VIEWBOX,
         // 标注类型图标——十二条全部 960 体系，见 ICON_PATHS 里的分组说明
         annoText: SYMBOLS_VIEWBOX,
         annoFormula: SYMBOLS_VIEWBOX,

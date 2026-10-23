@@ -36,8 +36,12 @@
 
     var visible = false;
     var cancelled = false;
+    /** 已完成的最大百分比 —— 进度只许前进，见 progress() 里的说明 */
+    var lastPct = 0;
     /** 完成后自动收起的计时器 */
     var hideTimer = null;
+    /** 背景蒙层（v0.2.1）—— 加载期间压暗正文，表示"现在不能操作" */
+    var scrimEl = null;
 
     function t(key) {
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
@@ -49,6 +53,29 @@
 
     function build() {
         if (barEl) return;
+
+        /*
+          ══ 背景蒙层（v0.2.1）══
+
+          用户裁决：
+
+            「加载模型时由于阅读视图无法操作，所以请将背景文字都蒙淡，
+              意思就是不解除现在的进程背景文字也无法操作」
+
+          为什么需要：加载模型期间主线程被 wasm 编译占住，
+          用户的**点击、滚动全部没有反应**。
+          如果界面看起来完全正常，用户会以为"点不动 = 坏了"，
+          于是反复点、反复滑 —— 每次操作都堆进事件队列，
+          加载完之后一次性执行，界面突然乱跳。
+
+          ✅ 压暗 + 吃掉触摸事件，让"暂时不可用"变成**可见的事实**。
+             这比"界面看着正常但没反应"诚实得多。
+
+          ⚠️ 层级要低于进度条本身（进度条 z-index 60，这里 59），
+             否则蒙层会把"跳过"按钮也盖住，用户就没法取消了。
+        */
+        scrimEl = document.createElement('div');
+        scrimEl.className = 'seg-scrim';
 
         barEl = document.createElement('div');
         barEl.className = 'seg-bar';
@@ -86,6 +113,11 @@
             finish('skipped');
         });
 
+        /*
+          ⚠️ 蒙层先插 → 在 DOM 里排在进度条之前，天然在它下面。
+             再配合 z-index 明确指定，双保险。
+        */
+        document.body.appendChild(scrimEl);
         document.body.appendChild(barEl);
     }
 
@@ -102,6 +134,8 @@
         }
         visible = true;
         cancelled = false;
+        /* ⚠️ 每次开始都要清零，否则上一次的 100% 会堵死本次进度 */
+        lastPct = 0;
 
         skipEl.disabled = false;
         skipEl.textContent = t('seg.skip');
@@ -139,27 +173,64 @@
         void barEl.offsetHeight;
         barEl.style.transition = '';
         barEl.classList.add('is-open');
+
+        /* 背景同时压暗 —— 表示"现在不能操作" */
+        if (scrimEl) scrimEl.classList.add('is-open');
     }
 
-    /** 进度：`done`/`total` 都是句子数 */
-    function progress(done, total) {
+    /**
+     * 进度。
+     *
+     * @param {number} done  已完成量
+     * @param {number} total 总量
+     * @param {string} [phase] 阶段标识，决定文案：
+     *        'loading' → 「正在加载模型…」
+     *        其它/省略 → 按百分比自动选「正在划分段落…」/「正在判定边界…」
+     *
+     * ⚠️ 必须支持 phase（v0.2.1）：加载模型占前 40% 时间，
+     *    那一段如果显示「正在划分段落…」是错的 ——
+     *    用户会以为模型早就好了、只是分得慢。
+     */
+    function progress(done, total, phase) {
         if (!visible || cancelled) return;
 
         var pct = (total > 0)
             ? Math.max(0, Math.min(100, Math.round(done / total * 100)))
             : 0;
 
+        /*
+          ══ ⚠️⚠️ 进度只许前进，不许后退（v0.2.1）══
+
+          用户反馈：「加载直接从 0 跳到 100」。
+
+          除了"没报加载进度"，还有一个原因：进度会**倒退**。
+             · 加载阶段报到 40%
+             · 进入推理，某个区段从 0 开始报 → 屏幕跳回 40%
+             · 下一区段又从头 → 再跳一次
+          来回跳几次之后，最后一下跳到 100，主观感受就是"乱跳"。
+
+          ✅ 记住已到达的最高百分比，只接受更大的值。
+             真实总进度本来就不会倒退，倒退一定是换算错误。
+        */
+        if (pct < lastPct) pct = lastPct;
+        lastPct = pct;
+
         barEl.querySelector('.seg-bar-fill').style.width = pct + '%';
         pctEl.textContent = pct + '%';
 
         /*
-          ⚠️ 分段分两个阶段：算向量 → 判边界。
-             向量算完（100%）不代表做完，所以文案要换。
-             不换的话用户看到 100% 还以为卡住了。
+          ⚠️ 分段分两个阶段：加载模型 → 算向量 → 判边界。
+             每段文案不同，否则用户看到百分比不动却不知道为什么。
         */
-        textEl.textContent = (pct >= 100)
-            ? t('seg.boundaries')
-            : t('seg.working');
+        if (phase === 'loading') {
+            textEl.textContent = t('seg.loading');
+        } else if (pct >= 100) {
+            textEl.textContent = t('seg.boundaries');
+        } else {
+            textEl.textContent = (lastPct <= 40 && pct <= 40)
+                ? t('seg.loading')
+                : t('seg.working');
+        }
     }
 
     /** 结束：`result` 取 'done' | 'skipped' | 'failed' */
@@ -193,6 +264,7 @@
     function hide() {
         visible = false;
         if (barEl) barEl.classList.remove('is-open');
+        if (scrimEl) scrimEl.classList.remove('is-open');
         if (hideTimer) {
             global.clearTimeout(hideTimer);
             hideTimer = null;

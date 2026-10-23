@@ -109,6 +109,15 @@
      */
     var cancelRequested = false;
 
+    /**
+     * 正在等待模型加载的回调列表（v0.2.1）。
+     *
+     * ⚠️ 用列表而不是单个回调：模型加载是全局的、只做一次，
+     *    但可能有多处同时在等（用户连点两次，或将来有两个文档同时开）。
+     *    只存一个的话，后者的回调会覆盖前者 → 前一个永远收不到进度。
+     */
+    var loadWaiters = [];
+
     function t(key) {
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
     }
@@ -260,11 +269,36 @@
      * ⚠️ `allowRemoteModels = false` + 本地路径：**完全离线**。
      *    这既是用户要求（自己下载），也是隐私要求（文献不上传）。
      */
-    function ensureModel() {
+    function ensureModel(onProgress) {
         if (extractor) return Promise.resolve(extractor);
-        if (loadPromise) return loadPromise;
+        /*
+          ⚠️ 已经有人在加载 → 把新调用方的进度回调也挂上（v0.2.1）。
+
+          原来直接 `return loadPromise`，于是**第二个**调用方收不到
+          任何进度 —— 界面上表现为进度条停在 0，然后突然跳到 100。
+          这正是用户看到的「加载直接从 0 跳到 100」的一半原因。
+        */
+        if (loadPromise) {
+            if (typeof onProgress === 'function') {
+                loadWaiters.push(onProgress);
+            }
+            return loadPromise;
+        }
 
         state = 'loading';
+        loadWaiters = [];
+        if (typeof onProgress === 'function') loadWaiters.push(onProgress);
+
+        /* 统一往所有等待方广播（加载阶段用，非句子级进度） */
+        function emitLoad(stage, frac) {
+            for (var i = 0; i < loadWaiters.length; i++) {
+                try {
+                    loadWaiters[i](stage, frac);
+                } catch (e) { /* 单个回调出错不影响加载 */ }
+            }
+        }
+
+        emitLoad('runtime', 0.05);
 
         /*
           每一步都打日志（v0.1.95）。
@@ -303,17 +337,54 @@
                 */
                 return nextFrame().then(nextFrame).then(function () {
                     segLog('yielded, starting pipeline');
+                    emitLoad('load', 0.1);
 
                     return lib.pipeline('feature-extraction', MODEL_ID, {
                         dtype: 'q8',
                         progress_callback: function (p) {
                             segLog('progress ' + JSON.stringify(p).slice(0, 160));
+                            /*
+                              ══ 把加载进度喂给进度条（v0.2.1）══
+
+                              用户反馈：「加载直接从 0 跳到 100」。
+
+                              真因：原来这里只打日志，不报进度。
+                              加载阶段占用了大约一半时间，进度条却
+                              一动不动停在 0；等推理开始时直接跳到
+                              句子级进度 → 看起来像"0 直接跳 100"。
+
+                              ⚠️ 模型只有 3 个文件，`progress` 事件是
+                                 **逐文件**的，每个文件从 0 到 100。
+                                 要换成整体进度：已完成的文件数 / 总数
+                                 + 当前文件的比例 × 单文件份额。
+                              ⚠️ 加载只占总进度的 0~40%：后面还要推理，
+                                 如果这里走到 100，用户会以为快好了，
+                                 然后卡在 100 等推理，反而更糟。
+                            */
+                            if (p && p.status === 'progress' &&
+                                typeof p.progress === 'number') {
+                                var frac = Math.min(1, p.progress / 100);
+                                emitLoad('load', 0.1 + frac * 0.25);
+                            }
                         }
                     });
                 }).then(function (pipe) {
                     segLog('pipeline ready');
+                    /*
+                      ══ ⚠️ session 编译是**第二段**大头（v0.2.1）══
+
+                      `pipeline()` 返回之前还有一段：把 onnx 模型装配成
+                      推理 session（wasm 编译）。这一段**没有** progress
+                      事件，而且是最慢的（实测本地 17MB 约 1~3 秒）。
+
+                      所以文件下载完（约 35%）之后要**主动**推到 38%，
+                      并在编译结束后才回到正常流程 ——
+                      否则进度条会卡在 35% 好几秒，用户以为死了。
+                    */
+                    emitLoad('compile', 0.95);
                     extractor = pipe;
                     state = 'ready';
+                    emitLoad('ready', 1);
                     return pipe;
                 });
             }).catch(function (e) {
@@ -528,7 +599,7 @@
                 'semantic disabled after ' + failStreak + ' failures: ' + lastError));
         }
 
-        return ensureModel()
+        return ensureModel(opts.onLoad)
             .then(function () {
                 /* ⚠️ 加载完就检查一次 —— 用户可能已经点了「跳过」 */
                 if (cancelRequested) throw new Error('cancelled');
