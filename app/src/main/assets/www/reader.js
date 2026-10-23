@@ -5086,58 +5086,45 @@
         }
 
         /*
-          ══ ⚠️⚠️ 没有行信息 → **整块输出成一行**（v0.2.19）══
+          ══ ⚠️⚠️ 没有行信息时的渲染（v0.2.20 重写）══
 
-          用户裁决（原话）：
+          ── 我在这段上错了三版，先说清楚错在哪 ──
 
-            「整块当作一行：左边 Name，右边整段原文」
+          v0.2.12：无行信息 → 把整块当一行 → 词条右列吞掉整段文字。
+          v0.2.13：无行信息 → 一律不并 → `Ashish Vaswani, Google Brain`
+                   被劈成三行（原文被切断）。
+          v0.2.19：无行信息 → 整块输出成一行，左列取第一个词条的项名，
+                   右列放**整块原文** → 只标了 "Vaswani"（7 个字符），
+                   作者区却把 1398 字符全吃进去 →「整个区域全成了子标签」。
 
-          ── 为什么必须走这条路 ──
+          ── 用户的正确模型（这次听清楚了）──
 
-          真实论文（NIPS 2017 模板）实测：作者块是
+          `A1` 是**一整段作者区域**，一个编号。区域内部可以有若干子信息：
 
-              text  = "Attention Is All You Need Ashish Vaswani∗ Noam Shazeer∗ …"
-              lines = []          ← **空**，PDF 把这些压成了一整块
+              Name           Vaswani
+              Affiliation    Google Brain
 
-          这块里同时有标题、作者、单位、邮箱，共 1398 字符，
-          **没有任何行边界信息**。
+          —— 这些**都在 A1 内部**，不是三个独立编号。
 
-          旧实现（按词条切）会把这一整块劈成三段：
+          所以正确的渲染是：**按词条切分**（每行 = 左项名 + 右内容），
+          未标注的文字仍然留在同一个 A1 区域里（作为无项名的普通行）。
 
-              行1  ""      "Attention Is All You Need Ashish "
-              行2  Name    "Vaswani"                          ← 词条独占一行
-              行3  ""      "∗ Noam Shazeer∗ Niki Parmar∗ …"
+          ══ ⚠️ 关键：这与 v0.2.13 的"劈开原文"有什么区别 ══
 
-          —— 原文被强行切断，这就是用户反复报的「换行 bug」。
-          不管怎么调"并/不并"的判据都修不好，因为**切分本身**就是错的：
-          没有行信息时，任何切分都是凭空发明排版。
+          没有区别 —— v0.2.13 的**分行方式其实是对的**，
+          用户当时报"换行"是因为**另一件事**：
+          他的块本来有 `b.lines`（只有那一版 `lineStop` 兜底写错了）。
+          我却把"分行"本身当成了病根，一路改成"不分行"，
+          于是一步步滑到 v0.2.19 的"整块吞掉"。
 
-          ── ✅ 正确做法 ──
+          ✅ 所以现在**恢复按词条切分**：
+             · 每行 = `makeAuthorLine(项名, 该词条的文字)`；
+             · 词条之间的文字 → 无项名的普通行；
+             · 全部仍在同一个 `.reader-author-box` 里（= 同一个 A1）。
 
-          无行信息 → **不切分**，整块作为一行输出：
-            · 左列 = 第一个词条的项名（用户要"左边 Name"）；
-            · 右列 = **完整原文**（一字不改、不断行）。
-
-          多个词条时左列只显示第一个的项名 —— 因为整块只有一行，
-          放不下多个左标签。这是无行信息时的**必然取舍**：
-          与其把原文切碎，不如少显示几个标签名。
-
-          ⚠️ 值里**不做任何高亮/切分**：右列就是 `flatText` 原样。
-             用户要的是"整段原文"，不是"标出来的片段"。
+          ⚠️ 右列**只放该词条自己的文字**（`flatText.slice(termA, termB)`），
+             绝不能放整块 —— 那是上一版把全段吞进 A1 的直接原因。
         */
-        if (!lineBoundaries || lineBoundaries.length < 1) {
-            var firstField = null;
-            for (var fm = 0; fm < marks.length; fm++) {
-                if (marks[fm].field) { firstField = marks[fm].field; break; }
-            }
-            boxEl.appendChild(makeAuthorLine(
-                firstField, flatText, firstField === 'name'));
-            /* 整块一个编号，加在这一整个 `<p>` 上 */
-            if (markTyped) markTyped(p, 'author');
-            p.appendChild(boxEl);
-            frag.appendChild(p);
-            return frag;
-        }
 
         for (var m = 0; m < marks.length; m++) {
             var mk = marks[m];
