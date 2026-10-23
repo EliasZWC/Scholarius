@@ -898,6 +898,28 @@
                     aria-label="Re-split paragraphs"
                     data-i18n-aria-label="reader.resegment"></button>
                 <!--
+                  导出模板（v0.2.37）。
+
+                  用户要求：
+                    「悬浮菜单顶部栏最右边增加一个导出模板的图标按钮，
+                      图标用 @drawable/upload_file_24」
+
+                  ⚠️ 位置：放在**最后**，即顶栏最右端。
+                     现有顺序 = 导入模板 / 切分 / 导出模板。
+
+                  ⚠️ 图标由 JS 用 ScholariusUI.icon('uploadFile') 填 ——
+                     与 导入模板（template）成对，一个进一个出。
+
+                  ⚠️ 与「导入模板」共用同一套模板格式（.json），
+                     但方向相反：导出是**把当前块结构写出去**，
+                     导入是按文件里的结构重排。见 reader.js 的
+                     exportTemplateNow()。
+                -->
+                <button class="icon-button reader-tpl-export-btn" type="button"
+                    id="reader-tpl-export"
+                    aria-label="Export layout template"
+                    data-i18n-aria-label="reader.exportTemplate"></button>
+                <!--
                   ⚠️ 详情按钮**已移到底栏**（v0.2.13）——
                      用户要求：
                        「将详情按钮移动到悬浮菜单底部栏，在设置项选项边，

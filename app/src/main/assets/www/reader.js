@@ -123,6 +123,8 @@
     var segBtn = null;
     /** 顶栏「导入排版模板」按钮（v0.2.7） */
     var tplBtn = null;
+    /** 顶栏「导出排版模板」按钮（v0.2.37）—— 顶栏最右端 */
+    var tplExportBtn = null;
     var bottomEl = null;
     var tocBtn = null;
     var settingsBtn = null;
@@ -331,7 +333,20 @@
         'h2',          /* 二级标题 */
         'h3',          /* 三级标题 */
         'reference',   /* 参考文献（每条一个区域）*/
-        'cite'         /* 参考文献的引用编号（如 [12]）*/
+        'cite',        /* 参考文献的引用编号（如 [12]）*/
+        /*
+          ⚠️ 尾注（v0.2.37）。
+
+          用户要求：
+            「增加一个新标签：尾注。md 中使用 > 这种引用块来表示；
+              阅读视图中，字号比正文小 2 号，字体款式不变，
+              但使用同提示条颜色的背景框框起来，无编号。」
+
+          ⚠️ 放在 `cite` **后面**：cite 是行内标注（标在正文里的
+             `[12]`），尾注是块级标注，两者语义相邻但层级不同，
+             把尾注放最后不会打乱正文类标签的常用顺序。
+        */
+        'endnote'
     ];
 
     /**
@@ -765,6 +780,13 @@
                 else if (whole.label === 'title') marker = '# ';
                 else if (whole.label === 'author') marker = '- ';
                 else if (whole.label === 'reference') marker = '1. ';
+                /*
+                  ⚠️ 尾注 → `> ` 引用块（v0.2.37，用户指定）。
+                     ⚠️ 块内多行要**每行都加** `> `，否则 md 里
+                        只有第一行是引用，后续行会掉出引用块。
+                        这一点在下面 body 的组装里处理。
+                */
+                else if (whole.label === 'endnote') marker = '> ';
             } else if (allAuthor) {
                 marker = '- ';
             } else if (kind === 'heading') {
@@ -847,7 +869,97 @@
                 marker = '';
                 rowMarks = 'done';
             } else {
-                body = text;
+                /*
+                  ══ ⚠️ 尾注的块内多行要**每行加** `> `（v0.2.37）══
+
+                  Markdown 的引用块是**逐行**的：
+                  只有首行带 `>` 时，第二行起会被当成普通段落，
+                  跑出引用块外面 —— 回读时就不是一个尾注了。
+
+                       > 第一行
+                       > 第二行
+
+                  ⚠️ 空行在引用块里要用 `>`（单独一个 `>`）表示段落内换行，
+                     但这里**不制造空行** —— 原文块内的空行本来就是
+                     段落分隔，保留成 `>` 会让 md 结构变复杂。
+                     直接把空行也前缀化，保证整块留在引用块内。
+                */
+                if (marker === '> ') {
+                    var endLines = String(text).split(/\r?\n/);
+                    var ebuf = [];
+                    for (var el = 0; el < endLines.length; el++) {
+                        var eline = endLines[el].replace(/\s+$/, '');
+                        /*
+                          ⚠️ 已有 `> ` 前缀就不要再加（v0.2.38）——
+                             否则每保存一次就多一层 `> `。
+                             与 md.js 的 endnote 分支同一判据。
+                        */
+                        var etrim = eline.replace(/^[ \t]+/, '');
+                        if (etrim === '>' || etrim.indexOf('> ') === 0) {
+                            ebuf.push(etrim);
+                        } else if (etrim === '') {
+                            ebuf.push('>');
+                        } else {
+                            ebuf.push('> ' + eline);
+                        }
+                    }
+                    body = ebuf.join('\n');
+                    marker = '';
+                } else {
+                    /*
+                      ══ ⚠️⚠️ 块内换行要变成**空行**（v0.2.38 —— 用户实测）══
+
+                      用户反馈：
+
+                        「模型确实分段了，但是没有空行，
+                          所以被md识别为同一段了」
+
+                      完全正确。md 的段落分隔符是**空行**（`\n\n`），
+                      单个 `\n` 只是同一段内的折行。
+
+                      ── 为什么会只有一个 `\n` ──
+
+                      语义切分产出的段落，`text` 里是用 `\n` 把原来的
+                      几个排版块连起来的（见 semanticReflow 里的
+                      `joinedBuf.push('\n')`）。那是**段落分隔**，
+                      不是折行 —— 但写进 md 时原样保留了。
+
+                      于是：
+
+                          块 = "第一段结束了。\n第二段开始了。"
+
+                      `buildMdText` 直接写出这个 `\n`，而
+                      `MdDoc.parse` 是按 `split("\n{2,}")` 切块的 ——
+                      只有一个换行，切不开 → **两段并成一段**。
+
+                      渲染时看不出问题，因为 CSS 的
+                      `white-space: pre-wrap` 会把 `\n` 显示成换行；
+                      但 md 层面结构已经丢了。这正是"切分完再打开
+                      又变回一大段"的原因。
+
+                      ── ✅ 修法 ──
+
+                      正文块内的 `\n` 一律写成空行（`\n\n`）。
+
+                      ⚠️ 为什么不只对"切分产出的块"生效：
+                         没法可靠区分。而且**这个判断本身也不该做** ——
+                         PDF 提取层作为"一个块"给出的多行，
+                         本来就是排版折行；一旦用户用切分或编辑把它
+                         变成多段，那些换行就该是段落分隔。
+                         md 里没有"块内折行"这个概念，
+                         统一按段落处理是唯一自洽的选择。
+
+                      ⚠️ 公式块例外：公式内的换行是有意义的（对齐），
+                         压成空行会破坏公式排版。见下面 kind 判断。
+                      ⚠️ 作者/文献走 `rowMarks === 'done'` 的分支，
+                         不会走到这里。
+                    */
+                    if (kind === 'formula') {
+                        body = text;
+                    } else {
+                        body = String(text).replace(/\n{2,}/g, '\n').replace(/\n/g, '\n\n');
+                    }
+                }
             }
 
             var chunk = marker + body;
@@ -908,6 +1020,7 @@
         detailBtn = document.getElementById('reader-detail');
         segBtn = document.getElementById('reader-seg');
         tplBtn = document.getElementById('reader-tpl');
+        tplExportBtn = document.getElementById('reader-tpl-export');
         bottomEl = document.getElementById('reader-bottom');
         tocBtn = document.getElementById('reader-toc-btn');
         settingsBtn = document.getElementById('reader-settings-btn');
@@ -1013,6 +1126,7 @@
 
         mountSegBtn();
         mountTplBtn();
+        mountTplExportBtn();
     }
 
     /**
@@ -1042,8 +1156,7 @@
         if (!tplBtn) return;
         if (global.ScholariusUI) {
             tplBtn.innerHTML = global.ScholariusUI.icon('template');
-        }
-        tplBtn.addEventListener('click', function () {
+        }        tplBtn.addEventListener('click', function () {
             if (tplBtn.disabled) return;
             var bridge = global.ScholariusNative;
             if (!bridge || typeof bridge.pickTemplateFile !== 'function') {
@@ -1120,6 +1233,156 @@
     function toastSafe(msg) {
         if (global.ScholariusUI && global.ScholariusUI.toast) {
             global.ScholariusUI.toast(msg);
+        }
+    }
+
+    /**
+     * 顶栏「导出排版模板」按钮（v0.2.37）。
+     *
+     * 用户要求：
+     *
+     *   「悬浮菜单顶部栏最右边增加一个导出模板的图标按钮，
+     *     图标用 @drawable/upload_file_24」
+     *
+     * ══ ⚠️ 导出的到底是"什么模板" ══
+     *
+     * **当前这一篇此刻的排版结构** —— 不是 `TemplateStore` 里
+     * 某个已保存的模板。理由：
+     *
+     *   · 用户可能从没保存过模板，但仍然想把这套排版带走；
+     *   · 用户可能刚改过（块序、角色、标注），
+     *     而 TemplateStore 里那份还是旧的。
+     *
+     * 点了导出就该拿到"屏幕上现在这样"，否则功能就是错的。
+     *
+     * ══ 内容从哪来 ══
+     *
+     * ① `blocks` —— 每个块的**角色**。
+     *    优先级与渲染完全一致：`role`（模板给的）> `kind`（提取层的）
+     *    > 正文。这样导出的模板再导入一次，结果应当不变（幂等）。
+     *
+     * ② `ops` —— 不写。
+     *    ops 描述的是"相对母本 PDF 的变形操作"（合并/拆分/丢弃/重排）。
+     *    当前 `docModel.blocks` 已经**是**变形后的结果，
+     *    再写一遍 ops 会在导入时被二次施加 —— 直接错位。
+     *    ⚠️ 代价：导出的模板只适用于**同块数**的同一份 PDF
+     *       （`blockCount` + `source.sha256` 会一起写出去，
+     *       导入时块数不符会给警告，见 applyTemplate）。
+     *
+     * ③ `source` —— 当前文献的 sha256 / 页数。
+     *    有了它，导入时能校验"这份模板是不是给这篇用的"。
+     */
+    function mountTplExportBtn() {
+        if (!tplExportBtn) return;
+        if (global.ScholariusUI) {
+            tplExportBtn.innerHTML = global.ScholariusUI.icon('uploadFile');
+        }
+
+        tplExportBtn.addEventListener('click', function () {
+            if (tplExportBtn.disabled) return;
+
+            var bridge = global.ScholariusNative;
+            if (!bridge || typeof bridge.exportTemplateJson !== 'function') {
+                toastSafe(t('reader.exportTemplateFailed'));
+                return;
+            }
+
+            var json = templateJsonOfCurrent();
+            if (!json) {
+                toastSafe(t('reader.exportTemplateFailed'));
+                return;
+            }
+
+            /*
+              ⚠️ 文件名 = `<标题>-<sha前8>.json`
+                 与详情页导出的命名规则保持一致，用户拿到两个文件时
+                 能看出它们来自同一篇。
+              ⚠️ 标题里可能有 `/`、`:` 等非法字符 —— 原生侧会再清洗一次，
+                 但这里先去掉，避免文件名变成一串下划线。
+            */
+            var title = (currentDoc && currentDoc.title)
+                ? String(currentDoc.title) : 'template';
+            var sha = (currentDoc && currentDoc.sha256)
+                ? String(currentDoc.sha256) : '';
+            var base = title.replace(/[\\/:*?"<>|\n\r]/g, '_').slice(0, 60);
+            var fname = base + (sha ? '-' + sha.slice(0, 8) : '') + '.json';
+
+            try {
+                bridge.exportTemplateJson(json, fname);
+                toastSafe(t('reader.exportTemplateDone'));
+            } catch (e) {
+                trace('reader:tpl', 'export failed: ' + (e && e.message));
+                toastSafe(t('reader.exportTemplateFailed'));
+            }
+        });
+    }
+
+    /**
+     * 按当前 `docModel.blocks` 生成一份模板 JSON（v0.2.37）。
+     *
+     * @return {string|null} JSON 文本；无块时返回 null
+     */
+    function templateJsonOfCurrent() {
+        var list = (docModel.blocks || []).filter(function (b) {
+            return b && String(textOfBlock(b) || '').replace(/\s+/g, '');
+        });
+        if (!list.length) return null;
+
+        /*
+          ⚠️ 角色判定顺序必须与渲染一致，否则"导出→导入"不幂等：
+               ① `role`（模板显式指定）
+               ② `kind`（提取层判断，heading / formula …）
+               ③ 兜底正文
+          ⚠️ 标题层级：`role` 优先用自己的 `roleLevel`，
+             `kind === 'heading'` 时用 `level`。
+        */
+        var specs = [];
+        for (var i = 0; i < list.length; i++) {
+            var b = list[i];
+            var role = '';
+            var lv = 0;
+
+            if (b.role) {
+                role = String(b.role);
+                lv = (b.roleLevel | 0) || 0;
+            } else if (b.kind === 'heading') {
+                role = 'heading';
+                lv = (b.level | 0) || 1;
+            } else if (b.kind === 'formula') {
+                role = 'formula';
+            } else {
+                role = 'body';
+            }
+
+            /* ⚠️ 与 TemplateStore.toJson 同形：[index, role] 或 [index, role, level] */
+            specs.push(lv > 0 ? [i, role, lv] : [i, role]);
+        }
+
+        var doc = currentDoc || {};
+        var tpl = {
+            schema: 1,
+            /*
+              ⚠️ 导出的是"临时模板"，id 用时间戳生成 ——
+                 TemplateStore 的 id 是 `tpl-` + 8 位十六进制。
+                 用户如果把它当模板导入，会有自己的 id（导入时重算）。
+            */
+            id: 'tpl-' + String(Date.now()).slice(-8),
+            name: String(doc.title || 'template').slice(0, 60),
+            source: {
+                sha256: String(doc.sha256 || ''),
+                size: Number(doc.pdfSize || 0) || 0,
+                pages: Number(doc.pdfPages || 0) || 0
+            },
+            blockCount: list.length,
+            blocks: specs,
+            style: {}
+        };
+
+        try {
+            return JSON.stringify(tpl, null, 2);
+        } catch (e) {
+            trace('reader:tpl', 'serialize failed: ' + (e && e.message));
+            return null;
         }
     }
 
@@ -2629,7 +2892,9 @@
      */
     var BLOCK_LABELS = {
         title: true, heading: true, h1: true, h2: true, h3: true,
-        author: true, abstract: true, reference: true, body: true
+        author: true, abstract: true, reference: true, body: true,
+        /* ⚠️ 尾注是块级标注（md 里 `> ` 引用块），必须能独立成段（v0.2.37） */
+        endnote: true
     };
 
     function splitBlockByMarks(text, spans) {
@@ -6358,6 +6623,70 @@
 
             var mdBullet = /^[-*+]\s+([\s\S]*)$/.exec(text);
             var mdOrdered = /^(\d+)[.)]\s+([\s\S]*)$/.exec(text);
+
+            /*
+              ══ ⚠️ 尾注：`> ` 引用块（v0.2.37）══
+
+              用户要求：
+
+                「增加一个新标签：尾注。md 中使用 > 这种引用块来表示；
+                  阅读视图中，字号比正文小 2 号，字体款式不变，
+                  但使用同提示条颜色的背景框框起来，无编号。」
+
+              三个要点逐一对应：
+                · **小 2 号**    → CSS `.is-endnote-body` 里 15px
+                                   （正文 17px，见 .reader-content 的 font-size）
+                · **背景框**     → `--ui-active-bg`（用户定义的"提示底色"，
+                                   灰色；日/夜主题各有值）
+                · **无编号**     → **不调** `attachBodyMarker`。
+                                   正文/作者/文献都有 A1/R1/1,2,3 这类编号，
+                                   尾注是旁注，不该占正文编号序列。
+                · **字体款式不变** → 只改 font-size，不碰 font-family；
+                                   字体跟随 `.reader-content` 的用户设置。
+
+              ⚠️ 逐行剥掉 `> ` 前缀再显示：引用记号是 md 语法，不是内容。
+                 剥完用 `\n` 连起来 —— 保留块内换行（`white-space: pre-wrap`
+                 会原样渲染），不能压成一行。
+              ⚠️ 单独一个 `>` 行表示引用块内的空行 → 还原成空行。
+            */
+            var mdQuote = /^>/.test(text);
+            if (mdQuote) {
+                closeList();
+
+                /*
+                  ⚠️ 尾注也输出标签段（`Endnote / 尾注`）——
+                     用户要求的是"增加一个新标签"，与其它标签一致地
+                     有前置说明文字。但它**没有编号**（见上）。
+                     ⚠️ `force = false`：相邻的尾注行应该合成一个区域、
+                        只输出一次标签段，不要每段都写一遍。
+                */
+                pushLabelHead('endnote', false);
+
+                var qRaw = text.split(/\r?\n/);
+                var qLines = [];
+                for (var qi = 0; qi < qRaw.length; qi++) {
+                    var ql = qRaw[qi];
+                    var qt = ql.replace(/^[ \t]+/, '');
+                    if (qt === '>' || qt === '> ') {
+                        qLines.push('');
+                    } else if (qt.indexOf('> ') === 0) {
+                        qLines.push(qt.slice(2));
+                    } else if (qt.charAt(0) === '>') {
+                        qLines.push(qt.slice(1));
+                    } else {
+                        /* 续行（理论上不该出现）：原样保留 */
+                        qLines.push(ql);
+                    }
+                }
+
+                var ep = document.createElement('p');
+                ep.className = 'reader-para is-labeled-body is-endnote-body';
+                ep.setAttribute('data-label', 'endnote');
+                ep.textContent = qLines.join('\n').replace(/^\n+|\n+$/g, '');
+                copyBlockAttrs(ep, null, b);
+                frag.appendChild(ep);
+                continue;
+            }
 
             var isBullet = !!mdBullet;
             var isOrdered = !!mdOrdered;

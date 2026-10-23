@@ -2568,6 +2568,68 @@ body {
 }
 
 /*
+  ══ 尾注（v0.2.37）══
+
+  用户要求（原话）：
+
+    「增加一个新标签：尾注。md 中使用 > 这种引用块来表示；
+      阅读视图中，字号比正文小 2 号，字体款式不变，
+      但使用同提示条颜色的背景框框起来，无编号。」
+
+  逐条对应：
+
+  · **小 2 号** —— 正文 17px（`.reader-content` 的 font-size），
+      所以用 `em` 反算：15/17 = 0.8824em。
+      ⚠️ 必须用 `em` 而不是 `px`：正文字号用户可调，
+         写死 15px 的话用户把正文调到 28px 时，
+         尾注反而比正文小 13 号，完全失控。
+      ⚠️ 用 `em` 相对的是**父元素**字号。`.reader-para` 继承
+         `.reader-content` 的 font-size，所以 0.8824em = 15px @ 17px。
+
+  · **字体款式不变** —— 只声明 font-size，
+     不碰 `font-family` / `font-weight` / `letter-spacing`，
+     完全跟随用户在设置里选的字族与字重。
+
+  · **提示条颜色的背景框** —— `--ui-active-bg`。
+     这是本项目里"界面提示底色"的既有变量（见 :root 里那段注释：
+     用户要求「提示色不要用黄色，不符合我们的配色方案，用灰色就好」），
+     日间 #E4E4E2 / 夜间随主题走，两端都不会刺眼。
+     ⚠️ 不要用 `--sel-bg` —— 那是**正文字符选区**的暖黄高亮，
+        语义完全不同，而且这里明确要"提示条"色。
+
+  · **无编号** —— JS 侧没有调 `attachBodyMarker`，所以不会出现
+     `A1` / `R1` / `1,2,3` 这类前缀。这里也不需要用 CSS 压掉它。
+
+  ⚠️ 圆角 + 内边距：背景框要"框起来"，贴着文字会显得局促。
+     左边距略大于右边，是因为外层的正文编号槽（`.is-body-para` 的
+     `padding-left`）在尾注上不生效 —— 尾注不是正文段。
+  ⚠️ `white-space: pre-wrap` 继承自 `.reader-para`，
+     块内换行会原样保留，不需要重复声明。
+*/
+.reader-para.is-labeled-body.is-endnote-body {
+    font-size: 0.8824em;              /* 17 → 15px（-2） */
+    line-height: 1.65;
+    background: var(--ui-active-bg);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 0.9em;
+    /*
+      ⚠️ 背景框自带边界感，不需要额外的 border ——
+         加边框会让灰色块看起来像"错误提示"。
+    */
+    color: var(--on-surface-variant);
+}
+
+/*
+  ⚠️ 相邻尾注（同一区域的多段）之间不要双份间距：
+     标签段 `.reader-label-head` 自己有 `margin-top`，
+     第一段尾注再叠 0.9em 会显得断开。
+*/
+.reader-label-head[data-label="endnote"] + .reader-para.is-endnote-body {
+    margin-top: 0.5em;
+}
+
+/*
   ══ 真正的选区高亮（v0.1.41）══
 
   ⚠️ 上一版（v0.1.40）把 `::selection` 设成透明、改用 `.is-sel` 画背景。

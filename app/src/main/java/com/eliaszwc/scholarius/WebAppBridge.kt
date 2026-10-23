@@ -72,6 +72,15 @@ class WebAppBridge(
     private val onDeleteTemplate: (String) -> Unit,
     /** 导出模板到用户选的位置（走 SAF） */
     private val onExportTemplate: (String) -> Unit,
+    /**
+     * 导出**网页侧现算的**模板 JSON（v0.2.37）。
+     *
+     * ⚠️ 与 `onExportTemplate` 的区别：
+     *    · 那个按 id 从 TemplateStore 取一份**已保存**的模板；
+     *    · 这个导出**当前屏幕上的结构**，可能从未保存过。
+     *    见 `exportTemplateJson` 的说明。
+     */
+    private val onExportTemplateJson: (String, String) -> Unit,
     /** 套用模板到某篇文献（templateId 为空串 = 取消套用，回通用规则） */
     private val onApplyTemplate: (String, String) -> Unit,
     /**
@@ -291,6 +300,36 @@ class WebAppBridge(
     @JavascriptInterface
     fun exportDocs(idsJson: String) {
         onExportDocs(idsJson)
+    }
+
+    /**
+     * 把**网页侧生成的**模板 JSON 导出成文件（v0.2.37）。
+     *
+     * ══ ⚠️⚠️ 为什么由网页生成，而不是原生从 TemplateStore 读 ══
+     *
+     * 用户要求：
+     *
+     *   「悬浮菜单顶部栏最右边增加一个导出模板的图标按钮」
+     *
+     * 已有的 `exportTemplate(id)` 是**详情页**用的：它按 id 去
+     * `TemplateStore` 里找一份**已保存**的模板再导出。
+     *
+     * 但阅读页顶栏要导出的是「**当前这一篇此刻的排版结构**」——
+     * 它可能：
+     *   · 从来没保存成模板（没有 id）；
+     *   · 刚刚被用户改过（块序、角色、标注都变了），
+     *     与 TemplateStore 里那份已经不是一回事。
+     *
+     * 用户点「导出」，期望拿到的是**屏幕上现在这样**。
+     * 所以模板内容必须由网页侧按当前 `docModel.blocks` 现算，
+     * 原生只负责把字符串写成文件。
+     *
+     * @param json     完整模板 JSON（schema/id/name/source/blocks/ops/style）
+     * @param filename 建议文件名（不含路径；原生仍会做安全清洗）
+     */
+    @JavascriptInterface
+    fun exportTemplateJson(json: String, filename: String) {
+        onExportTemplateJson(json, filename)
     }
 
     // -----------------------------------------------------------------------

@@ -114,6 +114,10 @@
             'reader.importTemplateDone': 'Template applied',
             'reader.importTemplateFailed': 'Could not read this template file.',
             'reader.importTemplateMismatch': 'This template was made for a different PDF.',
+            // ⚠️ v0.2.37：顶栏导出模板（导出的是当前这篇此刻的排版结构）
+            'reader.exportTemplate': 'Export layout template',
+            'reader.exportTemplateDone': 'Template saved',
+            'reader.exportTemplateFailed': 'Could not export this template.',
             /*
               ⚠️ 导入前确认（v0.2.13）。
                  文案必须说清"会覆盖什么"，不能只写“确定吗？”——
@@ -313,6 +317,8 @@
             'reader.label.h3': 'Heading 3',
             'reader.label.reference': 'References',
             'reader.label.cite': 'Citation',
+            // ⚠️ v0.2.37：尾注（md 里用 `> ` 引用块表示）
+            'reader.label.endnote': 'Endnote',
             'reader.citePick': 'Cite Reference',
             'reader.citeEmpty': 'No references yet. Label some paragraphs as References first.',
             'reader.fieldPick': 'Author Field',
@@ -542,6 +548,10 @@
             'reader.importTemplateDone': '已套用模板',
             'reader.importTemplateFailed': '无法读取该模板文件。',
             'reader.importTemplateMismatch': '这个模板是为另一份 PDF 做的。',
+            // ⚠️ v0.2.37：顶栏导出模板（导出的是当前这篇此刻的排版结构）
+            'reader.exportTemplate': '导出排版模板',
+            'reader.exportTemplateDone': '模板已导出',
+            'reader.exportTemplateFailed': '无法导出该模板。',
             /*
               ⚠️ 导入前确认（v0.2.13）。
                  文案必须说清会被覆盖的是什么，不能只写“确定吗？”——
@@ -709,6 +719,8 @@
             'reader.label.h3': '三级标题',
             'reader.label.reference': '参考文献',
             'reader.label.cite': '引用',
+            // ⚠️ v0.2.37：尾注（md 里用 `> ` 引用块表示）
+            'reader.label.endnote': '尾注',
             'reader.citePick': '引用哪条文献',
             'reader.citeEmpty': '还没有文献。先把几段标注为「参考文献」。',
             'reader.fieldPick': '作者项',

@@ -1000,6 +1000,21 @@
         caretUp: 'M480-528 296-344l-56-56 240-240 240 240-56 56-184-184Z',
 
         /*
+          Material Symbols: upload_file（一张纸 + 向上的箭头）
+
+          用途：阅读页**悬浮菜单顶栏**最右端的「导出模板」按钮（v0.2.37）。
+
+          ⚠️ 用户指定：`@drawable/upload_file_24`，并给了 ImageView 片段。
+
+          ⚠️ 选 outlined 而不是 filled —— 与顶栏其它图标
+             （scan_24 / description_24 都是 outlined）保持一致。
+             路径由 `tools/fetch_icon.py upload_file` 取官方值。
+
+          ⚠️ 960 体系，已在 ICON_VIEWBOX 登记。
+        */
+        uploadFile: 'M440-200h80v-167l64 64 56-57-160-160-160 160 57 56 63-63v167ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z',
+
+        /*
           Material Symbols: description（一张纸 + 两条横线）
 
           用途：阅读页**底栏**的「Metadata」按钮（v0.2.13）。
@@ -1433,6 +1448,8 @@
         /* 标签行右端的展开/收起箭头（v0.2.16），960 体系 —— 必须登记 */
         caretDown: SYMBOLS_VIEWBOX,
         caretUp: SYMBOLS_VIEWBOX,
+        /* 悬浮菜单顶栏的「导出模板」（v0.2.37），960 体系 —— 必须登记 */
+        uploadFile: SYMBOLS_VIEWBOX,
         /*
           ⚠️ 详情按钮移到阅读页**底栏**后用的图标（v0.2.13）。
              用户指定 `@drawable/description_24` ——

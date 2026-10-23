@@ -520,6 +520,9 @@ class MainActivity : AppCompatActivity() {
                 onExportTemplate = { id ->
                     runOnUiThread { exportTemplate(id) }
                 },
+                onExportTemplateJson = { json, filename ->
+                    runOnUiThread { exportTemplateJson(json, filename) }
+                },
                 onApplyTemplate = { docId, templateId ->
                     thread { applyTemplateTo(docId, templateId) }
                 },
@@ -1589,6 +1592,61 @@ class MainActivity : AppCompatActivity() {
 
         val safeName = t.name.replace(Regex("[\\\\/:*?\"<>|\\n\\r]"), "_").take(60)
         val name = "$safeName-${t.pdfSha256.take(8)}.json"
+
+        try {
+            exportBuffer = json
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/json"
+                putExtra(Intent.EXTRA_TITLE, name)
+            }
+            startActivityForResult(intent, REQ_EXPORT_TEMPLATE)
+        } catch (e: Throwable) {
+            Log.w(TAG, "无法打开保存对话框：${e.message}")
+            exportBuffer = null
+        }
+    }
+
+    /**
+     * 把**网页侧现算的**模板 JSON 导出成文件（v0.2.37）。
+     *
+     * ══ ⚠️ 为什么不能复用 `exportTemplate(id)` ══
+     *
+     * 那个函数按 id 去 `TemplateStore` 取一份**已保存**的模板。
+     * 但阅读页顶栏的「导出模板」要导出的是
+     * **当前这一篇此刻的排版结构**：
+     *
+     *   · 可能从来没保存成模板（所以没有 id）；
+     *   · 可能刚被用户改过（块序 / 角色 / 标注都变了），
+     *     与 TemplateStore 里那份已经不是一回事。
+     *
+     * 用户点导出，期望拿到的是**屏幕上现在这样**。
+     * 所以内容由网页侧按当前 `docModel.blocks` 现算，原生只负责落盘。
+     *
+     * ⚠️ 仍然走 SAF（`ACTION_CREATE_DOCUMENT`），与其它导出一致 ——
+     *    用户要知道文件去哪，且 Android 10+ 不允许随意写外部存储。
+     * ⚠️ 复用 `exportBuffer` 与 `REQ_EXPORT_TEMPLATE`：
+     *    文件写的逻辑完全相同（见 onActivityResult 的分支），
+     *    再复制一份只会多一处要同步维护的地方。
+     *
+     * @param json     完整模板 JSON
+     * @param filename 建议文件名（这里仍做一次安全清洗 —— 不能信任网页）
+     */
+    private fun exportTemplateJson(json: String, filename: String) {
+        if (json.isBlank()) {
+            Log.w(TAG, "导出模板失败：内容为空")
+            return
+        }
+        /*
+          ⚠️ 文件名的安全清洗在**原生**做，不能只在网页侧做。
+             `EXTRA_TITLE` 里的 `../` 之类不会真的越权（SAF 会规范化），
+             但保留非法字符会让不同 ROM 的保存对话框行为不一致。
+        */
+        val safe = filename
+            .replace(Regex("[\\\\/:*?\"<>|\\n\\r]"), "_")
+            .take(60)
+            .ifBlank { "template" }
+        val name = if (safe.endsWith(".json", ignoreCase = true)) safe else "$safe.json"
 
         try {
             exportBuffer = json

@@ -299,6 +299,35 @@ object MdDoc {
                     if (rest.isNotEmpty()) body = rest
                 }
                 any = true
+            } else if (text.startsWith(">")) {
+                /*
+                  ══ ⚠️⚠️ 尾注：`> ` 引用块（v0.2.37）══
+
+                  用户要求：
+                    「增加一个新标签：尾注。md 中使用 > 这种引用块来表示」
+
+                  ⚠️ 引用块是**逐行**的，导出时每行都带 `> `（见 www/md.js）。
+                     读回来时要把每行的前缀逐个剥掉，再用 `\n` 连起来 ——
+                     不能用 `trim()` 一把梭，那会把块内换行吃掉。
+
+                  ⚠️ 单独一个 `>` 表示引用块内的空行 → 还原成空行。
+
+                  ⚠️ 判定放在 ordered/bullet 之后：`> ` 与列表记号不会重叠，
+                     但顺序上放在它们后面更安全（万一将来支持 `> - item`
+                     这种嵌套列表，先命中列表分支才不会误判）。
+                */
+                kind = "endnote"
+                val qLines = text.split("\n").map { ln ->
+                    val t = ln.trimStart()
+                    when {
+                        t == ">" -> ""
+                        t.startsWith("> ") -> t.substring(2)
+                        t.startsWith(">") -> t.substring(1)
+                        else -> t          // 续行（理论上不该出现）
+                    }
+                }
+                body = qLines.joinToString("\n").trim()
+                any = true
             } else if (text.isNotEmpty()) {
                 any = true
             }

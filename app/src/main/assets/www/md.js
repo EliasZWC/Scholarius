@@ -503,6 +503,54 @@
                 out.push(refCounter + '. ' + refTxt);
                 continue;
             }
+            /*
+              ══ ⚠️ 尾注 → `> ` 引用块（v0.2.37，用户指定）══
+
+              用户要求：
+                「增加一个新标签：尾注。md 中使用 > 这种引用块来表示」
+
+              ⚠️ 引用块是**逐行**语法：只有首行带 `>` 时，第二行起
+                 会掉出引用块，回读时就不是一个尾注了。所以每行都要加。
+              ⚠️ 空行写成单独的 `>`（引用块内的空行），
+                 既保持块结构，又不让 md 里出现"裸空行 + 无前缀行"。
+              ⚠️ 放在 `listMarker` 与 author 分支之后：
+                 尾注是块级正文，不参与列表聚合。
+            */
+            if (kind === 'endnote') {
+                var enLines = String(text).split(/\r?\n/);
+                var enOut = [];
+                for (var en = 0; en < enLines.length; en++) {
+                    var enLine = enLines[en].replace(/\s+$/, '');
+                    /*
+                      ══ ⚠️⚠️ 已有 `> ` 前缀就**不要再加**（v0.2.38 实测）══
+
+                      从 md 读进来的尾注块，`text` 里**本来就带** `> ` ——
+                      见 `MdDoc.parse`：它把 `> ` 剥掉了，但渲染层
+                      （`renderMd`）拿到的是**原始块文本**。
+
+                      于是实测出现：
+
+                          > > Note one.
+                          > > Note two.
+
+                      每导出一次就多一层 `> `，块越用越深。
+
+                      ✅ 逐行判断：这一行已经是引用行就原样保留，
+                         否则补前缀。这样无论调用方给的是
+                         "带前缀"还是"纯文本"，输出都正确。
+                    */
+                    var trimmed = enLine.replace(/^[ \t]+/, '');
+                    if (trimmed === '>' || trimmed.indexOf('> ') === 0) {
+                        enOut.push(trimmed);
+                    } else if (trimmed === '') {
+                        enOut.push('>');
+                    } else {
+                        enOut.push('> ' + enLine);
+                    }
+                }
+                out.push(enOut.join('\n'));
+                continue;
+            }
             if (kind === 'author') {
                 /*
                   ══ ⚠️⚠️ 绝不把多行压成一行（v0.2.31 修）══
@@ -643,8 +691,44 @@
                  「作者项可以直接分为一个个无序列表」
                  「此时直接不需要换行了，将提取的文字变成项目就可以了」
             */
+            /*
+              ══ ⚠️⚠️ 块内换行 → 空行（段落分隔）（v0.2.38）══
+
+              用户反馈：
+
+                「模型确实分段了，但是没有空行，所以被md识别为同一段了」
+
+              上面那段注释说的是「不要用 `lines` 拼硬换行」——
+              那是针对 **PDF 排版折行**（`lines` 每行只有几十字符）。
+              这条规则本身没错，但它**漏掉了另一种换行**：
+
+              `text` 里本身就带 `\n` 的情形。语义切分正是这样：
+
+                  块.text = "第一段结束了。\n第二段开始了。"
+
+              那个 `\n` 是**段落分隔**，不是折行。
+
+              ⚠️ 旧代码直接 `out.push(body)`，`\n` 原样写出。
+                 而 `MdDoc.parse` 按 `split("\n{2,}")` 切块 ——
+                 只有一个换行，切不开 → **两段并成一段**。
+
+              渲染时看不出来（CSS `white-space: pre-wrap` 会显示换行），
+              但 md 结构已经丢了。这就是用户说的
+              「切分完再打开又变回一大段」。
+
+              ✅ 块内的 `\n` 一律写成空行（`\n\n`）；
+                 连续的多个换行先压成一个，避免产生三重空行。
+              ⚠️ 不碰 `lines`（那是排版折行，仍然合并）——
+                 两者来源不同，不能混为一谈。
+              ⚠️ 公式块例外：公式内换行有对齐意义，压成空行会破坏排版。
+            */
             var body = text.replace(/^\s+|\s+$/g, '');
-            if (body) out.push(body);
+            if (body) {
+                if (kind !== 'formula' && body.indexOf('\n') >= 0) {
+                    body = body.replace(/\n{2,}/g, '\n').replace(/\n/g, '\n\n');
+                }
+                out.push(body);
+            }
         }
 
         /*
