@@ -4,6 +4,147 @@
 
 ---
 
+## [0.2.14] - 2026-10-23
+
+### ① 详情按钮移到底栏，改名 Metadata
+
+用户要求：
+
+> 「将详情按钮移动到悬浮菜单底部栏，在设置项选项边，目录选项右边，
+>   命名为 Metadata」
+
+底栏顺序：**目录 / Metadata / 设置**。
+
+图标用 `@drawable/description_24`（用户指定）。
+
+#### ⚠️ 着色必须与底栏其他项完全一致
+
+用户特别强调：「要求着重色完全与底部栏其他选项相同」。
+
+做法不是"抄一个颜色值"，而是**让结构相同**：
+
+- 三个按钮都是 `.reader-action`，内部都是 `icon + .reader-action-label`；
+- 颜色从 `.reader-action` 的 `color: var(--nav-inactive)` 继承，
+  `svg { fill: currentColor }` 自动跟随；
+- **不**给 Metadata 单独写任何颜色/尺寸。
+
+⚠️ 踩过一次：最初写 `detailBtn.innerHTML = icon('metaData')`，
+把 HTML 里已有的 `<span class="reader-action-label">` 一起冲掉了 ——
+底栏只剩一个图标、没有文字，与另两项明显不同。
+改用 `insertAdjacentHTML('afterbegin', ...)` 只插图标。
+
+真机量取三项（完全一致）：
+
+```text
+reader-toc-btn  y=923 h=48 icon=24×24 label y=953 12px rgb(140,140,138)
+reader-detail   y=923 h=48 icon=24×24 label y=953 12px rgb(140,140,138)
+reader-settings y=923 h=48 icon=24×24 label y=953 12px rgb(140,140,138)
+```
+
+### ② 顶栏图标换成用户指定的两个
+
+| 按钮 | 旧 | 新 |
+|---|---|---|
+| 导入排版模板 | `description` | **`document_search`** |
+| 语义重新分段 | `split_scene_2` | **`scan`** |
+
+均为 960 体系，已登记 `ICON_VIEWBOX`，路径取自 `tools/fetch_icon.py`。
+
+#### ⚠️ 顺便修掉一个静默 bug：`resegment` 被定义了两次
+
+`components.js` 的 `ICON_PATHS` 里同时存在两条 `resegment`：
+一条在文件上部（v0.2.1 的 `split_scene_2`），一条在文件末尾附近。
+**JS 对象重复键不报错，后者静默覆盖前者。**
+
+症状：改了源码、`node --check` 通过、构建成功、装机后图标**毫无变化**。
+判据：**改完图标真机没变 → 先 grep 这个键是不是出现了两次。**
+
+已删除重复定义，并留下注释说明。
+
+### ③ ⚠️ 子标签只标一行，整段都被标成子标签
+
+用户反馈（原话）：
+
+> 「子标签标注出现问题，仅选中了段中第一行的文本，
+>   结果整个区域全部被标为某个子标签。」
+
+#### 数据层是对的
+
+`applyLabel()` 里 author 分支用的是**精确选区**，实测写入
+`[{start: 0, end: 10, label: 'author', field: 'affiliation'}]` —— 没问题。
+
+#### 真因在渲染层的两处「并入」
+
+`makeAuthorLinesEl()` 里有两条把"词条之后的文字并到词条右列"的规则，
+它俩的兜底分支都写成了**"没有行信息 = 整块是一行"**：
+
+```js
+// pushPlain 里
+var canJoin = prevLine && ... && rows.length === 1;   // 无行信息时 rows 恒为 1 项
+// 词条后并入里
+if (lineStop < 0) lineStop = flatText.length;         // 无行边界 → 并到块尾
+```
+
+而 PDF 提取出的块**绝大多数没有 `b.lines`**（多行被合并成一段）。
+于是词条右列吸走了**整块剩余的全部文字** ——
+用户只选了前 10 个字符，视觉上整段都成了"单位"。
+
+#### ✅ 修法：没有行边界时一律不并
+
+- `pushPlain` 的 `canJoin` 增加 `hasRowCuts = cuts && cuts.length > 1`；
+- 词条后的并入在 `lineStop < 0` 时改为 `lineStop = cursor`（不并）。
+
+⚠️ **已知退化**：`Ashish Vaswani, Google Brain` 这种"词条 + 同行尾巴"
+在没有行信息时会显示成两行。这是可接受的 ——
+**多一个换行，远好过把整段错标成一个子标签。**
+有 `b.lines` 时仍会正确并回一行。
+
+真机验证（`__testRender` 注入单块 + `[0,10)` 标注）：
+
+```text
+Affiliation  1 arXiv:13                                  ← 只有 10 个字符
+             01.3781v3 [cs.CL] 7 Sep 2013 than a few ...  ← 普通行，不再被吞
+```
+
+### ④ 标签表单改成「字体家族」那样的选择器
+
+用户要求：
+
+> 「标签表单设计有问题，具体理想样式请参照设置选项中字体家族
+>   这个栏目的设计。」
+
+「字体家族」用的是 `.row-menu`：**一张浮动卡片** + 48px 行高 +
+选中项**加粗 + 右端勾**，没有分隔线、没有整条底色。
+
+#### 改动对照
+
+| | 旧 | 新 |
+|---|---|---|
+| 容器 | 透明列表 | 卡片（`--surface` + 边框 + `16px` 圆角 + 大阴影） |
+| 内边距 | 0 | 6px（与 `.row-menu` 一致） |
+| 行高 | `padding: 12px 14px` | `min-height: 48px; padding: 0 14px` |
+| 圆角 | 12px | 12px（不变） |
+| 选中态 | 铺 `--ui-active-bg` 底色 | **加粗 700 + 右端勾**，底色透明 |
+| 按下 | `opacity: .6` | `--surface-raised`（与 row-menu 一致） |
+
+真机量取：
+
+```text
+minHeight=48px  radius=12px  padding=0px 14px  fontSize=15px
+activeWeight=700  activeBg=rgba(0,0,0,0)  hasCheck=true
+```
+
+#### ⚠️ 勾与箭头的 `margin-left: auto` 会打架
+
+两者都带 `auto` 时会平分剩余空间，勾悬在行中间。
+用 `:has()` 在"含勾的行"里把箭头的 auto 归零：
+
+```css
+.sel-label-item:has(.sel-label-check) .sel-label-sub-toggle { margin-left: 0; }
+```
+
+---
+
 ## [0.2.13] - 2026-10-23
 
 ### ① 子标签改成**行内下拉**，不再是另一个表单

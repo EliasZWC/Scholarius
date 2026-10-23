@@ -266,6 +266,13 @@
             'reader.tocLabel': 'Catalogue',
             'reader.settings': 'Reader Setting',
             'reader.settingsLabel': 'Setting',
+            /*
+              ⚠️ 底栏按钮的文字标签（v0.2.13）——
+                 详情按钮移到底栏后也要有文字，与目录/设置保持一致。
+                 用户要求「着重色完全与底部栏其他选项相同」，
+                 结构相同是前提（都是 icon + 同一套 label）。
+            */
+            'reader.detailsLabel': 'Metadata',
             'reader.tocEmpty': 'No Headings Found In This Document.',
             'reader.abstract': 'Abstract',
 
@@ -651,6 +658,7 @@
             'reader.tocLabel': '目录',
             'reader.settings': '阅读设置',
             'reader.settingsLabel': '设置',
+            'reader.detailsLabel': 'Metadata',
             'reader.tocEmpty': '未能从本文中识别出标题。',
             'reader.abstract': '摘要',
 

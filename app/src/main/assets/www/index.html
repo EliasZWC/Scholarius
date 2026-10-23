@@ -898,14 +898,12 @@
                     aria-label="Re-split paragraphs"
                     data-i18n-aria-label="reader.resegment"></button>
                 <!--
-                  详情按钮 —— 组内最右。
-
-                  图标由 JS 用 ScholariusUI.icon('moreHoriz') 填 ——
-                  这样图标路径只有 components.js 一处定义，不在这里重复一遍。
+                  ⚠️ 详情按钮**已移到底栏**（v0.2.13）——
+                     用户要求：
+                       「将详情按钮移动到悬浮菜单底部栏，在设置项选项边，
+                        目录选项右边，命名为 Metadata」
+                     底栏顺序因此变成：目录 / Metadata / 设置。
                 -->
-                <button class="icon-button reader-detail-btn" type="button"
-                    id="reader-detail" aria-haspopup="dialog" aria-expanded="false"
-                    aria-label="Details" data-i18n-aria-label="reader.details"></button>
             </div>
         </header>
 
@@ -1031,6 +1029,29 @@
                             <path d="M4 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm0-6c-.83 0-1.5.67-1.5 1.5S3.17 7.5 4 7.5 5.5 6.83 5.5 6 4.83 4.5 4 4.5zm0 12c-.83 0-1.5.68-1.5 1.5s.68 1.5 1.5 1.5 1.5-.68 1.5-1.5-.67-1.5-1.5-1.5zM7 19h14v-2H7v2zm0-6h14v-2H7v2zm0-8v2h14V5H7z" />
                         </svg>
                         <span class="reader-action-label" data-i18n="reader.tocLabel">Catalogue</span>
+                    </button>
+
+                    <!--
+                      Metadata（v0.2.13）—— 原来是顶栏最右的"更多"。
+
+                      用户要求：
+                        「将详情按钮移动到悬浮菜单底部栏，在设置项选项边，
+                          目录选项右边，命名为 Metadata」
+
+                      ⚠️ 放在目录和设置**中间** —— 底栏从左到右：
+                         目录 / Metadata / 设置。
+                      ⚠️ 着重色必须与另两项完全相同：
+                         所以这里**不写**单独的颜色/尺寸，只用
+                         `.reader-action` + `.reader-action-label`，
+                         与另两项共用同一套样式。
+                         图标颜色靠 `currentColor` 继承（见 icon() 生成的 svg）。
+                      ⚠️ 图标由 JS 用 ScholariusUI.icon('metaData') 填 ——
+                         与顶栏那两个按钮一样，路径只在 components.js 里定义。
+                    -->
+                    <button class="reader-action" type="button" id="reader-detail"
+                        aria-haspopup="dialog" aria-expanded="false"
+                        aria-label="Metadata" data-i18n-aria-label="reader.details">
+                        <span class="reader-action-label" data-i18n="reader.detailsLabel">Metadata</span>
                     </button>
 
                     <button class="reader-action" type="button" id="reader-settings-btn"

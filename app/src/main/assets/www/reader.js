@@ -939,18 +939,31 @@
         }
 
         /*
-          详情按钮。
+          详情 / Metadata 按钮（v0.2.13 从顶栏移到底栏）。
+
+          用户要求：
+            「将详情按钮移动到悬浮菜单底部栏，在设置项选项边，
+              目录选项右边，命名为 Metadata」
 
           ⚠️ 打开详情页时**不关闭阅读页** ——
              详情是盖在阅读页之上的一层，关掉详情又回到阅读页。
              若先关阅读页，关完详情就回到文库了，用户得重新点进来。
+
+          ⚠️⚠️ 图标必须**插到最前面**，不能 `innerHTML = icon(...)` ——
+                 那会把 HTML 里已有的
+                 `<span class="reader-action-label">Metadata</span>` 一起冲掉，
+                 底栏就只剩一个图标、与另两项视觉不一致。
+                 这正是"着重色/排版必须与底栏其他选项相同"的要求所在：
+                 结构相同（icon + label）、样式相同（都用 .reader-action），
+                 颜色由 `currentColor` 自然继承，不单独指定。
 
           ⚠️ 图标用 ScholariusUI.icon() 填，不写在 HTML 里 ——
              图标路径只有 components.js 一处定义，避免两处不同步。
         */
         if (detailBtn) {
             if (global.ScholariusUI) {
-                detailBtn.innerHTML = global.ScholariusUI.icon('moreHoriz');
+                detailBtn.insertAdjacentHTML(
+                    'afterbegin', global.ScholariusUI.icon('metaData'));
             }
             detailBtn.addEventListener('click', function () {
                 if (global.ScholariusDetail && currentDoc) {
@@ -4322,7 +4335,28 @@
                 renderLabelOptions();
             });
 
+            /*
+              ══ 选中项右端加一个勾（v0.2.13）══
+
+              用户要求「参照设置选项里字体家族这个栏目的设计」。
+              那一栏（`.row-menu`）的选中态是 **加粗 + 右端勾**，
+              不是整条铺底色。
+
+              ⚠️ 追加在箭头之后，才能落在行的最右端。
+              ⚠️ 展开着下拉的行**不显示勾** ——
+                 那行右端已经有箭头在旋转，再叠一个勾会挤成一团。
+            */
             li.appendChild(btn);
+
+            if (key === labelDraft && subOpenKey !== key) {
+                var checkEl = document.createElement('span');
+                checkEl.className = 'sel-label-check';
+                checkEl.setAttribute('aria-hidden', 'true');
+                checkEl.innerHTML =
+                    '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+                    '<path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>';
+                btn.appendChild(checkEl);
+            }
 
             /*
               ══ ⚠️⚠️ 子标签下拉**在当前表单内展开**，不另开表单（v0.2.13）══
@@ -4815,15 +4849,38 @@
 
                   ⚠️ 只并 `.is-author-term` 的行 —— 普通行本来就该独占一行，
                      把它并起来会让两段原文粘在一起。
-                  ⚠️ 判据用 `rows.length === 1 && cuts 有边界`：
-                     当这一片段**完全落在同一原始行内**时 `rows` 只有一项，
-                     此时才允许并入上一行。
-                     如果 `cuts` 为空（没有行信息），`rows` 来自 `\n` 硬切，
-                     也可能只有一项 —— 那种情况同样应该并入，
-                     否则就会产生用户报的多余换行。
+
+                  ══ ⚠️⚠️ 但**不能无限并**（v0.2.13 修 bug）══
+
+                  用户反馈（原话）：
+
+                    「子标签标注出现问题，仅选中了段中第一行的文本，
+                      结果整个区域全部被标为某个子标签。」
+
+                  ── 真因 ──
+
+                  旧判据是 `rows.length === 1`。当 `lineBoundaries` 为空
+                  （这一块**没有多行信息**，PDF 把多行合并成一行时就是这样），
+                  `pushPlain` 走 `textChunk.split('\n')` 分支 —— 整块没有 `\n`，
+                  于是 `rows` 恒为 1 项，且那是**词条之后的全部剩余文字**。
+
+                  结果：`canJoin` 为真 → 把后面所有行全部追加到词条右列。
+                  明明只标了前 10 个字符，视觉上整段都成了“单位”。
+
+                  ── ✅ 修法 ──
+
+                  并入只允许在**同一个原始行内**发生，所以：
+
+                    · 有行边界（`cuts.length > 1`）：
+                      只有片段确实整段落在同一行里才并 —— 这是原来的正确行为；
+                    · 没有行边界：**不许并**，让剩余文字自己成普通行。
+
+                  判据用 `cuts && cuts.length > 1` 而不是 `rows.length === 1`，
+                  因为后者在没有边界时会给出一份误导性的“1 项”。
                 */
+                var hasRowCuts = !!(cuts && cuts.length > 1);
                 var prevLine = boxEl.lastElementChild;
-                var canJoin = prevLine &&
+                var canJoin = hasRowCuts && prevLine &&
                     prevLine.classList.contains('is-author-term') &&
                     rows.length === 1;
 
@@ -4956,7 +5013,39 @@
                     }
                 }
             }
-            if (lineStop < 0) lineStop = flatText.length;
+
+            /*
+              ══ ⚠️⚠️ 没有行边界信息时 **不许并**（v0.2.13 修 bug）══
+
+              用户反馈（原话）：
+
+                「子标签标注出现问题，仅选中了段中第一行的文本，
+                  结果整个区域全部被标为某个子标签。」
+
+              ── 真因（第二处，与 pushPlain 那处是同一条规则的两半）──
+
+              旧代码在这里写的是 `if (lineStop < 0) lineStop = flatText.length;`
+              —— 把"没有行信息"当成"整块就是一行"。
+
+              而 PDF 提取出的块**绝大多数没有 `b.lines`**（多行被合并成一段），
+              于是 `joinEnd = flatText.length`，词条右列接上了
+              **整块剩余的全部文字**。用户只选了前 10 个字符，
+              视觉上却是一整段都成了"单位"。
+
+              ── ✅ 修法 ──
+
+              没有行边界 → 无法判断"后面还是不是同一行" →
+              **一律不并**，让剩余文字按普通行输出。
+
+              ⚠️ 代价：像 `Ashish Vaswani, Google Brain` 这种
+                 "词条 + 同行尾巴"在没有行信息时会显示成两行。
+                 这是**已知且可接受**的退化 —— 多一个换行，
+                 远好过把整段错标成一个子标签。
+                 （有 `b.lines` 时仍会正确并回一行。）
+            */
+            if (lineStop < 0) {
+                lineStop = cursor;
+            }
 
             /* ② 同一行内、且在下一条标注之前的文字 → 接到右列尾部 */
             var nextMarkStart = flatText.length;

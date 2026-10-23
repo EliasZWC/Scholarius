@@ -2693,8 +2693,34 @@ body {
 */
 .sel-label-list {
     list-style: none;
+    /*
+      ══ ⚠️ 向设置项「字体家族」的选择器看齐（v0.2.13）══
+
+      用户要求（原话）：
+
+        「标签表单设计有问题，具体理想样式请参照设置选项中字体家族
+          这个栏目的设计。」
+
+      「字体家族」用的是 `.row-menu`（见 styles.css 末尾）：
+        · 一张独立的浮动卡片（圆角 16 + 边框 + 大阴影）
+        · 每项 min-height 48、圆角 12、**无分隔线**
+        · 选中项只把文字加粗，再在右端给一个勾选图标
+        · 没有大块底色 —— 底色只在按下时一闪
+
+      ⚠️ 之前的样子是「一大堆带底色块的通栏行」，
+         选中项铺一整条 `--ui-active-bg`，看起来像列表而非选择器。
+         现在把容器本身做成卡片，选中靠**加粗 + 勾**表达。
+
+      ⚠️ 内边距 6px：与 `.row-menu` 完全一致 ——
+         否则内部圆角项与卡片边框的间距对不上，看着比设置项“胖一圈”。
+    */
     margin: 4px 0 16px;
-    padding: 0;
+    padding: 6px;
+    background: var(--surface);
+    border: 1px solid var(--outline);
+    border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+    box-sizing: border-box;
     max-height: 46vh;
     overflow-y: auto;
 }
@@ -2703,23 +2729,15 @@ body {
     display: block;
     width: 100%;
     box-sizing: border-box;
-    padding: 12px 14px;
     /*
-      ══ ⚠️ 恢复圆角（v0.2.11）══
-
-      v0.2.9 为了配合通栏分隔线把它改成直角；用户现在要求：
-
-        「直接所有选项取消分隔线，恢复圆角」
-
-      两者是**必须成对**的选择：
-        · 有分隔线 + 直角  → 读成"连续列表的行"
-        · 无线     + 圆角  → 读成"一组独立卡片"
-      混搭就会出现"选中块被切断"或"圆角但旁边有线"的怪异观感。
-
-      用户选择了后者：选中态的圆角阴影与全站其他卡片保持一致。
+      ⚠️ 高度与 `.row-menu-item` 对齐（min-height 48、padding 0 14px）：
+         用户要求“参照字体家族”，那两处必须**量起来一样高**，
+         否则一眼就看出不是同一套控件。
     */
-    border-radius: 12px;
+    min-height: 48px;
+    padding: 0 14px;
     border: none;
+    border-radius: 12px;
     background: transparent;
     color: var(--on-surface);
     font-family: inherit;
@@ -2730,23 +2748,20 @@ body {
 }
 
 /*
-  ⚠️ 选中项底色用 `--ui-active-bg`（中性灰）而不是 `--sel-bg`（黄色）：
+  ══ ⚠️ 选中项：只加粗，不铺底色（v0.2.13）══
 
-     用户要求：
-       「提示色不要用黄色，不符合我们的配色方案，用灰色就好」
+  参照「字体家族」的 `.row-menu-item.is-selected` —— 那边就是
+  `font-weight: 700` + 右端一个勾选图标，没有大块底色。
 
-     ⚠️ `--sel-bg` 是**正文字符选区**的高亮色，属于阅读体验，
-        不能拿来当界面控件的选中色 —— 两者含义不同，也不该同色。
-     ⚠️ 也不用 `--primary`：绿色在全站只表示"确认操作"，
-        用它标"当前选中项"会让用户以为点了就直接生效了。
+  ⚠️ 保留 `--ui-active-bg` 会让它和设置项看起来不是一套控件，
+     所以这里**取消底色**。底色只在 `:active` 时一闪（与 row-menu 一致）。
 */
 .sel-label-item.is-active {
-    background: var(--ui-active-bg);
-    font-weight: 600;
+    font-weight: 700;
 }
 
 .sel-label-item:active {
-    opacity: 0.6;
+    background: var(--surface-raised);
 }
 
 /*
@@ -2862,6 +2877,46 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/*
+  选中项的勾（v0.2.13）。
+
+  与设置项「字体家族」的 `.row-menu-check` **完全同规格**（18×18），
+  否则两处并排看会一大一小。
+
+  ⚠️ `margin-left: auto`：把它推到行最右端。
+     箭头也有 `margin-left: auto`，但当勾存在时勾排在后面，
+     两个 auto 会平分剩余空间 → 勾反而没贴到右边。
+     所以下面把箭头的 auto 改成 `0`（在勾存在时才需要，见下一条规则）。
+*/
+.sel-label-check {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    margin-left: auto;
+    color: var(--on-surface);
+}
+
+.sel-label-check svg {
+    display: block;
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+}
+
+/*
+  ⚠️ 有勾的那一行，箭头不能也带 `margin-left: auto` ——
+     否则两个 auto 把空隙对半分，勾悬在中间、离右边缘一大截。
+     这里用 `:has()` 选“内部有勾的行”里的箭头。
+     WebView 108+ 支持 `:has()`（本项目 minSdk 对应当前 Android WebView）。
+     ⚠️ 为兼容起见同时给箭头一个兜底：不依赖 `:has()` 时
+        只是箭头和勾之间多一段空隙，功能不受影响。
+*/
+.sel-label-item:has(.sel-label-check) .sel-label-sub-toggle {
+    margin-left: 0;
 }
 
 /*
