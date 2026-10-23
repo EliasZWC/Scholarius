@@ -2092,7 +2092,7 @@
      *    选区保持在上一帧的位置 —— 这是想要的行为：手指滑出正文时
      *    不要突然把选区清空或跳到别处。
      */
-    function resolveTextPoint(r) {
+    function resolveTextPoint(r, touchX, touchY) {
         var node = r.startContainer;
         var off = r.startOffset;
 
@@ -2121,7 +2121,7 @@
              1px 通常就能命中（落点只是稍微偏出字形），
              24px 覆盖行高的一半，不会跨到相邻行之外。
         */
-        var probe = nearestTextPoint(r);
+        var probe = nearestTextPoint(r, touchX, touchY);
         if (probe) return probe;
 
         /*
@@ -2138,63 +2138,134 @@
      * ⚠️ 优先纵向（上下），因为用户拖选时主要在换行 ——
      *    纵向试探到的点语义上更接近手指意图。
      */
-    function nearestTextPoint(r) {
+    function nearestTextPoint(r, touchX, touchY) {
         /*
-          ⚠️ `caretRangeFromPoint` 需要屏幕坐标，而 Range 本身
-          只有节点+偏移。用 Range 的 client rect 反推近似坐标：
-          collapsed range 的 rect 就是该落点的位置。
-        */
-        var rect = null;
-        try {
-            rect = r.getBoundingClientRect();
-        } catch (e) {
-            rect = null;
-        }
+          ══ ⚠️⚠️⚠️ 优先用**手指的真实坐标**，不要用 rect 反推（v0.2.39）══
 
-        /*
-          ⚠️ 拿不到 rect 时，改用子树端点（没有更好的信息了）。
-             但只在 element 有唯一文本节点时才用，
-             避免多段文本时跳到段末。
+          用户反馈：
+
+            「选中范围随着我的手指移动动不动就跳到整个段的首行上面去」
+
+          ── 这是一个独立的根因，比试探半径更致命 ──
+
+          旧代码的坐标是这样来的：
+
+              rect = r.getBoundingClientRect();
+              cx = rect.left;
+              cy = rect.top + rect.height / 2;
+
+          问题在于 `r.startContainer` 是**元素节点**时
+          （`caretRangeFromPoint` 在行尾、字间空隙、段落边缘就会这样返回），
+          collapsed range 的 rect **不是落点**，而是**整个元素**的边界框。
+
+          于是：
+
+              cy = 整块.top + 整块.height / 2   ← 块的垂直中心！
+              cx = 整块.left                    ← 块的左边缘（行首）！
+
+          再拿这个点去 `caretRangeFromPoint` 试探，命中的必然是
+          **块首行靠左的位置** —— 正是用户说的"跳到整个段的首行上面去"。
+
+          ⚠️ 这也解释了为什么"动不动就跳"：
+             只要 `caretRangeFromPoint` 返回元素节点（很常见），
+             坐标就整个错掉，和手指位置完全无关。
+
+          ── ✅ 修法 ──
+
+          调用方（`extendSelectionTo`）本来就有**手指的真实屏幕坐标**。
+          直接传进来，不要从 Range 反推。
+
+          只有在没传坐标时（老调用点 / 内部复用）才退回 rect ——
+          但那时只在文本节点情形下可信，元素情形一律返回 null，
+          **宁可保持上一帧选区，也不要用一个错的坐标去猜**。
         */
-        if (!rect || (!rect.width && !rect.height)) {
-            var t = firstTextNode(r.startContainer);
-            if (!t) return null;
+        var cx, cy;
+
+        if (typeof touchX === 'number' && typeof touchY === 'number' &&
+            isFinite(touchX) && isFinite(touchY)) {
+            cx = touchX;
+            cy = touchY;
+        } else {
             /*
-              ⚠️ 只有当元素里**只有一个**文本节点时才敢用它 ——
-                 多个文本节点的情况（如带内联标记的段落）
-                 首节点未必是手指所在的那段。
+              ⚠️ 没有真实坐标 → 只有**文本节点**的 collapsed rect
+                 才是可信的落点位置。元素节点一律放弃。
             */
-            if (t !== lastTextNode(r.startContainer)) return null;
-            return { node: t, offset: 0 };
+            if (!r.startContainer || r.startContainer.nodeType !== 3) {
+                return null;
+            }
+            var rect = null;
+            try {
+                rect = r.getBoundingClientRect();
+            } catch (e) {
+                rect = null;
+            }
+            if (!rect || (!rect.width && !rect.height)) {
+                var t = firstTextNode(r.startContainer);
+                if (!t) return null;
+                if (t !== lastTextNode(r.startContainer)) return null;
+                return { node: t, offset: 0 };
+            }
+            cx = rect.left;
+            cy = rect.top + rect.height / 2;
         }
 
-        var cx = rect.left;
-        var cy = rect.top + rect.height / 2;
-
-        var radii = [1, 2, 4, 8, 12, 18, 24];
-
         /*
-          ⚠️ 先试**精确位置**（半径为 0），最常见情况这里是文本节点，
-             但上面已判过不是，所以从 1px 起步。
-          ⚠️ 每个半径先试正上方/正下方，再试左右。
-             纵向优先是因为换行时落点偏上/偏下最可能。
-        */
-        for (var i = 0; i < radii.length; i++) {
-            var d = radii[i];
-            var probes = [
-                [cx, cy - d], [cx, cy + d],
-                [cx - d, cy], [cx + d, cy]
-            ];
+          ══ ⚠️⚠️⚠️ 只在**同一行内**试探，纵向极小（v0.2.39 用户实测）══
 
-            for (var j = 0; j < probes.length; j++) {
-                var rr = caretRangeAt(probes[j][0], probes[j][1]);
-                if (rr && rr.startContainer &&
-                    rr.startContainer.nodeType === 3) {
-                    return {
-                        node: rr.startContainer,
-                        offset: rr.startOffset
-                    };
-                }
+          用户反馈：
+
+            「当我选中文本时，每次都很麻烦，因为选中范围随着我的手指
+              移动动不动就跳到整个段的首行上面去」
+
+          ── 真因 ──
+
+          旧代码的试探顺序是：
+
+              var radii = [1, 2, 4, 8, 12, 18, 24];
+              probes = [[cx, cy-d], [cx, cy+d], [cx-d, cy], [cx+d, cy]]
+
+          `cy ± d` 的**纵向**试探最大到 **24px** —— 而正文行高约
+          29px（17px × 1.75）。也就是说：
+
+              cy - 24  ≈  上一行的中间
+
+          于是手指在本行拖动时，落点只要稍微偏上（`caretRangeFromPoint`
+          在行尾/行首/字间空隙常常返回元素节点），试探就会**命中上一行**。
+          连续多行往下拖时，每一帧都可能往上一行跳一次 ——
+          用户看到的就是「选区动不动跳到段首上面」。
+
+          ⚠️ 更糟的是横向 `cx - d`：`rect.left` 是落点的**左边缘**，
+             往左探 24px 很容易落到**行首**，视觉上同样是"跳回去"。
+
+          ── ✅ 修法 ──
+
+          1. **纵向不试探**。`cy` 已经是落点垂直中心，
+             `caretRangeFromPoint(cx, cy)` 如果拿不到文本节点，
+             说明这一行这个位置确实没有字形 —— 不是靠挪 24px 解决的。
+             只在 ±2px 内做极小修正（覆盖亚像素误差）。
+          2. **横向只往右探**（落点右边通常还有字，左边是刚过来的方向）。
+             用户的手指位置本身就是期望位置，往左探等于替他反向选。
+          3. **横向半径收到 12px** —— 一个字符宽度量级，不会跨到行首。
+
+          判据：**试探的目的是"把元素落点规整到同一行的字形上"，
+                  不是"在找不到时往远处猜"。**
+                  找不到就该返回 null（保持上一帧选区），
+                  而不是猜一个远处的位置。
+        */
+        var probes = [
+            [cx, cy],           /* 原位重试（部分 WebView 第二次会给文本节点） */
+            [cx, cy - 2], [cx, cy + 2],
+            [cx + 2, cy], [cx + 5, cy], [cx + 12, cy]
+        ];
+
+        for (var j = 0; j < probes.length; j++) {
+            var rr = caretRangeAt(probes[j][0], probes[j][1]);
+            if (rr && rr.startContainer &&
+                rr.startContainer.nodeType === 3) {
+                return {
+                    node: rr.startContainer,
+                    offset: rr.startOffset
+                };
             }
         }
 
@@ -2250,7 +2321,11 @@
         var r = caretRangeAt(cx, cy);
         if (!r) return;
 
-        var pt = resolveTextPoint(r);
+        /*
+          ⚠️ 同样要传真实坐标（v0.2.39）——
+             否则长按落点本身就可能跳到段首。
+        */
+        var pt = resolveTextPoint(r, cx, cy);
         if (!pt) return;
 
         var node = pt.node;
@@ -2323,8 +2398,12 @@
 
           ✅ 修法：把落点**规整**到最近的文本节点上，而不是放弃。
              见 resolveTextPoint()。
+
+          ⚠️ 必须把**手指的真实坐标**传下去（v0.2.39）——
+             从 Range 的 rect 反推会在元素节点时拿到整块的位置，
+             导致选区跳到段首。见 nearestTextPoint 的长注释。
         */
-        var pt = resolveTextPoint(r);
+        var pt = resolveTextPoint(r, cx, cy);
         if (!pt) return;
 
         node = pt.node;
@@ -6502,9 +6581,16 @@
                  局部标注（选了半句话）不改变整块的显示形态。
             */
             var spans = (typeof b.line === 'number') ? labels[b.line] : null;
+            /*
+              ⚠️ `>` 也算"已有 md 标记"（v0.2.39）——
+                 尾注在 md 里是引用块。不把 `>` 纳入判断的话，
+                 用户给一个**已经是引用块**的段落再标尾注，
+                 会得到 `> > 内容`（每标一次多一层）。
+            */
             var alreadyMd = /^(#{1,6}[-*+]|\d+[.)])\s/.test(text) ||
                             /^[-*+]\s/.test(text) ||
-                            /^#{1,6}\s/.test(text);
+                            /^#{1,6}\s/.test(text) ||
+                            /^>/.test(text);
 
             if (!alreadyMd && spans && spans.length) {
                 for (var si = 0; si < spans.length; si++) {
@@ -6536,6 +6622,28 @@
                     }
                     if (sp0.label === 'reference') {
                         text = '1. ' + t('reader.field.__ref') + ': ' + text;
+                        break;
+                    }
+                    /*
+                      ══ ⚠️⚠️ 尾注 → `> ` 前缀（v0.2.39）══
+
+                      用户反馈：
+
+                        「标注了尾注之后没有任何反应，仍然是正文段且编号不变」
+
+                      真因：这一整段"标注 → md 前缀"的转换里**根本没有
+                      endnote 分支**。标注确实写进了 `labels`（md 导出正确，
+                      因为 `markdownOfDoc` 会看 `panel` 的 label），
+                      但**渲染路径**是从 `text` 出发的 ——
+                      没加 `> ` 前缀，就按普通正文渲染，自然还是
+                      `is-body-para` + 正文编号。
+
+                      ✅ 补上分支。前缀一旦加上，下面统一按 md 语法解析，
+                         走到 `mdQuote` 分支 → `.is-endnote-body`、
+                             不挂 `attachBodyMarker`（无编号）。
+                    */
+                    if (sp0.label === 'endnote') {
+                        text = '> ' + text;
                         break;
                     }
                     /* abstract / body / cite 不改变块结构，不加前缀 */
