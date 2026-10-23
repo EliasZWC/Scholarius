@@ -840,42 +840,50 @@
                 </svg>
             </button>
             <!--
-              语义切分按钮（v0.1.98）—— 详情按钮**之前**。
+              ══ 功能组（v0.2.2）══
 
-              用户裁决：「点击图标后才触发整篇文章文本的重新切分」
+              用户裁决：
 
-              ⚠️ 为什么是**手动**而不是打开时自动做：
-                 前三版（0.1.95/96/97）都让模型参与主链路，
-                 结果模型一卡就把正文一起拖死，用户连着报三次
-                 「无法提取」。现在提取/渲染与模型彻底隔离 ——
-                 打开文献永远只是"把 PDF 提取出来的文本画出来"。
+                「我说了功能按钮在右边的啊，切分和详情都是功能按钮」
 
-              ⚠️ 只在开启语义分段时可见（由 JS 控制 hidden）——
-                 没开功能的用户不该看到一个点了没反应的按钮。
-                 图标由 JS 用 ScholariusUI.icon() 填。
+              ✅ 两个功能按钮包进 `.reader-actions`，由**容器**
+                 负责靠右（margin-left:auto）。组内自然相邻。
+
+              ⚠️ 为什么必须用容器而不是给按钮加 margin ——
+                 单个 margin-left:auto 只能把"自己及之后"往右推，
+                 无法让两个按钮一起靠右且保持相邻。见 styles.css
+                 里 .reader-actions 的完整说明（前两版都栽在这里）。
             -->
-            <button class="icon-button reader-seg-btn" type="button"
-                id="reader-seg" hidden
-                aria-label="Re-split paragraphs"
-                data-i18n-aria-label="reader.resegment"></button>
-            <!--
-              详情按钮 —— 功能组的**最右**。
+            <div class="reader-actions">
+                <!--
+                  语义切分按钮（v0.1.98）。
 
-              用户最终确认：
-                「我口误了，功能都在右边，最右边是详情」
+                  用户裁决：「点击图标后才触发整篇文章文本的重新切分」
 
-              所以整体是：返回 | 切分 | 详情
+                  ⚠️ 为什么是**手动**而不是打开时自动做：
+                     前三版（0.1.95/96/97）都让模型参与主链路，
+                     结果模型一卡就把正文一起拖死，用户连着报三次
+                     「无法提取」。现在提取/渲染与模型彻底隔离 ——
+                     打开文献永远只是"把 PDF 提取出来的文本画出来"。
 
-              ⚠️ `margin-left: auto` 让它吃掉左侧剩余空间、把自己
-                 推到最右端；因为它在 DOM 里是最后一个功能按钮，
-                 整组（切分 + 详情）就都落在右边，详情最右。
+                  ⚠️ 只在开启语义分段时可见（由 JS 控制 hidden）——
+                     没开功能的用户不该看到一个点了没反应的按钮。
+                     图标由 JS 用 ScholariusUI.icon('resegment') 填。
+                -->
+                <button class="icon-button reader-seg-btn" type="button"
+                    id="reader-seg" hidden
+                    aria-label="Re-split paragraphs"
+                    data-i18n-aria-label="reader.resegment"></button>
+                <!--
+                  详情按钮 —— 组内最右。
 
-              图标由 JS 用 ScholariusUI.icon('moreHoriz') 填 ——
-              这样图标路径只有 components.js 一处定义，不在这里重复一遍。
-            -->
-            <button class="icon-button reader-detail-btn" type="button"
-                id="reader-detail" aria-haspopup="dialog" aria-expanded="false"
-                aria-label="Details" data-i18n-aria-label="reader.details"></button>
+                  图标由 JS 用 ScholariusUI.icon('moreHoriz') 填 ——
+                  这样图标路径只有 components.js 一处定义，不在这里重复一遍。
+                -->
+                <button class="icon-button reader-detail-btn" type="button"
+                    id="reader-detail" aria-haspopup="dialog" aria-expanded="false"
+                    aria-label="Details" data-i18n-aria-label="reader.details"></button>
+            </div>
         </header>
 
         <!--
