@@ -1303,11 +1303,18 @@ body {
 .reader-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
     /*
-      ⚠️ gap 与 .reader-top 的 gap 保持一致（8px），
-         这样组内间距与"返回键到组"的间距看起来是同一套节奏。
+      ⚠️ 组内间距比 `.reader-top` 的 gap（8px）更小（v0.2.9）。
+
+         用户反馈：「悬浮菜单顶部栏右边的功能按钮间距需要近一些」。
+
+         8px 对于三个图标按钮显得松散 —— 它们是一个**功能组**，
+         视觉上应该比"返回键 ↔ 功能组"那个跨组的间距更紧，
+         才能读成"一组"而不是"三个独立按钮"。
+
+         4px 保留一点呼吸，同时明显成组。
     */
+    gap: 4px;
     margin-left: auto;
     flex: 0 0 auto;
 }
@@ -2697,8 +2704,27 @@ body {
     width: 100%;
     box-sizing: border-box;
     padding: 12px 14px;
+    /*
+      ══ ⚠️⚠️ 不要圆角（v0.2.9）══
+
+      用户指出：
+
+        「标注表单里面选项既然都有分割线了，选中的突出阴影就不要用圆角了」
+
+      对。这些选项之间已经画了 1px 的通栏分割线（见 `.sel-label-row + .sel-label-row`），
+      视觉上它们是一条**连续列表**里的行。此时给选中态一个 12px 圆角，
+      角部会把那条直线切断 —— 看起来像"列表里粘了一个胶囊",
+      而不是"这一行被选中"。
+
+      ✅ 去掉圆角后，选中底色与分割线同宽同边，
+         读起来就是标准的"列表行选中"。
+
+      ⚠️ 这里去掉的是**底子**上的圆角，不只是 active 态：
+         因为 `:active`（按下反馈）也用同一个元素，
+         留着圆角会出现"按下的瞬间是圆角、松手变直角"的闪动。
+    */
+    border-radius: 0;
     border: none;
-    border-radius: 12px;
     background: transparent;
     color: var(--on-surface);
     font-family: inherit;

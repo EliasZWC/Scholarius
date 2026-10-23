@@ -952,19 +952,25 @@
         closeX: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
 
         /*
-          Material Icons: file_upload（托盘 + 上箭）
+          Material Symbols: dashboard_customize（三块布局 + 一个加号）
 
-          用途：阅读页顶栏的「导入排版模板」按钮（v0.2.7）。
+          用途：阅读页顶栏的「导入排版模板」按钮（v0.2.7，v0.2.9 换图标）。
 
-          ⚠️ 选它的理由：模板是**文件**，动作是**从外部拿进来**。
-             `file_upload` 的语义（箭头进入托盘）正是"导入"，
-             与旁边的切分图标（把文本切开的意象）不冲突。
+          ⚠️ 原来用的是 `file_upload`（箭头进托盘）—— 用户指出：
+                 「导入按钮图标完全像是上传」
+             确实：那个图形在几乎所有 App 里都表示"上传到云端"，
+             而这里的动作是从**本地文件**套一份版式，
+             完全不是一回事。
 
-          ⚠️ 24 体系（不在 ICON_VIEWBOX 例外表里）。
-             路径由 `tools/fetch_icon.py file_upload` 取官方值，
-             不要手改坐标。
+          ✅ `dashboard_customize` 的语义就是"调整版式/布局"：
+             三个块 + 一个加号 = 往现有版式上加一套规则。
+             它与旁边的切分图标（把文本切开）也构成了
+             "改结构 / 改版式"的对照，不再是"上传/上传"的重复。
+
+          ⚠️ 960 体系（Material Symbols），已在 ICON_VIEWBOX 登记。
+             路径由 `tools/fetch_icon.py dashboard_customize` 取官方值。
         */
-        template: 'M6 20q-.825 0-1.412-.587Q4 18.825 4 18v-3h2v3h12v-3h2v3q0 .825-.587 1.413Q18.825 20 18 20Zm5-4V7.85l-2.6 2.6L7 9l5-5 5 5-1.4 1.45-2.6-2.6V16Z',
+        template: 'M120-840h320v320H120v-320Zm400 0h320v320H520v-320ZM120-440h320v320H120v-320Zm520 0h80v120h120v80H720v120h-80v-120H520v-80h120v-120Z',
 
         /*
           ⚠️ 这两条是 **Material Symbols（960 体系）**，默认那些是
@@ -1388,7 +1394,10 @@
              这是一步不能少的配套动作 —— 两张表要成对改。
         */
         add: SYMBOLS_VIEWBOX,
-        trash: SYMBOLS_VIEWBOX
+        trash: SYMBOLS_VIEWBOX,
+        /* ⚠️ dashboard_customize 是 Material Symbols（960 体系），
+               不登记就是零像素渲染且不报错 */
+        template: SYMBOLS_VIEWBOX
     };
 
     /** 返回一段 svg 标记，图标全部来自 Google Material 体系 */
