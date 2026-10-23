@@ -2928,7 +2928,16 @@
                     */
                     authorItems: (pieceKind === 'author')
                         ? ((pieceSpans && pieceSpans.length)
-                            ? (authorItemsOf(pieceText, null, pieceSpans) ||
+                            ? (authorItemsOf(
+                                pieceText,
+                                /*
+                                  ⚠️ **必须传行边界**（v0.2.30）——
+                                     之前传 `null`，导致 `authorItemsOf` 走
+                                     "按区间切"的分支，把原文一行切成多条，
+                                     正是"子标签换行"那个老 bug 的导出侧根源。
+                                */
+                                (pieces.length === 1) ? b.lines : null,
+                                pieceSpans) ||
                                [{ text: pieceText, field: null }])
                             : [{ text: pieceText, field: null }])
                         : null
@@ -3058,11 +3067,16 @@
                 for (var m = 0; m < marks.length; m++) {
                     var mk = marks[m];
                     /*
-                      ⚠️ "这一行整行被覆盖"才算 —— 用户在行中间只选了几个词时，
-                         整行不能归给那个子标签（那会把半行静默丢掉）。
-                         判据：标注起点 ≤ 行起点 + 1，终点 ≥ 行终点 - 1。
+                      ══ ⚠️ 子标签**落在这一行内**即可（v0.2.30）══
+
+                      与渲染侧同判据。用户给某行中间几个词加子标签时，
+                      意图是"这一行是单位"，而不是"只有那几个词是"。
+
+                      ⚠️ 不能要求整行覆盖 —— 行是排版折行，用户选不中整行。
+                      ⚠️ 但**不能把行拆碎** —— 那正是"子标签换行"的老 bug。
                     */
-                    if (mk.start <= at + 1 && mk.end >= rowEnd - 1) {
+                    var ov = Math.min(mk.end, rowEnd) - Math.max(mk.start, at);
+                    if (ov > 0) {
                         field = mk.field;
                         break;
                     }
@@ -6279,25 +6293,106 @@
 
                     if (fieldMarks.length) {
                         /*
-                          ⚠️ 有子标签 → 按区间切：被覆盖的成一项，空隙成无名项。
-                             与 `authorItemsOf` 的"无 lines 分支"同逻辑。
+                          ══ ⚠️⚠️⚠️ 有原始行边界时**按行切**，不拆行（v0.2.30）══
+
+                          用户反馈（老 bug 复发）：
+                            「又出现了子标签换行这个老bug。。。」
+
+                          实测：原文 3 行
+
+                              Ashish Vaswani Noam Shazeer
+                              Google Brain Google Research
+                              avaswani@google.com noam@google.com
+
+                          用户只把第 2 行的 `Google Brain` 标成单位，
+                          结果渲染成 3 行 → **4 行**：
+
+                              ① Ashish Vaswani Noam Shazeer
+                              ② Google Brain            ← 第 2 行被拆开
+                              ③ Google Research avaswani@... ← 残片
+                              ④ noam@google.com
+
+                          真因：我按**标注区间**切分，而区间只覆盖第 2 行的一部分，
+                          于是那一行被切成「前残片 + 标注段 + 后残片」三段。
+
+                          ✅ 正确做法：**行是行的边界，子标签只是行的一个属性**。
+                             · 有 `lines` → 按行输出，每行判断"整行是否被某条子标签覆盖"
+                             · 没有 `lines` → 才退回按区间切（单行块的情形）
+
+                          ⚠️ 判据是"整行被覆盖"：`mk.start <= 行起+1 &&
+                             mk.end >= 行终-1`。用户在行中间只选几个词时，
+                             那一行不归给这个子标签（宁可当无名行，也不能把行拆碎）。
                         */
-                        fieldMarks.sort(function (x, y) {
-                            return (Number(x.start) || 0) - (Number(y.start) || 0);
-                        });
-                        var cur2 = 0;
-                        for (var fk = 0; fk < fieldMarks.length; fk++) {
-                            var fkSpan = fieldMarks[fk];
-                            var fs0 = Math.max(0, Math.min(Number(fkSpan.start) || 0, rawText.length));
-                            var fe0 = Math.max(0, Math.min(Number(fkSpan.end) || 0, rawText.length));
-                            if (fs0 > cur2) {
-                                authorRows.push({ text: rawText.slice(cur2, fs0), field: null });
+                        var srcLines = (b.lines && b.lines.length > 1) ? b.lines : null;
+                        if (srcLines) {
+                            var scan = 0;
+                            for (var li = 0; li < srcLines.length; li++) {
+                                var rowT = String(srcLines[li] || '').replace(/^\s+|\s+$/g, '');
+                                if (!rowT) continue;
+
+                                /*
+                                  ⚠️ 在**原文**里定位这一行的起点。
+                                     从 `scan` 往后找，保证第二行的第二次出现
+                                     不会被误当成第一行。
+                                */
+                                var rowAt = rawText.indexOf(rowT, scan);
+                                if (rowAt < 0) rowAt = rawText.indexOf(rowT);
+                                var rowEndAt = (rowAt < 0) ? -1 : (rowAt + rowT.length);
+
+                                var rowField2 = null;
+                                if (rowAt >= 0) {
+                                    for (var rk = 0; rk < fieldMarks.length; rk++) {
+                                        var rmk = fieldMarks[rk];
+                                        var rms = Number(rmk.start) || 0;
+                                        var rme = Number(rmk.end) || 0;
+                                        /*
+                                          ══ ⚠️ 判据：子标签**落在这一行内**即可（v0.2.30）══
+
+                                          用户给某行中间的几个词加了子标签
+                                          （例如第 2 行的 `Google Brain`），
+                                          期望是**整行**显示为「单位」。
+
+                                          ⚠️ 不能要求"整行被覆盖" ——
+                                             行是排版折行，用户选不中整行；
+                                             他的意图是"这一行是单位"。
+                                          ⚠️ 但行**不能拆碎** ——
+                                             拆碎正是"子标签换行"那个老 bug。
+                                             所以：行照原样输出，只标记它的字段。
+                                          ⚠️ 一行只归给第一条命中的子标签，
+                                             多条时取覆盖最多的那条。
+                                        */
+                                        var overlap = Math.min(rme, rowEndAt) - Math.max(rms, rowAt);
+                                        if (overlap > 0) {
+                                            rowField2 = rmk.field;
+                                            break;
+                                        }
+                                    }
+                                    scan = rowEndAt;
+                                }
+
+                                authorRows.push({ text: rowT, field: rowField2 });
                             }
-                            authorRows.push({ text: rawText.slice(fs0, fe0), field: fkSpan.field });
-                            cur2 = Math.max(cur2, fe0);
-                        }
-                        if (cur2 < rawText.length) {
-                            authorRows.push({ text: rawText.slice(cur2), field: null });
+                        } else {
+                            /*
+                              ⚠️ 没有原始行（整块就是一行）→ 按区间切，见下。
+                            */
+                            fieldMarks.sort(function (x, y) {
+                                return (Number(x.start) || 0) - (Number(y.start) || 0);
+                            });
+                            var cur2 = 0;
+                            for (var fk = 0; fk < fieldMarks.length; fk++) {
+                                var fkSpan = fieldMarks[fk];
+                                var fs0 = Math.max(0, Math.min(Number(fkSpan.start) || 0, rawText.length));
+                                var fe0 = Math.max(0, Math.min(Number(fkSpan.end) || 0, rawText.length));
+                                if (fs0 > cur2) {
+                                    authorRows.push({ text: rawText.slice(cur2, fs0), field: null });
+                                }
+                                authorRows.push({ text: rawText.slice(fs0, fe0), field: fkSpan.field });
+                                cur2 = Math.max(cur2, fe0);
+                            }
+                            if (cur2 < rawText.length) {
+                                authorRows.push({ text: rawText.slice(cur2), field: null });
+                            }
                         }
                     } else if (m2) {
                         /* 单行带字段前缀（`- Author Name: xxx`）*/
