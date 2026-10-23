@@ -7274,6 +7274,53 @@
                      中间如果有空块被跨过，它本来就没有内容，
                      被合并掉是合理的 —— 但首尾之外的块**绝不能动**。
                 */
+                /*
+                  ══ ⚠️⚠️ 喂给模型的是**原始纯文本块**，不是我们切好的句子（v0.2.36）══
+
+                  用户指出：
+
+                    「是不是你用的不是纯文本分的，导致md的各种符号
+                      干扰了模型的判断？」
+
+                  方向对：问题在于**我擅自改变了模型的输入**。
+
+                  ── 旧实现（切分正常时）──
+
+                      var parts = [];
+                      for (...) parts.push(String(blocks[run[r]].text).trim());
+                      return seg.segment(parts, {...});
+
+                  模型收到的是「一个块一行」的数组，它内部用
+                  `splitSentences` 自己切句、自己算相似度 ——
+                  分句规则、阈值、批次全都由它决定。
+
+                  ── 我改成了什么（切分变差的原因）──
+
+                      var joined = 各块用 '\n' 连起来
+                      var sentsWithOff = splitSentencesWithOffsets(joined)
+                      return seg.segment(sentTexts, {...})
+
+                  本意是"保留原文偏移以便切片"，但代价是：
+                  ① `joined` 把所有块压成一整段，**原来的块边界消失了**；
+                  ② 我自己的切句规则（含 12 字符碎片合并）与
+                     `seg.splitSentences` 不完全一致，句子集合变了；
+                  ③ 模型拿到的句子和它内部预期的分布不同 →
+                     相似度阈值 `thresholdFor(n)` 的基准也变了。
+
+                  结果：分段位置明显不如以前合理 —— 用户说的
+                  「分得乱七八糟」「和当时没改md的时候不一样」。
+
+                  ── ✅ 现在 ──
+
+                  恢复成 `seg.segment(parts, ...)`：让模型用它自己的
+                  分句器处理原始块文本，**与切分正常时完全一致**。
+
+                  ⚠️ 那"内容被规范化"的问题怎么办？
+                     不靠改输入解决，而是靠**事后校验**：
+                     切分结果拼起来必须与原文一致（见下面的
+                     `joined` / `recon` 检查）。不一致就整个区段放弃。
+                     这样既保持模型输入不变，又保证内容不丢。
+                */
                 var patchStart = partBlocks[0];
                 var patchCount = partBlocks[partBlocks.length - 1] - patchStart + 1;
 
@@ -7322,13 +7369,11 @@
                 }
                 var joined = joinedBuf.join('');
 
-                /* 带偏移切句（与 segment 内部同一套规则） */
-                var sentsWithOff = (seg.splitSentencesWithOffsets)
-                    ? seg.splitSentencesWithOffsets(joined)
-                    : null;
-                if (!sentsWithOff || sentsWithOff.length < 2) return null;
-
-                var sentTexts = sentsWithOff.map(function (z) { return z.text; });
+                /* 归一化比较用（模型会规范化空白，定位时只比实字） */
+                var squash = function (s) {
+                    return String(s == null ? '' : s).replace(/\s+/g, '');
+                };
+                var joinedSquashed = squash(joined);
 
                 /*
                   ⚠️⚠️ 每个区段单独 catch（v0.1.96）。
@@ -7341,7 +7386,11 @@
                   判据：局部失败只能影响局部。
                 */
                 var runCount = parts.length;
-                return seg.segment(sentTexts, {
+                /*
+                  ⚠️ 传 `parts`（原始块文本数组），与切分正常时**完全一致**（v0.2.36）。
+                     不要传我们自己切好的句子 —— 那会改变模型的输入边界。
+                */
+                return seg.segment(parts, {
                     /*
                       ══ 加载阶段进度（v0.2.1）══
 
@@ -7428,59 +7477,106 @@
                     var rebuilt = [];
                     var prevEnd = -1;
                     var lastTo = -1;
+                    /*
+                      ══ ⚠️⚠️ 用模型返回的句子在 `joined` 里**顺序定位**（v0.2.36）══
+
+                      模型收到 `parts` 后用它**自己的** `splitSentences`
+                      切句，所以 `res.sentences` 是它视角的句子列表。
+                      我不能再拿自己的切句结果去对应它的下标（那正是
+                      0.2.32~0.2.35 分得乱七八糟的原因）。
+
+                      ✅ 做法：拿 `res.sentences` 里每一句，在 `joined`
+                         里从上次位置往后找（只比实字，忽略空白差异），
+                         找到就记下 [start, end]。
+
+                      ⚠️ 找不到（模型改写了这句话）→ 该句没有偏移，
+                         这一区段放弃，保留原块。绝不猜位置。
+
+                      这样：
+                        · 模型的输入与以前**完全一致** → 分段质量恢复
+                        · 段落的文字仍然从 `joined` 精确切片 → 内容不变
+                    */
+                    var modelSents = (res && res.sentences) || [];
+                    if (!modelSents.length) return null;
+
+                    var sentsWithOff = [];
+                    var scanAt = 0;          /* 在 joined 里的查找游标 */
+                    var sqAt = 0;            /* 在 joinedSquashed 里的游标 */
+
+                    for (var ms = 0; ms < modelSents.length; ms++) {
+                        var sq = squash(modelSents[ms]);
+                        if (!sq) {
+                            /* 空句：给一个零长度区间，不影响后续 */
+                            sentsWithOff.push({ start: scanAt, end: scanAt });
+                            continue;
+                        }
+                        var hit = joinedSquashed.indexOf(sq, sqAt);
+                        if (hit < 0) {
+                            trace('reader:seg', 'cannot locate model sentence #' + ms +
+                                  ' in source, discarding run');
+                            return null;
+                        }
+                        /*
+                          ⚠️ 把"去空白后的下标"映射回 `joined` 的真实区间。
+                             逐字符走，跳过空白 —— 空白不计入 squash 下标。
+                        */
+                        var startReal = -1;
+                        var endReal = -1;
+                        var need = sq.length;      /* 还要吃掉多少个实字 */
+                        var cnt = 0;
+                        var ri = scanAt;
+                        while (ri < joined.length) {
+                            var ch = joined.charAt(ri);
+                            var isWs = /\s/.test(ch);
+                            if (!isWs) {
+                                if (cnt === (hit - sqAt)) startReal = ri;
+                                cnt++;
+                                if (cnt === (hit - sqAt) + need) {
+                                    endReal = ri + 1;
+                                    break;
+                                }
+                            }
+                            ri++;
+                        }
+                        if (startReal < 0 || endReal < 0) {
+                            trace('reader:seg', 'offset mapping failed at sentence #' + ms);
+                            return null;
+                        }
+                        sentsWithOff.push({ start: startReal, end: endReal });
+                        scanAt = endReal;
+                        sqAt = hit + need;
+                    }
+
+                    var rebuilt = [];
+                    var prevEnd = -1;
+                    var lastTo = -1;
                     for (var p = 0; p < ranges.length; p++) {
                         var rg = ranges[p];
                         var s0 = sentsWithOff[rg.from];
                         var s1 = sentsWithOff[rg.to];
                         if (!s0 || !s1) continue;
                         /*
-                          ══ ⚠️⚠️ 区间必须**单调前进**（v0.2.33）══
+                          ══ ⚠️⚠️ 区间必须**单调前进且无缝衔接**（v0.2.33 / 0.2.34）══
 
-                          用户反馈：
+                          用户反馈过：
 
                             「模型切分后反而出现了大量缺失内容和重复内容」
 
-                          模型返回的 `from` / `to` 是**它自己数出来的句子下标**。
-                          一旦它给的下标错位（比如把同一句算进两段，
-                          或者顺序颠倒），按这些下标切片就会出现：
+                          模型返回的 `from` / `to` 是它自己数的句子下标。
+                          它们可能出现三种错：
 
-                            · `to` 小于上一段的终点 → 切出**重复文本**
-                            · 跳过若干句         → 切出**缺失文本**
+                            ① `to < from`                        → 倒序
+                            ② `from < 上一段的 to + 1`           → 重叠 → 重复
+                            ③ `from > 上一段的 to + 1`           → 跳过 → 缺失
 
-                          旧代码只检查 `s0`/`s1` 存在，完全不校验顺序 ——
-                          模型错一次，整段就废。
-
-                          ✅ 强校验：本段的起点必须 **>= 上一段的终点**。
-                             不满足就说明模型给的下标不可信 →
-                             这一区段**整体放弃**（返回 null，保留原块）。
-                             宁可"没切"，也不能"切坏"。
+                          ✅ 必须**严格连续**：
+                             第一段 `from === 0`；
+                             之后每段 `from === 上一段的 to + 1`。
+                             不满足 → 这一区段整体放弃（保留原块）。
+                             "跳过坏段落继续"必然缺内容，不能那样做。
                         */
                         if (rg.from < 0 || rg.to >= sentsWithOff.length) continue;
                         if (rg.to < rg.from) continue;
-                        /*
-                          ══ ⚠️⚠️ 区间必须**无缝衔接**（v0.2.34）══
-
-                          用户连续两版反馈「大量缺失内容和重复内容」，
-                          而我前两次都在改"切片方式"，没查**区间本身**。
-
-                          模型返回的 `ranges` 是它自己数的段落边界。
-                          它可能出现两种错：
-
-                            ① `rg.from < 上一段的 to + 1` → 两句重叠 → **重复**
-                            ② `rg.from > 上一段的 to + 1` → 中间几句被跳过 → **缺失**
-
-                          旧代码只拦了"起点早于上一段终点"（①的一半），
-                          **完全没管 ②** —— 跳过的句子既不在任何段落里，
-                          也不会被任何补丁覆盖，直接从输出里消失。
-
-                          ✅ 现在必须**严格连续**：
-                             第一段 `from === 0`；
-                             之后每段 `from === 上一段的 to + 1`。
-                             不满足就说明模型的下标不可信 →
-                             这一区段整体放弃（保留原块），
-                             而不是"跳过坏段落继续" ——
-                             那样必然缺内容。
-                        */
                         var expectedFrom = (p === 0) ? 0 : (lastTo + 1);
                         if (rg.from !== expectedFrom) {
                             trace('reader:seg', 'range gap/overlap at p=' + p +
@@ -7496,15 +7592,11 @@
                             return null;
                         }
                         /*
-                          ⚠️ 切片起点：**接着上一段的终点**，不是本句起点。
-                             句间空白（换行、多个空格）要归给前一段，
-                             否则这些空白会被丢掉，合起来就不等于原文了。
-                          ⚠️ 第一段从头切到第一句终点之前 —— 包含全文开头的
-                             任何缩进/空行。
+                          ⚠️ 切片起点：接着上一段的终点，句间空白归给前一段。
+                             第一段从 0 开始（含开头缩进）。
                         */
                         var cutStart = (prevEnd < 0) ? 0 : prevEnd;
                         var cutEnd = s1.end;
-                        /* 最后一段切到末尾，吃掉尾随空白 */
                         if (p === ranges.length - 1) cutEnd = joined.length;
 
                         var pieceText = joined.slice(cutStart, cutEnd);
