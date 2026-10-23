@@ -3642,59 +3642,113 @@
             ' (delta=' + delta + ')');
     }
 
-    function applyEdit() {
-        if (!editInputEl || !editSpan) return;
+    /**
+     * 供排查：直接应用一次编辑（v0.2.4）。
+     *
+     * ⚠️ `applyEdit` 依赖真实 DOM 输入框 + 原生长按选区，
+     *    自动化点不开编辑表单。有这个钩子才能单测
+     *    "编辑里敲空行会不会变成新段落"。
+     */
+    function applyEditForTest(span, value) {
+        applyEditCore(span, value);
+        rerenderKeepingScroll();
+    }
 
-        var value = editInputEl.value;
+    /**
+     * 应用一次编辑的**核心逻辑**，只改数据、不碰 DOM（v0.2.4 提取）。
+     *
+     * ⚠️ 为什么拆出来：`applyEdit` 要读 `editInputEl` 与 `editSpan`，
+     *    这两个只有真实编辑表单才有。逻辑与 DOM 分离后，
+     *    `applyEditForTest` 才能验证分段规则。
+     *
+     * @param {object} span  { single, line, lines, start, end }
+     * @param {string} value 输入框里的新内容（可能含换行）
+     */
+    function applyEditCore(span, value) {
+        if (!span) return;
 
-        if (editSpan.single) {
-            var line = editSpan.line;
+        if (span.single) {
+            var line = span.line;
             var cur = blockTextOf(line);
             var len = cur.length;
 
-            var a = Math.max(0, Math.min(editSpan.start, len));
-            var b = Math.max(a, Math.min(editSpan.end, len));
+            var a = Math.max(0, Math.min(span.start, len));
+            var b = Math.max(a, Math.min(span.end, len));
 
-            edits[line] = cur.slice(0, a) + value + cur.slice(b);
+            var next = cur.slice(0, a) + value + cur.slice(b);
+            edits[line] = next;
 
             trace('reader:edit', 'line=' + line + ' [' + a + ',' + b + ')');
-        } else {
+
             /*
-              ══ ⚠️⚠️ 跨块编辑：交给 `reflowParagraphs` 重新分段（v0.1.67）══
+              ══ ⚠️⚠️ 单块编辑也要重新分段（v0.2.4）══
 
-              用户要求：
-                「如果文件被修改了，直接重新计数自然段就好了」
+              用户反馈：
 
-              旧做法是把 value 按空行切分后，逐个写进 `edits[lines[i]]`。
-              两段合并成一段时，后面那段就拿到空串 `''` —— 于是：
-                · 屏幕上多一个空段落；
-                · 它占掉一个正文段编号，后面的编号全部错位；
-              再靠渲染层去"过滤空块"，等于把一个数据问题
-              当成显示问题来修，所以一直修不干净。
+                「编辑后明明上下两段文本隔着好多空行，
+                  居然正文段编号和提示条还是连续的一整个」
 
-              ✅ 现在把这几块的文本**重新当作一整篇文本**切分自然段，
-                 段数变了就重排行号。合并 → 段数变少；
-                 拆开 → 段数变多。不需要任何过滤。
+              真因：**单块编辑**这条分支只写 `edits[line]`，
+              **从来没有走 reflowParagraphs**：
+
+                  edits[line] = cur.slice(0, a) + value + cur.slice(b);
+
+              于是用户在编辑框里敲的空行被原样存进**一个块**。
+              渲染时 `.reader-para` 的 `white-space: pre-wrap` 让这些
+              空行占位 —— 看起来确实隔着好几行，
+              但数据上仍只是**一个块**：一个编号、一条提示条。
+
+              「看到的空行」和「实际的分段」是两回事：
+              调字号、加标注、看编号，全都按一个块算。
+
+              ✅ 空行在 md 里的语义就是**段落分隔**（`\n{2,}`）。
+                 编辑结果里只要出现空行，就必须重新切段 ——
+                 这和跨块编辑是同一件事，之前只做了一半。
+
+              ⚠️ 只在**真的出现空行**时才重排：普通改几个字不该
+                 触发整篇行号平移（那会连带 edits/labels 的键）。
             */
-            reflowParagraphs(editSpan.lines, value);
+            if (/\n\s*\n/.test(next)) {
+                reflowParagraphs([line], next);
+            }
+
+            /*
+              ⚠️ 单块编辑还要检查：用户可能把内容**整个删掉**。
+                 这时 edits[line] 变成空串，同样不该留下空段落。
+            */
+            var curTxt = String(blockTextOf(line));
+            if (curTxt.replace(/\s+/g, '') === '') {
+                reflowParagraphs([line]);
+            }
+            return;
         }
 
         /*
-          ⚠️ 单块编辑也要检查：用户可能把这个块的内容**整个删掉**。
-             这时 `edits[line]` 变成空串，同样不该留下空段落。
-             走一次相同的重排逻辑即可（段数会从 1 变 0 → 保留 1 个空块占位）。
+          ══ 跨块编辑：交给 reflowParagraphs 重新分段（v0.1.67）══
+
+          用户要求：
+            「如果文件被修改了，直接重新计数自然段就好了」
+
+          旧做法是把 value 按空行切分后逐个写进 edits[lines[i]]。
+          两段合并成一段时，后面那段拿到空串 —— 于是屏幕上多一个
+          空段落、占掉一个编号、后面全部错位。
+          再靠渲染层"过滤空块"，等于把数据问题当显示问题修。
+
+          ✅ 现在把这几块的文本**当作一整篇**切分自然段，
+             段数变了就重排行号（合并变少、拆开变多），不需要过滤。
         */
-        if (editSpan.single) {
-            var curTxt = String(blockTextOf(editSpan.line));
-            if (curTxt.replace(/\s+/g, '') === '') {
-                reflowParagraphs([editSpan.line]);
-            }
-        }
+        reflowParagraphs(span.lines, value);
+    }
+
+    function applyEdit() {
+        if (!editInputEl || !editSpan) return;
+
+        applyEditCore(editSpan, editInputEl.value);
 
         saveEdits();
         saveLabels();
         /*
-          ⚠️ 段落结构可能被 `reflowParagraphs()` 改过（合并/拆分），
+          ⚠️ 段落结构可能被 reflowParagraphs() 改过（合并/拆分），
              必须一并落盘，否则重新进入时恢复原样（v0.1.70）。
         */
         saveDocBlocks();
@@ -8999,6 +9053,21 @@ function tocTitleFrom(text) {
         __reflow: semanticReflow,
         /** 最后一次 setText 的入参摘要（v0.1.99 诊断） */
         __diag: function () { return lastDiag; },
+        /**
+         * 供排查：直接跑一次段落重排（v0.2.4）。
+         *
+         * ⚠️ 编辑表单要真实的手势选区才能进，自动化点不开 ——
+         *    有它就能单独验证"编辑后怎么切段"这段逻辑。
+         */
+        __testReflow: reflowParagraphs,
+        /**
+         * 供排查：直接应用一次编辑（v0.2.4）。
+         *
+         * ⚠️ 必须绕过真实表单 —— `applyEdit` 读 `editInputEl.value`，
+         *    那个输入框要原生长按选区才会出现，自动化开不出来。
+         *    抽成 `applyEditCore(span, value)` 后就能直接喂数据。
+         */
+        __testApplyEdit: applyEditForTest,
         /**
          * 对当前文档重新做语义分段（v0.1.98）。
          *
