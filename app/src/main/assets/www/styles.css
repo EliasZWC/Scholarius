@@ -5956,7 +5956,26 @@ body {
     gap: 16px;
     min-height: 56px;
     padding: 6px 20px;
-    border-bottom: 1px solid var(--outline);
+    /*
+      ══ ⚠️⚠️ 分隔线用**页面底色**，不用 --outline（v0.1.95）══
+
+      用户反馈：
+        「我感觉设置页不同设置项的分隔线颜色不太对？」
+        「和背景一个颜色吧」
+
+      ⚠️ 原来用 `--outline`（#D5D5D1）。实测它与白色卡片的对比度只有
+         **1.45 : 1** —— 在手机上几乎看不见，看起来像"线没画完"。
+
+      ✅ 改用 `--bg`（页面底色 #EFEFED）：
+         这条线不再是"描边"，而是**卡片上被挖开的一道缝**，
+         透出来的正是页面底色。视觉上比描边柔和，也更符合
+         "卡片靠底色差表达边界、不靠描边"的既有做法
+         （见 .setting-list 里那段"不要外框线"的说明）。
+
+      ⚠️ 深色主题下同样成立：--bg(#1E1E1E) 在 --surface(#242424) 上
+         是**更暗**的一道缝，方向正确（不会像浅灰线那样发亮）。
+    */
+    border-bottom: 1px solid var(--bg);
 }
 
 .setting-item:last-child {
@@ -6615,5 +6634,152 @@ body {
 
 .btn-ghost:active {
     background: #242424;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   导入进度表单（v0.1.95）
+
+   用户要求：「导入过程应该做一个表单，显示完成多少了，
+              按 cancel 应该及时停止且丢弃这个导入行为」
+
+   ⚠️ 层级 105：必须高于普通弹层（100）——
+      导入是从文献库页发起的，那时没有别的弹层；
+      但用户可能在导入途中点开详情，这时进度表单不能被盖住，
+      否则"点 cancel 没反应"就发生了。
+   ⚠️ 不能点遮罩关闭：这个表单代表一个**正在进行的写操作**，
+      误关会让用户以为取消了，实际还在写。
+   ══════════════════════════════════════════════════════════════════════ */
+
+.import-scrim {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 104;
+    background: rgba(0, 0, 0, 0.32);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 240ms cubic-bezier(0.2, 0, 0, 1);
+    touch-action: none;
+}
+
+.import-scrim.is-open {
+    opacity: 1;
+    /*
+      ⚠️ 只在打开时吃触摸事件。
+         常驻 pointer-events:none 时，隐藏的遮罩会拦住整个界面 ——
+         文件选择器关掉之后页面点不动，这种 bug 极难查。
+    */
+    pointer-events: auto;
+}
+
+.import-sheet {
+    position: fixed;
+    left: var(--safe-left);
+    right: var(--safe-right);
+    bottom: var(--keyboard);
+    z-index: 105;
+    padding: 20px 20px calc(20px + var(--safe-bottom));
+    background: var(--surface);
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.28);
+    transform: translateY(100%);
+    transition: transform 240ms cubic-bezier(0.2, 0, 0, 1);
+    /* 关闭时不能拦住点击（同上） */
+    pointer-events: none;
+}
+
+.import-sheet.is-open {
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+.import-sheet-title {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--on-surface);
+    margin-bottom: 4px;
+}
+
+.import-sheet-name {
+    font-size: 13px;
+    color: var(--on-surface-variant);
+    /*
+      ⚠️ 文件名可能很长（几十个字符），必须单行省略。
+         换行会把表单撑高，进度条和按钮被挤到下方看不见。
+    */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 16px;
+}
+
+.import-sheet-bar {
+    position: relative;
+    height: 6px;
+    border-radius: 3px;
+    /*
+      ⚠️ 槽底用 --surface-raised 而不是 --outline：
+         --outline(#D5D5D1) 与白色卡片对比度只有 1.45:1，
+         进度槽几乎看不见（v0.1.95 分隔线那个问题同源）。
+    */
+    background: var(--surface-raised);
+    overflow: hidden;
+}
+
+.import-sheet-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-radius: 3px;
+    background: var(--accent, #2D6A4F);
+    /*
+      ⚠️ 过渡 180ms：进度回调很密（每 512KB 一次），
+         没有过渡时宽度是一格一格跳的，看起来像卡顿；
+         太长（400ms+）又会跟不上真实进度，反而显得迟钝。
+    */
+    transition: width 180ms linear;
+}
+
+.import-sheet-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--on-surface-variant);
+}
+
+.import-sheet-pct {
+    /* 数字等宽，跳动时不会左右晃 */
+    font-variant-numeric: tabular-nums;
+}
+
+.import-sheet-cancel {
+    display: block;
+    width: 100%;
+    margin-top: 18px;
+    padding: 12px;
+    border: none;
+    border-radius: 12px;
+    background: var(--surface-raised);
+    color: var(--danger);
+    font-size: 15px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.import-sheet-cancel:active {
+    background: color-mix(in srgb, var(--danger) 12%, var(--surface-raised));
+}
+
+.import-sheet-cancel:disabled {
+    color: var(--on-surface-variant);
+    cursor: default;
+    opacity: 0.7;
 }
 

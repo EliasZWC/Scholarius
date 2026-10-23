@@ -42,6 +42,10 @@
     var sheetOkEl = null;
     var sheetCancelEl = null;
     var sheetScrimEl = null;
+    /** 进度条（v0.1.95） */
+    var progressEl = null;
+    var progressFillEl = null;
+    var progressPctEl = null;
 
     /** 模型是否已在本地。null = 还没问过原生 */
     var modelReady = null;
@@ -161,6 +165,27 @@
         sheetStatusEl.hidden = true;
         sheetEl.appendChild(sheetStatusEl);
 
+        /*
+          进度条（v0.1.95）—— 复用更新弹层那套 .update-progress 结构，
+          不新造样式（见 index.html 的 #update-progress）。
+        */
+        progressEl = document.createElement('div');
+        progressEl.className = 'update-progress';
+        progressEl.hidden = true;
+
+        var track = document.createElement('div');
+        track.className = 'update-track';
+        progressFillEl = document.createElement('span');
+        progressFillEl.className = 'update-fill';
+        track.appendChild(progressFillEl);
+        progressEl.appendChild(track);
+
+        progressPctEl = document.createElement('span');
+        progressPctEl.className = 'update-percent';
+        progressEl.appendChild(progressPctEl);
+
+        sheetEl.appendChild(progressEl);
+
         var actions = document.createElement('div');
         actions.className = 'form-actions';
 
@@ -168,7 +193,7 @@
         sheetCancelEl.type = 'button';
         sheetCancelEl.className = 'btn';
         sheetCancelEl.textContent = t('semantic.cancel');
-        sheetCancelEl.addEventListener('click', closeSheet);
+        sheetCancelEl.addEventListener('click', onCancel);
         actions.appendChild(sheetCancelEl);
 
         sheetOkEl = document.createElement('button');
@@ -230,13 +255,93 @@
     }
 
     /**
+     * 取消。
+     *
+     * ══ ⚠️⚠️ 取消不是"关掉表单"，而是**真的停止并丢弃** ══
+     *
+     * 用户要求（原话）：
+     *   「如果用户想要在导入过程中停下，按 cancel 应该及时停止
+     *     且丢弃这个导入行为」
+     *
+     * ✅ 所以下载中按取消要：
+     *    ① 通知原生停止下载线程
+     *    ② 原生清理已下载的文件（见 SemanticModel.download 的 finally）
+     *    ③ 状态回到 off
+     *
+     * ⚠️ 只关表单不通知原生，下载会在后台继续跑完，
+     *    然后弹一个"下载完成"—— 用户明明取消了。
+     */
+    function onCancel() {
+        if (downloading) {
+            var b = bridge();
+            if (b && typeof b.semanticCancelDownload === 'function') {
+                b.semanticCancelDownload();
+            }
+            downloading = false;
+        }
+        /* 取消后一律回到 off（用户原话：「否则回到 off 状态」） */
+        modelReady = false;
+        saveEnabled(false);
+        syncSettingRow();
+        setStatus('', false);
+        if (progressEl) progressEl.hidden = true;
+        if (sheetOkEl) {
+            sheetOkEl.disabled = false;
+            sheetOkEl.textContent = t('semantic.download');
+        }
+        if (sheetCancelEl) sheetCancelEl.disabled = false;
+        closeSheet();
+    }
+
+    /**
+     * 下载进度回调（原生 → 网页）。
+     *
+     * ══ ⚠️⚠️ 必须节流（v0.1.95 实测）══
+     *
+     * 用户反馈：
+     *   「点击 Download 之后一瞬间的 download...，然后瞬间回到 Download」
+     *
+     * 实测原生推送 **1809 次** 进度（每 64KB 一次）——
+     * 每次都是一次 `evaluateJavascript` 跨语言调用，
+     * 把 WebView 的 UI 线程占满，导致：
+     *   · 进度条**根本来不及重绘**（实测 barWidth 一直是空串）
+     *   · 按钮文字来回闪
+     * 也就是说：进度条写了，但用户看不见。
+     *
+     * ✅ 只接受**百分比变化**时才更新 DOM。
+     *    29MB / 1% ≈ 300KB ≈ 5 次回调 —— 从 1809 次降到约 100 次。
+     *
+     * ⚠️ 不要改成"每 N 次更新一次"：那样在不同网速下表现不一致。
+     *    按百分比变化判断，慢网和快网都是 100 次左右。
+     *
+     * @param {number} bytes 已下载字节数
+     */
+    var lastPct = -1;
+
+    function downloadProgress(bytes) {
+        if (!downloading || !progressEl) return;
+
+        var b = bridge();
+        var total = (b && typeof b.semanticTotalBytes === 'function')
+            ? Number(b.semanticTotalBytes()) : 0;
+        if (!total || total <= 0) return;
+
+        var pct = Math.max(0, Math.min(100, Math.round(bytes * 100 / total)));
+        /* ⚠️ 百分比没变就不碰 DOM —— 见上面那段说明 */
+        if (pct === lastPct) return;
+        lastPct = pct;
+
+        progressEl.hidden = false;
+        progressFillEl.style.width = pct + '%';
+        progressPctEl.textContent = pct + '%';
+    }
+
+    /**
      * 开始下载模型。
      *
-     * ⚠️ 实际下载由**原生**做（需要写应用私有目录），
-     *    这里只发指令并等回调。
-     *
-     * ⚠️ 下载完成后原生会调 `ScholariusSemantic.downloadFinished(ok)`。
-     *    成功才把开关置为 on；失败保持 off。
+     * ⚠️ 实际下载由**原生**做（要写应用私有目录），这里只发指令。
+     * ⚠️ 下载中**取消按钮保持可用** —— 用户要能随时停。
+     *    开始下载时只禁用「下载」按钮本身，不禁用取消。
      */
     function startDownload() {
         if (downloading) return;
@@ -249,16 +354,22 @@
 
         downloading = true;
         sheetOkEl.disabled = true;
-        sheetCancelEl.disabled = true;
         sheetOkEl.textContent = t('semantic.downloading');
         setStatus('', false);
+
+        /* 进度条归零并显示 */
+        lastPct = -1;
+        if (progressEl) {
+            progressEl.hidden = false;
+            progressFillEl.style.width = '0%';
+            progressPctEl.textContent = '0%';
+        }
 
         try {
             b.semanticDownloadModel();
         } catch (e) {
             downloading = false;
             sheetOkEl.disabled = false;
-            sheetCancelEl.disabled = false;
             sheetOkEl.textContent = t('semantic.download');
             setStatus(t('semantic.failed'), true);
         }
@@ -276,6 +387,28 @@
             sheetOkEl.textContent = t('semantic.download');
         }
         if (sheetCancelEl) sheetCancelEl.disabled = false;
+
+        /*
+          ══ ⚠️⚠️ 完成时**强制**置 100%（v0.1.95 实测）══
+
+          实测：进度条停在 95% 就结束了 —— 因为 TOTAL_BYTES 是估算，
+          与实际总量（29,430,672 字节）有偏差。
+
+          卡在 95% 然后突然关闭，看起来就像"下载失败但界面不动"。
+
+          ✅ 成功时把进度条填满再收起。这样无论总量估得准不准，
+             用户看到的都是"100% → 完成"，语义明确。
+        */
+        if (ok && progressEl) {
+            progressFillEl.style.width = '100%';
+            progressPctEl.textContent = '100%';
+            /* 让 100% 停留一下再隐藏，否则一闪而过看不清 */
+            global.setTimeout(function () {
+                if (progressEl) progressEl.hidden = true;
+            }, 400);
+        } else if (progressEl) {
+            progressEl.hidden = true;
+        }
 
         if (ok) {
             modelReady = true;
@@ -372,6 +505,8 @@
         refresh: refresh,
         isEnabled: isEnabled,
         downloadFinished: downloadFinished,
+        downloadProgress: downloadProgress,
+        cancelDownload: onCancel,
         isSheetOpen: isSheetOpen,
         closeSheet: closeSheet,
         /* 供测试：强制重查模型 */

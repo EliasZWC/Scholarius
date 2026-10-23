@@ -153,6 +153,31 @@ class MainActivity : AppCompatActivity() {
     private val assetLoader: WebViewAssetLoader by lazy {
         WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            /*
+              ══ 语义模型目录（v0.1.95）══
+
+              用户要求：「继续用 transformers.js，WASM 也走下载」
+
+              ✅ 模型和 onnxruntime 的 WASM 下到 `files/model/`，
+                 但 WebView 默认读不到 files 目录。
+                 用 InternalStoragePathHandler 把它挂成一个 https 路径：
+                     files/model/foo  →  https://appassets.../model/foo
+
+              ⚠️ 为什么必须走 https 而不是 file://
+                 transformers.js 用 fetch() 加载 WASM 和模型，
+                 而 fetch 不支持 file:// —— 要 http(s) 源才行。
+                 appassets.androidplatform.net 是项目已有的 https 源，
+                 复用它就不必再开 file access（那是个安全漏洞）。
+
+              ⚠️ 路径必须与 semantic-seg.js 里的
+                 `__SEMANTIC_MODEL_BASE__` 一致。
+            */
+            .addPathHandler(
+                "/model/",
+                WebViewAssetLoader.InternalStoragePathHandler(
+                    this, java.io.File(filesDir, "model")
+                )
+            )
             .build()
     }
 
@@ -403,6 +428,13 @@ class MainActivity : AppCompatActivity() {
                 onGetThumbnail = { id -> thumbnailFor(id) },
                 onDeleteDocs = { ids -> runOnUiThread { deleteDocs(ids) } },
                 /*
+                  ⚠️ 取消导入必须在**调用线程**直接置标志（这里是 JavaBridge 线程），
+                     不要 runOnUiThread —— 导入线程在等这个标志，
+                     而主线程可能正忙着做别的（比如渲染列表）。
+                     置 @Volatile 布尔是原子的，跨线程安全。
+                */
+                onCancelImport = { cancelImport() },
+                /*
                   ⚠️ patchJson 是一个 JSON 对象字符串，不是固定参数。
                      字段会随详情页增加，见 updateDoc 的注释。
                 */
@@ -436,15 +468,48 @@ class MainActivity : AppCompatActivity() {
                 */
                 onSemanticModelReady = { SemanticModel.isReady(this@MainActivity) },
                 onSemanticDownloadModel = {
-                    SemanticModel.download(this@MainActivity) { ok ->
-                        runOnUiThread {
-                            evaluateInWeb(
-                                "window.ScholariusSemantic && " +
-                                    "window.ScholariusSemantic.downloadFinished($ok);"
-                            )
+                    /*
+                      ══ ⚠️⚠️ 进度必须**节流**（v0.1.95 实测）══
+
+                      用户反馈：
+                        「点击 Download 之后一瞬间的 download...，
+                          然后瞬间回到 Download」
+
+                      实测下载 29.4MB 时回调了 **1809 次**
+                      （每 64KB 一次），每次一次 `evaluateJavascript` ——
+                      跨语言调用把 WebView 的 UI 线程占满，
+                      进度条**来不及重绘**（实测宽度一直是空串），
+                      用户只看到按钮文字闪一下就回去了。
+
+                      ✅ 只在「已下载字节数变化 >= 256KB」时才推一次。
+                         29MB / 256KB ≈ 115 次，比 1809 次降 94%，
+                         而进度条仍然足够平滑（每 1% 约 3 次）。
+                    */
+                    SemanticModel.download(
+                        this@MainActivity,
+                        onProgress = { bytes ->
+                            if (bytes - lastSemanticPush >= 256 * 1024L) {
+                                lastSemanticPush = bytes
+                                runOnUiThread {
+                                    evaluateInWeb(
+                                        "window.ScholariusSemantic && " +
+                                            "window.ScholariusSemantic.downloadProgress($bytes);"
+                                    )
+                                }
+                            }
+                        },
+                        onDone = { ok ->
+                            lastSemanticPush = 0L
+                            runOnUiThread {
+                                evaluateInWeb(
+                                    "window.ScholariusSemantic && " +
+                                        "window.ScholariusSemantic.downloadFinished($ok);"
+                                )
+                            }
                         }
-                    }
+                    )
                 },
+                onSemanticCancelDownload = { SemanticModel.cancel() },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,
@@ -1036,48 +1101,134 @@ class MainActivity : AppCompatActivity() {
      *
      * ⚠️ 无论成功失败都要 `callback.onReceiveValue(...)`，
      *    否则网页的 file input 会永远处于等待状态。
+     *
+     * ══ 进度与取消（v0.1.95）══
+     *
+     * 用户要求：
+     *   「导入过程应该做一个表单，显示完成多少了，
+     *     按 cancel 应该及时停止且丢弃这个导入行为」
+     *
+     * ✅ 三条必须一起成立，否则是假取消：
+     *    ① 表单能显示**真实**进度（分阶段 + 字节级复制进度）；
+     *    ② 按 cancel 后**尽快**停下（每 64KB 检查一次，不是只在头尾）；
+     *    ③ **丢弃**：已复制的半成品目录必须删掉，索引里不能留残骸。
+     *       半拉子目录会变成用户删不掉的幽灵文件（占空间、看不见）。
      */
     private fun importPdf(uri: Uri, callback: ValueCallback<Array<Uri>>) {
         val displayName = queryDisplayName(uri)
         debugLog("[library] importing: $displayName")
 
+        /* 本次导入的取消令牌。每次导入新建一个，互不干扰 */
+        val token = ImportToken()
+        activeImport = token
+
+        /* 先把表单推过去 —— 用户要立刻看到"开始了"，而不是等几秒才出现 */
+        evaluateInWeb(
+            "window.ScholariusShell && window.ScholariusShell.importProgress(" +
+                "\"start\", ${org.json.JSONObject.quote(displayName)}, 0, 0);"
+        )
+
         thread {
-            val doc = LibraryStore.import(
-                context = this,
-                displayName = displayName,
-                openStream = {
-                    try {
-                        contentResolver.openInputStream(uri)
-                    } catch (t: Throwable) {
-                        Log.w(TAG, "打开选中文件失败", t)
-                        null
-                    }
-                },
-            )
+            var doc: LibraryStore.Doc? = null
+            var cancelled = false
+            var failed = false
+
+            try {
+                doc = LibraryStore.import(
+                    context = this,
+                    displayName = displayName,
+                    openStream = {
+                        try {
+                            contentResolver.openInputStream(uri)
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "打开选中文件失败", t)
+                            null
+                        }
+                    },
+                    onProgress = { stage, frac ->
+                        /* ⚠️ 进度回调在后台线程 → 必须切到 UI 线程再碰 WebView */
+                        runOnUiThread {
+                            if (token.cancelled) return@runOnUiThread
+                            evaluateInWeb(
+                                "window.ScholariusShell && " +
+                                    "window.ScholariusShell.importProgress(\"stage\"," +
+                                    " ${org.json.JSONObject.quote(stage.label)}, " +
+                                    "${frac.coerceIn(0f, 1f)}, 0);"
+                            )
+                        }
+                    },
+                    isCancelled = { token.cancelled },
+                )
+            } catch (e: LibraryStore.ImportCancelled) {
+                cancelled = true
+            } catch (t: Throwable) {
+                Log.w(TAG, "[library] import crashed", t)
+                failed = true
+            }
 
             runOnUiThread {
-                /*
-                  把 URI 交还给网页。
-                  ⚠️ 同时推一份文献列表给网页 —— 网页拿不到 content:// URI 的
-                     实际内容（那是原生侧的私有授权），由原生负责读、只把
-                     展示所需的数据推过去。
-                */
-                callback.onReceiveValue(arrayOf(uri))
+                if (activeImport === token) activeImport = null
 
-                if (doc == null) {
-                    debugLog("[library] import failed: $displayName")
-                    evaluateInWeb(
-                        "window.ScholariusShell && window.ScholariusShell.onImportFailed();"
-                    )
-                } else {
-                    debugLog(
-                        "[library] imported '${doc.title}' pages=${doc.pages} " +
-                            "size=${doc.size}"
-                    )
-                    pushLibraryToWeb()
+                /*
+                  ⚠️ 取消时**也必须** callback.onReceiveValue ——
+                     否则网页的 file input 永远挂着，用户再点导入没反应。
+                     返回空数组表示"没选中任何文件"。
+                */
+                callback.onReceiveValue(if (cancelled || doc == null) emptyArray() else arrayOf(uri))
+
+                when {
+                    cancelled -> {
+                        debugLog("[library] import cancelled: $displayName")
+                        evaluateInWeb(
+                            "window.ScholariusShell && " +
+                                "window.ScholariusShell.importProgress(\"cancelled\", null, 0, 0);"
+                        )
+                    }
+                    doc == null -> {
+                        debugLog("[library] import failed: $displayName")
+                        evaluateInWeb(
+                            "window.ScholariusShell && " +
+                                "window.ScholariusShell.importProgress(\"failed\", null, 0, 0);"
+                        )
+                        evaluateInWeb(
+                            "window.ScholariusShell && window.ScholariusShell.onImportFailed();"
+                        )
+                    }
+                    else -> {
+                        debugLog(
+                            "[library] imported '${doc.title}' pages=${doc.pages} " +
+                                "size=${doc.size}"
+                        )
+                        evaluateInWeb(
+                            "window.ScholariusShell && " +
+                                "window.ScholariusShell.importProgress(\"done\", null, 1, 0);"
+                        )
+                        pushLibraryToWeb()
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * 导入取消令牌。
+     *
+     * ⚠️ 用 `@Volatile` 而不是普通 Boolean：写在线程 A（网页线程）、
+     *    读在线程 B（导入线程），没有 volatile 时编译器可以把它
+     *    缓存在寄存器里，取消信号**永远传不到** —— 这就是"按了没反应"。
+     */
+    private class ImportToken {
+        @Volatile var cancelled = false
+    }
+
+    /** 当前进行中的导入（网页点 cancel 时置位）。null 表示没有导入在跑 */
+    private var activeImport: ImportToken? = null
+
+    /** 网页→原生：取消当前导入 */
+    private fun cancelImport() {
+        val token = activeImport ?: return
+        token.cancelled = true
+        debugLog("[library] cancel requested")
     }
 
     /** 取选中文件的显示名（SAF 的 URI 没有文件名，要从 ContentResolver 查） */
@@ -1191,6 +1342,14 @@ class MainActivity : AppCompatActivity() {
         }
         launchExportChooser(id, md)
     }
+
+    /**
+     * 上次推送给网页的模型下载进度（字节）。
+     *
+     * ⚠️ 用于节流 —— 见 onSemanticDownloadModel 里那段说明。
+     *    不节流会 1809 次跨语言调用，把 UI 线程占满。
+     */
+    private var lastSemanticPush = 0L
 
     /** 已成功导出的篇数（用于完成提示） */
     private var exportedCount = 0

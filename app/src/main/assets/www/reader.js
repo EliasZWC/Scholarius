@@ -6193,6 +6193,186 @@
     }
 
     /**
+     * ══ 语义分段：把「按版式切的段」拼接成「按语义切的段」（v0.1.95）══
+     *
+     * 为什么要做这一步：
+     *
+     *   PDF 的段落边界是**几何**决定的（行的 x0 缩进、y 间距）。
+     *   但很多论文/扫描件的排版根本读不出这个信号 ——
+     *   一段话被硬切成 5 个块，每块一行，读起来全是碎的。
+     *
+     *   用户原话：
+     *     「PDF 应该只是文本，不要识别标题」——
+     *     但"一段话被切成五行"是**另一种**错误：
+     *     它不引入错误的标题，却让文字不成句。
+     *
+     * ✅ 做法：只动**连续的同类型正文块**。
+     *    · 把它们的文本收集起来，用模型算相邻句相似度，重新分段；
+     *    · 段的**行号范围**按原块的行数比例重新分配 ——
+     *      这样标注、编辑的坐标系仍然落在原来那批块的覆盖范围内。
+     *
+     * ⚠️ 严格限制作用范围，不做"智能重排"：
+     *   · 只处理 `kind === 'paragraph'`（或空 kind）的块；
+     *     公式、图片说明、作者区一律不碰；
+     *   · 必须**至少 2 个块**才值得重排（1 块本来就是 1 段）；
+     *   · 模型不可用时**原样返回** —— 绝不因为模型缺失而改变结果。
+     *   · 重排后段落总数变少时，是"合并"；变多时，是"拆分"。
+     *     两种都允许，因为语义边界与版式边界本来就不同。
+     *
+     * ⚠️ 为什么不直接用 `ScholariusSeg.segment` 的结果替换 blocks：
+     *   那样会丢掉 `line` / `page` / 坐标，标注与编辑会全部错位。
+     *   所以这里只重算**文本**与**行数归属**，其余字段照抄。
+     *
+     * @param {Array} blocks 原始块
+     * @return {Promise<Array>} 重排后的块（失败时返回原数组）
+     */
+    function semanticReflow(blocks) {
+        var seg = window.ScholariusSeg;
+        var sem = window.ScholariusSemantic;
+        if (!blocks || blocks.length < 2 || !seg || !sem) {
+            return Promise.resolve(blocks);
+        }
+        /* ⚠️ 用户没开 → 完全不动。这是"可选功能"的前提 */
+        var enabled = false;
+        try {
+            enabled = !!(sem.isEnabled && sem.isEnabled());
+        } catch (e) { enabled = false; }
+        if (!enabled) return Promise.resolve(blocks);
+
+        /*
+          ① 找出所有「连续的正文块」区段。
+             遇到非正文块（formula / 有 kind 的其他值）就断开 ——
+             不能跨越公式去合并，那会把公式挤到两段之间。
+        */
+        function isBody(b) {
+            if (!b) return false;
+            var k = b.kind || '';
+            if (k !== '' && k !== 'paragraph') return false;
+            return !!String(b.text || '').trim();
+        }
+
+        var runs = [];
+        var cur = [];
+        for (var i = 0; i < blocks.length; i++) {
+            if (isBody(blocks[i])) {
+                cur.push(i);
+            } else {
+                if (cur.length) { runs.push(cur); cur = []; }
+            }
+        }
+        if (cur.length) runs.push(cur);
+
+        /* 没有一个区段够长 → 不用模型，省一次加载 */
+        var worth = runs.filter(function (r) { return r.length >= 2; });
+        if (!worth.length) return Promise.resolve(blocks);
+
+        /*
+          ② 逐区段跑模型。
+             ⚠️ 串行而不是并行：模型只有一个 wasm 实例，
+                同时跑会让内存翻倍（实测 OOM 风险）。
+
+          ══ ⚠️⚠️ 两个阶段必须分开（实测踩到）══
+
+          一开始的写法是「跑完一个区段就 splice 进 `out`」，
+          结果第二个区段的 `run[]` 下标在第一次 splice 后**全部失效**，
+          报 `Cannot read properties of undefined (reading 'text')`。
+
+          真因：`run` 里存的是**原始数组的下标**，一旦数组增删，
+          这些下标指向的就是别的块（甚至越界）。
+
+          ✅ 现在：第一阶段只**算出**每个区段的替换结果，存进 patch 表；
+             第二阶段从后往前一次性重建 —— 从后往前保证前面的下标不受影响。
+        */
+        var patches = [];   /* [{start, count, items}] 按 start 升序 */
+
+        var chain = Promise.resolve();
+        worth.forEach(function (run) {
+            chain = chain.then(function () {
+                var parts = [];
+                for (var r = 0; r < run.length; r++) {
+                    var t = String(blocks[run[r]].text || '').trim();
+                    if (t) parts.push(t);
+                }
+                if (parts.length < 2) return null;
+
+                return seg.segment(parts).then(function (res) {
+                    var paras = (res && res.paragraphs) || [];
+                    if (!paras.length) return null;
+                    /*
+                      ⚠️ 结果与原文块数一致时**不改** ——
+                         说明模型的判断和版式完全一样，
+                         替换反而可能丢掉块内的原始换行。
+                    */
+                    if (paras.length === parts.length) return null;
+
+                    /*
+                      ③ 重新分配行号。
+                         每个新段落按**字符数占比**从原块的行号区间里切一段。
+                         用字符数而不是句数：长段落本来就该占更多行。
+                    */
+                    var allLines = [];
+                    for (var q = 0; q < run.length; q++) {
+                        allLines.push(blocks[run[q]].line);
+                    }
+                    var totalChars = 0;
+                    for (var c = 0; c < parts.length; c++) {
+                        totalChars += parts[c].length;
+                    }
+                    if (!totalChars || !allLines.length) return null;
+
+                    var rebuilt = [];
+                    var usedChars = 0;
+                    for (var p = 0; p < paras.length; p++) {
+                        var lo = Math.floor(usedChars / totalChars * allLines.length);
+                        usedChars += paras[p].length;
+                        var hi = Math.ceil(usedChars / totalChars * allLines.length) - 1;
+                        if (hi < lo) hi = lo;
+                        if (lo > allLines.length - 1) lo = allLines.length - 1;
+                        if (hi > allLines.length - 1) hi = allLines.length - 1;
+                        var src = blocks[run[lo]];
+                        rebuilt.push({
+                            /* ⚠️ 行号取区间的下界 —— 编辑/标注按行号寻址时能命中 */
+                            line: allLines[lo],
+                            page: src ? src.page : null,
+                            text: paras[p],
+                            kind: 'paragraph',
+                            level: undefined,
+                            lines: undefined
+                        });
+                    }
+                    if (!rebuilt.length) return null;
+
+                    patches.push({ start: run[0], count: run.length, items: rebuilt });
+                    return null;
+                });
+            });
+        });
+
+        return chain.then(function () {
+            if (!patches.length) return blocks;
+
+            /* ④ 从后往前重建：前面的 start 不受后面的增删影响 */
+            var out = blocks.slice();
+            for (var i = patches.length - 1; i >= 0; i--) {
+                var pt = patches[i];
+                var args = [pt.start, pt.count].concat(pt.items);
+                Array.prototype.splice.apply(out, args);
+            }
+            trace('reader:seg', 'reflowed ' + blocks.length + ' -> ' +
+                  out.length + ' blocks in ' + patches.length + ' runs');
+            return out;
+        }, function (err) {
+            /*
+              ⚠️ 模型出错**不能影响阅读** —— 退回原始块。
+                 用户开了语义分段，但模型跑不动时，
+                 最坏的结果应该是"和没开一样"，而不是白屏。
+            */
+            trace('reader:seg', 'failed: ' + (err && err.message));
+            return blocks;
+        });
+    }
+
+    /**
      * 原生推来正文文本。
      *
      * ⚠️ 只接收**当前打开的那篇** —— 用户可能很快点开另一篇，
@@ -6320,6 +6500,34 @@
             blocks = dropContainedBlocks(blocks);
         }
 
+        /*
+          ══ 语义分段（v0.1.95，可选）══
+
+          ⚠️ 这一步是**异步**的（要跑模型），所以把后面的
+             「建 docModel + 渲染 + 生成目录」整体挪进 continueWith。
+             不开语义分段时 `semanticReflow` 立即 resolve，
+             走的是和以前完全一样的同步路径 —— 只是多包了一层 then。
+          ⚠️ 异步期间用户可能已经切走 —— 必须**重新校验** id，
+             否则会把 A 的正文画到 B 上（和文件头那段同样的道理）。
+        */
+        semanticReflow(blocks).then(function (finalBlocks) {
+            if (!currentDoc || currentDoc.id !== id) {
+                trace('reader:text-stale', 'seg ignored ' + id);
+                return;
+            }
+            continueWith(id, text, outline, meta, finalBlocks, fromMd);
+        });
+    }
+
+    /**
+     * `setText` 的后半段：建文档模型、渲染、生成目录。
+     *
+     * ⚠️ 独立成函数是因为语义分段是异步的（见上面的 `semanticReflow`）。
+     *    这里做的每一件事都和 v0.1.94 完全一致，只是入口晚了一点。
+     */
+    function continueWith(id, text, outline, meta, blocks, fromMd) {
+        if (!contentEl) return;
+
         if (blocks && blocks.length) {
             lastBlocks = blocks;
             lastText = '';
@@ -6427,7 +6635,6 @@
             */
             docModel.blocks = [{ line: 0, page: null, text: text || '' }];
         }
-
         if (docModel.blocks && docModel.blocks.length) {
             renderBlocks(docModel.blocks);
         } else {
@@ -8080,6 +8287,16 @@ function tocTitleFrom(text) {
         getBlocks: function () {
             return lastBlocks ? lastBlocks.slice() : null;
         },
+        /**
+         * 供排查/测试：直接跑一次语义重组，不碰 DOM、不依赖打开文档。
+         *
+         * ⚠️ 只有它才能单独验证「块 → 语义分段」这一步，
+         *    因为 `setText` 需要真实打开一篇文档（id 校验）。
+         *
+         * 用法：
+         *   python tools/emu_js.py --file tools/_seg_reflow.js
+         */
+        __reflow: semanticReflow,
         /**
          * 编辑 / 标注的当前状态（供真机排查用，v0.1.46）。
          *

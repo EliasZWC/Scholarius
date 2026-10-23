@@ -208,6 +208,26 @@
             return 'no-vault-module';
         },
         /*
+          导入进度（v0.1.95）。
+
+          kind 取值：
+            "start"      开始，参数 name = 文件名
+            "stage"      阶段推进，参数 name = 阶段名（copy/verify/...），frac = 0~1
+            "done"       完成
+            "cancelled"  用户取消（已清理干净）
+            "failed"     失败
+
+          ⚠️ 原生在后台线程调这个，网页这边只做 DOM 操作 ——
+             WebView 保证 JavascriptInterface 的调用在 JS 线程上串行执行，
+             所以不需要自己加锁。
+        */
+        importProgress: function (kind, name, frac) {
+            if (window.ScholariusImport) {
+                return window.ScholariusImport.onProgress(kind, name, frac);
+            }
+            return 'no-import-module';
+        },
+        /*
           阅读页正文。text 为 null 表示提取失败或无文本。
           ⚠️ 必须 return，理由同上面几个转发函数。
 
@@ -427,6 +447,15 @@
         */
         if (window.ScholariusSemantic) {
             window.ScholariusSemantic.init();
+        }
+        /*
+          导入进度表单（v0.1.95）。
+          ⚠️ 提前 build 一次，而不是等第一次导入时才建 ——
+             导入是用户等待的场景，这时候再插入 DOM + 算样式
+             会让表单晚一帧出现，看得出"顿一下"。
+        */
+        if (window.ScholariusImport) {
+            window.ScholariusImport.init();
         }
         /*
           ⚠️ detail.js 要在 reader.js **之前**初始化。
@@ -790,6 +819,25 @@
      *    （账户页是最底层的覆盖层，所以最后关）
      */
     function handleBack() {
+        /*
+          ⓪ 导入进度表单（v0.1.95）。
+
+          ⚠️ **放在最前面**：它代表一个正在进行的写操作，
+             按返回绝不能让用户回到文献库页继续点别的 ——
+             那样导入还在后台跑，用户却已经忘了它存在。
+
+          ⚠️ 这里**不能**直接 hide()：按返回等价于「取消导入」，
+             必须走完整的取消链路（置标志 → 等原生清理 → 收表单）。
+             直接藏起来会让用户以为取消了，而文件还在被写。
+        */
+        if (window.ScholariusImport &&
+            typeof window.ScholariusImport.isOpen === 'function' &&
+            window.ScholariusImport.isOpen()) {
+            window.ScholariusImport.cancel();
+            trace('back', 'cancelled import');
+            return true;
+        }
+
         /*
           ⓪ 文献详情页最先处理 —— **它盖在阅读页之上**。
 

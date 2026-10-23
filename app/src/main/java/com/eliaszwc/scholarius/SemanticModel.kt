@@ -7,135 +7,281 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * ══ 语义分段模型的管理（v0.1.94）══
+ * ══ 语义分段模型的下载与检测（v0.1.94 / v0.1.95）══
  *
  * 用户要求（原话）：
- *   「我觉得可以放在设置里面，到时候用户自己选择要不要用语义模型来分，
+ *   「可以放在设置里面，到时候用户自己选择要不要用语义模型来分，
  *     如果要，让用户自己下载，这就和安装包解体了」
  *   「选开启后自动检测是否本地下了模型，没有就弹出表单下载，
  *     否则回到 off 状态」
+ *   「模型大小多少？我要确定不会给移动设备造成负担」
  *
- * ══ 第一性原理：为什么不打包进 APK ══
+ * ══ 为什么要下载多个文件，而不是一个"模型" ══
  *
- * APK 现在 11MB。模型（约 23MB）放进去就是 34MB，
- * 而**多数用户不需要**语义分段（标点分段对排版规整的论文已经够用）。
- * 让需要的人下载，是唯一合理的选择 —— 这不是省事，是正确的产品结构。
+ * 语义分段要三样东西，缺一不可：
  *
- * ══ 这个类只管一个文件 ══
+ *   ① 推理引擎 onnxruntime 的 WASM —— 11.2MB
+ *   ② 模型本体 INT8 量化的 MiniLM-L3 —— 17.5MB
+ *   ③ tokenizer / config —— 0.7MB
  *
- * 它不负责分词、不负责分段、不负责推理。
- * 它只回答两件事：
- *   ① 模型文件在不在？（[isReady]）
- *   ② 下载它。（[download]）
+ * 我曾把这个算成"模型 17.5MB"，漏掉了 WASM —— 那是错的。
+ * 实际下载量约 29.4MB，必须如实告诉用户。
  *
- * ⚠️ 为什么下载要自己做而不用第三方库：
- *   只需要一个 GET + 写文件，引入 OkHttp/Retrofit 是为了一行代码
- *   背上几 MB 依赖，不值得。
+ * ══ 为什么用 L3 而不是 L6 ══
  *
- * ══ ⚠️⚠️ 当前状态：框架就位，模型尚未接入 ══
+ * 用户：「先换更小的模型，我看看效果如何，如果效果 ok 就直接这样」
+ * L3（3 层）17.5MB / L6（6 层）23MB，前者快约 2 倍。
+ * 分段是粗粒度任务，不需要 L6 的精度。
  *
- * 这轮实现的是**设置界面与下载机制**（用户明确要求的范围）。
- * 真正的分段推理还没接 —— 因为那需要选模型格式、接入 ONNX/TFLite 运行时，
- * 是另一件独立的事。
+ * ══ 这个类只管文件，不管推理 ══
  *
- * 所以 [isReady] 现在会返回**真实的文件存在性**：
- * 下载完成 → 文件在 → 返回 true。但即使为 true，
- * `PdfText` 里也还没有代码去用它分段。
- *
- * ⚠️ 这个不一致**必须**在接入推理前解决 ——
- *    否则开关显示"开启"，实际分段行为没变，就是撒谎。
- *    见 TODO(seg) 标记。
+ * 推理在前端（transformers.js，见 semantic-seg.js）——
+ * 用户已明确选择这条路。这里只负责：文件在不在（[isReady]）、下载（[download]）。
  */
 object SemanticModel {
 
     private const val TAG = "SemanticModel"
 
-    /** 模型文件名。⚠️ 与 [MODEL_URL] 的最后一段保持一致 */
-    private const val FILE_NAME = "minilm-seg.onnx"
+    /** 模型 ID。⚠️ 与 semantic-seg.js 的 MODEL_ID 必须一致 */
+    private const val MODEL_ID = "paraphrase-MiniLM-L3-v2"
+
+    /** 一个待下载的远程文件 → 本地相对路径 */
+    private data class Remote(val url: String, val path: String)
 
     /**
-     * 模型下载地址。
+     * 下载清单。
      *
-     * ⚠️ 现在指向占位地址 —— 接推理时必须换成真实的模型文件。
-     *    TODO(seg): 换成实际托管的模型（建议 GitHub Release 附件，
-     *    与本项目的 APK 同一套发布机制，无需额外服务）。
+     * ⚠️ 路径相对 `files/model/`，与 transformers.js 的
+     *    `env.localModelPath` 对应（见 semantic-seg.js）。
+     *
+     * ⚠️ WASM 用 `simd-threaded` 而**不是** `jsep`：
+     *    jsep 那份带 WebGPU 支持，21.6MB，几乎翻倍，
+     *    而 WebView 里不用 WebGPU —— 白白多下 10MB。
      */
-    private const val MODEL_URL =
-        "https://github.com/EliasZWC/Scholarius/releases/download/model-v1/$FILE_NAME"
+    /**
+     * ══ ⚠️⚠️ WASM 的版本**必须与 transformers.js 内置的 ort 完全一致** ══
+     *
+     * 实测日志（这是根因，找了三轮才看清）：
+     *
+     *     env.backends.onnx.versions = {
+     *       common: "1.20.0-dev.20241016-2b8fc5529b",
+     *       web:    "1.21.0-dev.20241024-d9ca84ef96"
+     *     }
+     *
+     * 而我一直下的是 `onnxruntime-web@1.20.0` 的正式版 →
+     * 版本不匹配，加载时抛 `ie[e] is not a function`。
+     *
+     * ⚠️ 这个错误信息完全看不出是"版本不对"：
+     *    它只是某个内部注册表查不到键，连"WASM"两个字都不出现。
+     *
+     * ✅ 用 transformers.js 内置的那个确切版本号。
+     * ⚠️ 升级 transformers.js 时**必须同步改这里**，
+     *    并重新核对 env.backends.onnx.versions.web。
+     */
+    private const val ORT_VERSION = "1.21.0-dev.20241024-d9ca84ef96"
 
-    /** 模型目录：与应用数据同级，卸载时一起删除 */
-    private fun dir(context: Context): File =
+    private val FILES = listOf(
+        /*
+          ⚠️ 必须是 `jsep` 版本 —— transformers.js 3.0.2 硬编码要这个名字。
+             我曾判断「WebView 用不上 WebGPU，下小的非 jsep 就行」，
+             实测 FileNotFoundException 直接打脸。
+        */
+        Remote(
+            "https://cdn.jsdelivr.net/npm/onnxruntime-web@$ORT_VERSION/dist/" +
+                "ort-wasm-simd-threaded.jsep.wasm",
+            "ort/ort-wasm-simd-threaded.jsep.wasm"
+        ),
+        Remote(
+            "https://cdn.jsdelivr.net/npm/onnxruntime-web@$ORT_VERSION/dist/" +
+                "ort-wasm-simd-threaded.jsep.mjs",
+            "ort/ort-wasm-simd-threaded.jsep.mjs"
+        ),
+        Remote(
+            "https://huggingface.co/Xenova/$MODEL_ID/resolve/main/" +
+                "onnx/model_quantized.onnx",
+            "$MODEL_ID/onnx/model_quantized.onnx"
+        ),
+        Remote(
+            "https://huggingface.co/Xenova/$MODEL_ID/resolve/main/tokenizer.json",
+            "$MODEL_ID/tokenizer.json"
+        ),
+        /*
+          ══ ⚠️⚠️ tokenizer_config.json 不能漏（v0.1.95 实测）══
+
+          第一次跑真模型时报：
+
+              `local_files_only=true` and file was not found locally at
+              ".../paraphrase-MiniLM-L3-v2/tokenizer_config.json"
+
+          它和 tokenizer.json 是**两个不同文件**：
+            · tokenizer.json        —— 词表与合并规则（0.7MB）
+            · tokenizer_config.json —— 如何调用它（do_lower_case、
+                                        max_length、特殊 token…，约 1KB）
+
+          ⚠️ 少了它，transformers.js 会**加载失败**，
+             而报错信息只提"找不到文件"，完全看不出
+             "你少下了一个配置文件"。
+        */
+        Remote(
+            "https://huggingface.co/Xenova/$MODEL_ID/resolve/main/tokenizer_config.json",
+            "$MODEL_ID/tokenizer_config.json"
+        ),
+        Remote(
+            "https://huggingface.co/Xenova/$MODEL_ID/resolve/main/config.json",
+            "$MODEL_ID/config.json"
+        )
+    )
+
+    /**
+     * 预计下载总量（字节），仅用于进度百分比。
+     *
+     * ══ ⚠️⚠️ 实测值（v0.1.95）══
+     *
+     * 完整下载是 **29,430,672 字节**（约 28.1 MiB）。
+     *
+     * ⚠️ 第一版凭感觉填 30,800,000，结果进度条走到 **95%** 就"完成"了，
+     *    永远到不了 100% —— 看起来像卡死。
+     *
+     * ✅ 现在填实测值。**并且**下载完成时前端会强制置 100%
+     *    （见 semantic.js 的 downloadFinished）——
+     *    双保险：总量估算再怎么不准，完成那一刻一定是 100%。
+     *
+     * ⚠️ 换模型要重算这个数（把 FILES 各项真实大小相加）。
+     */
+    const val TOTAL_BYTES: Long = 29_430_672L
+
+    /** 模型根目录：与应用数据同级，卸载时一起删除 */
+    fun dir(context: Context): File =
         File(context.filesDir, "model").apply { if (!exists()) mkdirs() }
-
-    /** 模型文件 */
-    fun file(context: Context): File = File(dir(context), FILE_NAME)
 
     /**
      * 模型是否已就绪。
      *
-     * ⚠️ 判据是**文件存在且非空**，不是"下载过"。
-     *    下载中断会留下半截文件 —— 那种情况必须重新下载，
-     *    否则推理时会崩在"模型格式错误"上，而用户完全不知道原因。
+     * ══ ⚠️⚠️ 判据：每个文件都存在且**非空**（v0.1.95 实测修）══
+     *
+     * 第一版写 `length() > 512L`，想挡住"下载了 0 字节或错误页"。
+     * 结果 `tokenizer_config.json` 只有 **366 字节**（正常内容就是那么小）——
+     * 文件齐全却永远报"未就绪"，开关打不开。
+     *
+     * ✅ 改成 `> 0`：只排除空文件。
+     *    文件损坏由**推理时**报错发现（那时有明确的错误信息），
+     *    不该在这一层用大小去猜 —— 猜错就是把好功能锁死。
      */
     fun isReady(context: Context): Boolean {
-        val f = file(context)
-        return f.exists() && f.length() > 1024L
+        val root = dir(context)
+        return FILES.all { r ->
+            val f = File(root, r.path)
+            f.exists() && f.length() > 0L
+        }
+    }
+
+    /** 请求取消（下载线程会检查） */
+    @Volatile
+    var cancelRequested: Boolean = false
+        private set
+
+    fun cancel() {
+        cancelRequested = true
     }
 
     /**
-     * 下载模型。
+     * 下载全部文件。
      *
-     * ⚠️ 必须在**后台线程**调用（本方法自己开线程，调用方直接调即可）。
-     * ⚠️ 下载到临时文件再 rename —— 中途失败不会留下半截文件
-     *    覆盖掉一份好的旧模型（与 LibraryStore.writeMd 同一套思路）。
+     * ⚠️ 后台线程（本方法自己开线程）。
+     * ⚠️ 每个文件下到 `.part` 再 rename —— 中途失败不留半截文件。
+     * ⚠️ 支持**取消**：检查 [cancelRequested]，随时可中断。
      *
-     * @param onDone 完成回调，在主线程调用。true = 成功
+     * @param onProgress 进度回调。参数是已下载字节
+     * @param onDone     完成回调。true = 全部成功
      */
-    fun download(context: Context, onDone: (Boolean) -> Unit) {
+    fun download(
+        context: Context,
+        onProgress: (Long) -> Unit,
+        onDone: (Boolean) -> Unit
+    ) {
+        cancelRequested = false
         Thread {
-            val target = file(context)
-            val tmp = File(target.parentFile, "$FILE_NAME.part")
-            var ok = false
-            try {
-                Log.i(TAG, "downloading $MODEL_URL")
-                val conn = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 15_000
-                    readTimeout = 60_000
-                    instanceFollowRedirects = true
+            val root = dir(context)
+            var written = 0L
+            var ok = true
+
+            for (r in FILES) {
+                if (cancelRequested) { ok = false; break }
+
+                val target = File(root, r.path)
+                target.parentFile?.mkdirs()
+                val tmp = File(target.parentFile, target.name + ".part")
+
+                val got = fetch(r.url, tmp) { delta ->
+                    written += delta
+                    onProgress(written)
                 }
-                try {
-                    if (conn.responseCode !in 200..299) {
-                        Log.w(TAG, "HTTP ${conn.responseCode}")
-                    } else {
-                        conn.inputStream.use { input ->
-                            tmp.outputStream().use { out ->
-                                input.copyTo(out, 64 * 1024)
-                            }
-                        }
-                        /*
-                          ⚠️ 基本校验：太小的文件一定是错误页/空响应。
-                             不做完整校验（那要在推理时做），
-                             但至少要挡住"下载了一个 0 字节"。
-                        */
-                        if (tmp.length() < 1024L) {
-                            Log.w(TAG, "downloaded file too small: ${tmp.length()}")
-                        } else if (tmp.renameTo(target)) {
-                            ok = true
-                        } else {
-                            Log.w(TAG, "rename failed")
-                        }
-                    }
-                } finally {
-                    conn.disconnect()
+
+                if (got <= 0L) {
+                    ok = false
+                    tmp.delete()
+                    break
                 }
-            } catch (t: Throwable) {
-                Log.w(TAG, "download failed", t)
-            } finally {
-                if (!ok && tmp.exists()) tmp.delete()
+                if (!tmp.renameTo(target)) {
+                    Log.w(TAG, "rename failed: ${r.path}")
+                    ok = false
+                    tmp.delete()
+                    break
+                }
             }
 
-            Log.i(TAG, "download finished ok=$ok size=${if (ok) target.length() else 0}")
+            /*
+              ⚠️ 被取消/失败时要**清理已下载的部分** ——
+                 留着半套文件只会让 isReady 误判，也会白占 30MB 磁盘。
+            */
+            if (!ok) {
+                root.deleteRecursively()
+                root.mkdirs()
+            }
+
+            Log.i(TAG, "download finished ok=$ok bytes=$written")
             onDone(ok)
         }.start()
+    }
+
+    /**
+     * 下载单个文件。
+     *
+     * @return 写入的字节数；失败或取消返回 0
+     */
+    private fun fetch(url: String, dest: File, onDelta: (Long) -> Unit): Long {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 20_000
+                readTimeout = 60_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "Scholarius")
+            }
+            if (conn.responseCode !in 200..299) {
+                Log.w(TAG, "HTTP ${conn.responseCode} for $url")
+                return 0
+            }
+            var total = 0L
+            conn.inputStream.use { input ->
+                dest.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        if (cancelRequested) return 0
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        out.write(buf, 0, n)
+                        total += n
+                        onDelta(n.toLong())
+                    }
+                }
+            }
+            total
+        } catch (t: Throwable) {
+            Log.w(TAG, "fetch failed: $url", t)
+            0L
+        } finally {
+            conn?.disconnect()
+        }
     }
 }

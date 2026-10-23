@@ -1489,8 +1489,57 @@
          虽然有兜底（未加载时查不到简称），但先加载能一次渲染到位。
     -->
     <script src="shortcut.js"></script>
+    <!--
+      ══ 语义分段运行时（v0.1.95）══
+
+      ⚠️ transformers.min.js 打进 APK（0.75MB），
+         而 onnxruntime 的 WASM（11.2MB）与模型（17.5MB）走下载 ——
+         用户裁决：「继续用 transformers.js，WASM 也走下载」。
+
+      ══ ⚠️⚠️ 必须是 `type="module"` ══
+
+      第一版写成普通 `<script src>`，WebView 直接报：
+
+          Uncaught SyntaxError: Cannot use 'import.meta' outside a module
+
+      原因：transformers.js v3 的构建用了 `import.meta`（ES module 专有语法），
+      普通脚本里是非法的。**没有 UMD 版本可用** —— v3 起只发 ESM。
+
+      ⚠️ 因此它**不会**挂 `window.transformers`，必须用 import 取：
+          `import { pipeline, env } from './vendor/transformers.min.js'`
+
+      ⚠️ module 脚本是**延迟执行**的（相当于 defer），
+         所以在它 import 完成之前，`semantic-seg.js` 不能去读它。
+         下面的 inline module 会把它挂到 window 上，供另一个脚本用；
+         在那之前 `ScholariusSeg.ensureModel()` 会等到 window.transformers 就绪。
+    -->
+    <script type="module">
+        import * as tf from './vendor/transformers.min.js';
+        window.transformers = tf;
+        /*
+          ⚠️ 通知等待方（semantic-seg.js 的 ensureModel 会轮询这个标记）。
+             module 的执行时机晚于普通脚本，所以必须有这个信号，
+             否则第一个用户点"开启"时会因为 window.transformers 还没到而失败。
+        */
+        window.__SEMANTIC_RUNTIME_READY__ = true;
+    </script>
+    <script>
+        /*
+          告诉 transformers.js 去哪找本地文件。
+
+          ⚠️ 走 https（AssetLoader 挂的 /model/），**不是** file:// ——
+             fetch 不支持 file 协议，而 WASM 和模型都靠 fetch 加载。
+          ⚠️ 结尾必须有 `/`，否则拼出来是 `modelparaphrase-...`。
+        */
+        window.__SEMANTIC_MODEL_BASE__ =
+            'https://appassets.androidplatform.net/model/';
+    </script>
     <!-- 语义分段设置（v0.1.94）：只负责开关与模型存在性，见 semantic.js 文件头 -->
     <script src="semantic.js"></script>
+    <!-- 语义分段引擎（v0.1.95）：分句 + 相似度判段，见 semantic-seg.js 文件头 -->
+    <script src="semantic-seg.js"></script>
+    <!-- 导入进度表单（v0.1.95）：分阶段进度 + 可取消，见 import-progress.js 文件头 -->
+    <script src="import-progress.js"></script>
     <script src="vault.js"></script>
     <!--
       ⚠️ detail.js 要在 reader.js **之前** ——

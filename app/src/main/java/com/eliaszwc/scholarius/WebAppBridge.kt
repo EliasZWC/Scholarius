@@ -52,6 +52,10 @@ class WebAppBridge(
     private val onSemanticModelReady: () -> Boolean,
     /** 开始下载语义模型（v0.1.94）。见 semanticDownloadModel */
     private val onSemanticDownloadModel: () -> Unit,
+    /** 取消模型下载（v0.1.95） */
+    private val onSemanticCancelDownload: () -> Unit,
+    /** 取消正在进行的 PDF 导入（v0.1.95） */
+    private val onCancelImport: () -> Unit,
     // --- 临时诊断（v0.0.6，定位完删）---
     private val onTrace: (String) -> Unit,
 ) {
@@ -116,6 +120,18 @@ class WebAppBridge(
     @JavascriptInterface
     fun deleteDocs(idsJson: String) {
         onDeleteDocs(parseIdArray(idsJson))
+    }
+
+    /**
+     * 取消正在进行的 PDF 导入（v0.1.95）。
+     *
+     * ⚠️ 只是**置一个标志**，立即返回。真正的停止发生在导入线程
+     *    下一个检查点（每 64KB 一次）。所以 UI 不能假设"点了就停了" ——
+     *    要等 `importProgress("cancelled")` 回调才能收起表单。
+     */
+    @JavascriptInterface
+    fun cancelImport() {
+        onCancelImport()
     }
 
     /**
@@ -214,14 +230,24 @@ class WebAppBridge(
     /**
      * 开始下载语义模型。
      *
-     * ⚠️ 异步：立即返回，完成后原生调
-     *    `ScholariusSemantic.downloadFinished(ok)` 通知网页。
-     *    下载可能要几十秒到几分钟，不能阻塞 JS 线程。
+     * ⚠️ 异步：立即返回，进度与完成由原生回调：
+     *    `ScholariusSemantic.downloadProgress(bytes)`
+     *    `ScholariusSemantic.downloadFinished(ok)`
      */
     @JavascriptInterface
     fun semanticDownloadModel() {
         onSemanticDownloadModel()
     }
+
+    /** 取消模型下载（用户点了取消） */
+    @JavascriptInterface
+    fun semanticCancelDownload() {
+        onSemanticCancelDownload()
+    }
+
+    /** 预计下载总量（字节），前端用它算百分比 */
+    @JavascriptInterface
+    fun semanticTotalBytes(): Long = SemanticModel.TOTAL_BYTES
 
 
     /** 把 JSON 数组字符串解成 id 列表；解析失败返回空列表 */

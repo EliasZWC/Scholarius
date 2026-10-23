@@ -39,6 +39,17 @@
             'vault.importFailed': 'Could not import this file. Is it a valid PDF?',
             'vault.readerSoon': 'Reader Coming Soon',
 
+            /* 导入进度表单（v0.1.95） */
+            'import.title': 'Importing',
+            'import.cancel': 'Cancel',
+            'import.cancelling': 'Cancelling\u2026',
+            'import.stage.copy': 'Copying file',
+            'import.stage.verify': 'Checking file',
+            'import.stage.thumbnail': 'Rendering cover',
+            'import.stage.meta': 'Reading metadata',
+            'import.stage.index': 'Saving to library',
+            'import.stage.done': 'Done',
+
             /*
               文献类型（发表载体性质）。
 
@@ -171,7 +182,7 @@
             'semantic.off': 'Off',
             'semantic.on': 'On',
             'semantic.desc': 'Split paragraphs by meaning instead of punctuation.',
-            'semantic.needModel': 'Semantic paragraph splitting needs a model file (~23 MB). It runs entirely on your device - documents are never uploaded.',
+            'semantic.needModel': 'Semantic paragraph splitting needs a model (~29 MB). It runs entirely on your device - documents are never uploaded.',
             'semantic.download': 'Download',
             'semantic.cancel': 'Cancel',
             'semantic.downloading': 'Downloading…',
@@ -395,6 +406,17 @@
             'vault.deleteMessage': '将从本机移除 {n} 篇文献，此操作不可撤销。',
             'vault.deleteOneMessage': '将从本机移除《{title}》，此操作不可撤销。',
             'vault.importFailed': '无法导入该文件，请确认是有效的 PDF。',
+
+            /* 导入进度表单（v0.1.95） */
+            'import.title': '正在导入',
+            'import.cancel': '取消',
+            'import.cancelling': '正在取消…',
+            'import.stage.copy': '正在复制文件',
+            'import.stage.verify': '正在检查文件',
+            'import.stage.thumbnail': '正在生成封面',
+            'import.stage.meta': '正在读取元数据',
+            'import.stage.index': '正在存入文库',
+            'import.stage.done': '完成',
             'vault.readerSoon': '阅读页即将推出',
 
             /*
@@ -512,7 +534,7 @@
             'semantic.off': '关闭',
             'semantic.on': '开启',
             'semantic.desc': '按语义而不是标点划分段落。',
-            'semantic.needModel': '语义分段需要一个模型文件（约 23 MB）。它完全在本地运行，文献不会被上传。',
+            'semantic.needModel': '语义分段需要下载模型（约 29 MB）。它完全在本地运行，文献不会被上传。',
             'semantic.download': '下载',
             'semantic.cancel': '取消',
             'semantic.downloading': '下载中…',

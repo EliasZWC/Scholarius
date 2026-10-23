@@ -366,18 +366,50 @@ object LibraryStore {
     // -----------------------------------------------------------------------
 
     /**
+     * 导入进度阶段。
+     *
+     * ⚠️ 用「阶段 + 0~1 的进度」而不是单一百分比：
+     *    复制大文件可能占 80% 的时间，元数据只要几毫秒 ——
+     *    只给一个数字会让进度条在 80% 处卡住不动，看起来像卡死。
+     *    分阶段后每一段都要能平滑推进。
+     */
+    enum class ImportStage(val label: String) {
+        COPY("copy"),
+        VERIFY("verify"),
+        THUMBNAIL("thumbnail"),
+        META("meta"),
+        INDEX("index")
+    }
+
+    /**
+     * 导入被用户取消。
+     *
+     * ⚠️ 用异常而不是返回 null —— 取消与失败在语义上完全不同：
+     *    取消应当**静默**丢弃（用户自己按的），失败要给错误提示。
+     *    用 null 返回就分不清了。
+     */
+    class ImportCancelled : Exception("import cancelled")
+
+    /**
      * 导入一个 PDF。**必须在后台线程调用**（要复制文件 + 渲染缩略图）。
      *
      * @param openStream 由调用方提供的「打开源文件输入流」函数。
      *                   用函数而不是直接传 InputStream，是为了让本函数
      *                   能在复制失败时重新打开一次（SAF 的流是一次性的）。
      * @param displayName 原文件名，用于兜底标题与展示
+     * @param onProgress  进度回调（阶段, 0~1）。会在后台线程调用，
+     *                    调用方自己负责切到 UI 线程。
+     * @param isCancelled 取消查询。每个耗时步骤前后都会问一次，
+     *                    true 时抛 [ImportCancelled]。
      * @return 导入成功给 Doc；失败给 null（原因已写日志）
+     * @throws ImportCancelled 用户取消（现场已清理干净）
      */
     fun import(
         context: Context,
         displayName: String,
         openStream: () -> java.io.InputStream?,
+        onProgress: (ImportStage, Float) -> Unit = { _, _ -> },
+        isCancelled: () -> Boolean = { false },
     ): Doc? {
         val id = UUID.randomUUID().toString()
         val dir = docDir(context, id)
@@ -386,35 +418,99 @@ object LibraryStore {
             return null
         }
 
+        /*
+          ⚠️ 取消/失败时的清理必须**统一**：
+             半拉子的目录留在磁盘上会变成"幽灵文献" ——
+             索引里没有它，但占着空间，用户也删不掉。
+             所以用 try/catch 包住整个流程，任何异常路径都 deleteRecursively。
+        */
+        try {
+            return importInto(context, id, dir, displayName, openStream,
+                              onProgress, isCancelled)
+        } catch (e: ImportCancelled) {
+            Log.i(TAG, "[library] import cancelled: $displayName")
+            dir.deleteRecursively()
+            throw e
+        } catch (t: Throwable) {
+            Log.w(TAG, "导入失败", t)
+            dir.deleteRecursively()
+            return null
+        }
+    }
+
+    private fun importInto(
+        context: Context,
+        id: String,
+        dir: File,
+        displayName: String,
+        openStream: () -> java.io.InputStream?,
+        onProgress: (ImportStage, Float) -> Unit,
+        isCancelled: () -> Boolean,
+    ): Doc? {
         val pdf = File(dir, PDF_FILE)
 
-        // ① 复制源文件
+        // ① 复制源文件（带进度）
+        onProgress(ImportStage.COPY, 0f)
         val copied = try {
-            openStream()?.use { input ->
-                pdf.outputStream().use { output -> input.copyTo(output) }
-            } ?: false
-            pdf.length() > 0
+            val input = openStream()
+            if (input == null) {
+                false
+            } else {
+                input.use { src ->
+                    /*
+                      ⚠️ 不能直接用 `copyTo` —— 那样拿不到中间进度。
+                         手工分块复制，每 64KB 报一次进度。
+                      ⚠️ 用 `available()` 估计总长不可靠（SAF 的流常常返回 0），
+                         所以进度按"已复制字节数"推进，跳到一个**渐近**曲线上：
+                         0~90% 给复制，剩下 10% 留给后面的固定步骤。
+                    */
+                    pdf.outputStream().use { dst ->
+                        val buf = ByteArray(64 * 1024)
+                        var total = 0L
+                        var lastReport = 0L
+                        while (true) {
+                            if (isCancelled()) throw ImportCancelled()
+                            val n = src.read(buf)
+                            if (n <= 0) break
+                            dst.write(buf, 0, n)
+                            total += n
+                            if (total - lastReport >= 512 * 1024) {
+                                lastReport = total
+                                /* 渐近曲线：越往后越慢，永远不会到 1.0 */
+                                val frac = (1.0 - Math.exp(-total / 8_000_000.0)).toFloat()
+                                onProgress(ImportStage.COPY, frac * 0.9f)
+                            }
+                        }
+                    }
+                }
+                pdf.length() > 0
+            }
+        } catch (e: ImportCancelled) {
+            throw e
         } catch (t: Throwable) {
             Log.w(TAG, "复制 PDF 失败", t)
             false
         }
 
-        if (!copied) {
-            dir.deleteRecursively()
-            return null
-        }
+        if (!copied) return null
+        if (isCancelled()) throw ImportCancelled()
 
         // ② 必须是真 PDF（前 4 字节 %PDF）
+        onProgress(ImportStage.VERIFY, 1f)
         if (!isPdf(pdf)) {
             Log.w(TAG, "导入的文件不是 PDF（前 4 字节不是 %PDF）")
-            dir.deleteRecursively()
             return null
         }
 
         // ③ 渲染缩略图 + 读页数
+        if (isCancelled()) throw ImportCancelled()
+        onProgress(ImportStage.THUMBNAIL, 0.3f)
         val pages = renderThumbnail(pdf, File(dir, THUMB_FILE))
+        onProgress(ImportStage.THUMBNAIL, 1f)
 
         // ④ 提取元数据（失败就留空，不阻断导入）
+        if (isCancelled()) throw ImportCancelled()
+        onProgress(ImportStage.META, 0.3f)
         val meta = PdfMeta.extract(pdf, displayName)
 
         /*
@@ -480,13 +576,30 @@ object LibraryStore {
         )
 
         // ⑤ 写入索引
+        /*
+          ══ ⚠️⚠️ 这是最后一个取消检查点，也是**唯一安全**的检查点 ══
+
+          写索引之前：可以取消，删目录 + 抛异常，磁盘干净。
+          写索引之后：**不能**再检查取消 —— 索引已经指向这个目录了，
+                     这时若再抛 ImportCancelled，外层的
+                     `dir.deleteRecursively()` 会把目录删掉，
+                     索引里就留下一条指向不存在文件的**幽灵文献**。
+                     用户会看到一张打不开的卡片，而且删不掉。
+
+          ✅ 所以：一旦决定写索引，就是"提交"，必须跑完。
+             之后到达的取消请求由调用方忽略即可（网页侧已经
+             用 `ret !== 'ignored'` 处理了迟到的 stage 事件）。
+        */
+        if (isCancelled()) throw ImportCancelled()
+        onProgress(ImportStage.INDEX, 0.5f)
         try {
             writeIndex(context, list(context) + doc)
         } catch (t: Throwable) {
             Log.w(TAG, "写入文献索引失败", t)
-            dir.deleteRecursively()
+            /* ⚠️ 不在这里删目录 —— 外层 try/catch 统一清理 */
             return null
         }
+        onProgress(ImportStage.INDEX, 1f)
 
         Log.i(TAG, "[library] imported ${doc.id} '${doc.title}' pages=$pages size=${doc.size}")
         return doc

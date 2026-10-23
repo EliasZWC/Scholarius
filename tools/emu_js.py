@@ -161,6 +161,34 @@ def evaluate(ws_url, expr, timeout=30):
         ws.close()
 
 
+def send_cdp(ws_url, method, params, timeout=15):
+    """
+    发一条任意 CDP 命令并返回结果。
+
+    ⚠️ 需要它来做**真实输入事件**：`element.click()` 不是用户手势，
+       WebView 会因此拒绝弹出文件选择器 / 显示原生菜单。
+       只有 `Input.dispatchMouseEvent` / `Input.dispatchTouchEvent`
+       才会被当成真实交互。
+    """
+    try:
+        import websocket  # websocket-client
+    except ImportError:
+        raise SystemExit('缺依赖：pip install websocket-client')
+
+    ws = websocket.create_connection(
+        ws_url, timeout=timeout, suppress_origin=True)
+    try:
+        ws.send(json.dumps({'id': 1, 'method': method, 'params': params}))
+        while True:
+            msg = json.loads(ws.recv())
+            if msg.get('id') == 1:
+                if 'error' in msg:
+                    raise SystemExit('CDP 错误: ' + json.dumps(msg['error']))
+                return msg.get('result')
+    finally:
+        ws.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('expr', nargs='?', help='要执行的 JS（可含 return）')
@@ -169,6 +197,10 @@ def main():
     ap.add_argument('--file', '-f', dest='file', help='从文件读 JS')
     ap.add_argument('--devices', '-d', dest='devices', action='store_true',
                     help='只列出可调试的 WebView')
+    # ⚠️ 模型推理要几十秒（首次还要下 11MB 的 WASM），
+    #    默认 30 秒不够 —— 见 semantic-seg.js 的模型加载。
+    ap.add_argument('--timeout', '-t', dest='timeout', type=int, default=30,
+                    help='执行超时秒数（默认 30，模型推理建议 180）')
     args = ap.parse_args()
 
     sock = ensure_ready()
@@ -192,7 +224,7 @@ def main():
         ap.error('要给表达式，或用 --file / --devices')
 
     page = pick_page(ts)
-    val = evaluate(page['webSocketDebuggerUrl'], expr)
+    val = evaluate(page['webSocketDebuggerUrl'], expr, timeout=args.timeout)
     if val is None:
         print('(undefined)')
     elif isinstance(val, (dict, list)):
