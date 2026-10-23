@@ -4,6 +4,104 @@
 
 ---
 
+## [0.2.16] - 2026-10-23
+
+### ① ⚠️ 严重：选下拉子标签，却选中了下层标签
+
+用户反馈（原话）：
+
+> 「最大的bug，当下拉选项出来时，选中的是下拉选项对应区域下面的标签，
+>   而不是下拉选项中的子标签，比如点击作者下拉选项的姓名，
+>   则直接选中了Heading 2.」
+
+#### 真因（已实测确认）
+
+下拉面板是 `position: absolute`，盖在下面几个标签行之上。
+手指按在「Name」上时，事件序列是：
+
+```text
+① pointerdown 落在 .sel-sub-option
+   → 写 fieldDraft、推 subOpenKey、重渲染
+   → **下拉从 DOM 消失**
+② pointerup / click
+   → 同一坐标已经变成**下面那个标签行**
+     （实测 elementFromPoint：
+      之前 .sel-sub-option → 之后 BUTTON.sel-label-item）
+   → 行按钮的 click 收到事件 → labelDraft 被改成下面的标签
+```
+
+所以值是写对了，但**标签被覆盖**了 —— 表现为“点了姓名，变成 Heading 2”。
+
+#### ✅ 修法：吃掉这一次触摸剩下的所有事件
+
+选中后立刻在 `window` 的**捕获阶段**注册一次性拦截器，
+拦掉 `pointerup` / `mouseup` / `touchend` / `touchstart` / `click`，
+下一轮宏任务（`setTimeout 0`）里自动拆除。
+
+⚠️ 必须 `capture: true` —— 行按钮的监听在冒泡阶段，
+   只有捕获阶段才抢在它前面。
+⚠️ 不拦 `pointerdown` —— 那一个已经处理完了。
+⚠️ `setTimeout 0` 足够：一次触摸的后续事件都在当前任务之后立即派发完，
+   再晚就会误吞用户的下一次点击。
+
+真机验证（模拟完整触摸序列，并让浏览器后续事件派发到新元素）：
+
+```text
+activeLabel = "Author"   （不再是 Heading 2）
+authorValue = "Name"
+passed = true
+```
+
+### ② 值改成淡色，与「字体家族」一致
+
+用户要求：
+
+> 「值应该淡色显示，就和字体家族中值文字的配色一样」
+
+设置项里的值是 `--on-surface-variant`，而且**设过没设过都是这个色**。
+所以去掉了 `.is-set` 加深：两态同色。
+
+真机量取：`color = rgb(110,110,110)`。
+
+### ③ 三角字符换成箭头图标
+
+用户指定：`@drawable/keyboard_arrow_down_24`（收起）/
+`@drawable/keyboard_arrow_up_24`（展开）。
+
+⚠️ 这是**两个不同的图标**，不是同一个旋转 180° ——
+   Google 的两个箭头字形本来就不是中心对称的，旋转会偏离视觉中心。
+   所以 CSS 里**删掉了 `transform: rotate(180deg)`**，
+   改由 JS 按展开状态选图标：
+
+```js
+caretEl.innerHTML = ScholariusUI.icon(subOpenKey === key ? 'caretUp' : 'caretDown');
+```
+
+两者都是 960 体系，已登记 `ICON_VIEWBOX`，
+路径取自 `tools/fetch_icon.py`。
+
+真机验证：`caretViewBox = 0 -960 960 960`，18×18，
+展开后路径切换为 `M480-528 296-344...`（up）。
+
+### ④ 默认值显示「Not set」，不是破折号
+
+用户要求：
+
+> 「最后是值得显示，下拉选项的子标签值默认明显是Not Set，
+>   应该以这个为默认值，而非破折号，因为默认值本身就有名字。」
+
+对。「未设置」在下拉里**本身就是一个选项**（`reader.fieldNone`），
+显示它的名字才是诚实的；破折号没有任何信息量。
+
+真机验证：
+
+```text
+默认显示     = "Not Set"
+选 Not set 后 = "Not Set"，match = true
+```
+
+---
+
 ## [0.2.15] - 2026-10-23
 
 ### ⚠️ 标签表单重做：我上一版理解错了参照物

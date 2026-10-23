@@ -2911,11 +2911,16 @@ body {
 }
 
 /*
-  当前值（v0.2.15）。
+  当前值（v0.2.16）。
 
-  ⚠️ **不再用胶囊**（没有底色/圆角）——
-     设置项右边的值是纯文字 + 弱化色，胶囊会显得是另一个控件。
-     用户要的就是"右边是选中的目前的值"。
+  ⚠️ 用户要求：「值应该淡色显示，就和字体家族中值文字的配色一样」。
+
+  设置项里数值/选中值统一用 `--on-surface-variant`（比正文淡一档），
+  而且**无论是否设置过都是这个色** ——
+  所以这里去掉 `.is-set` 的加深，两态同色。
+
+  ⚠️ 默认值显示 `Not set`（`reader.fieldNone`），不是破折号 ——
+     「未设置」本身就是下拉里的一个选项，有名有姓。
 */
 .sel-label-value {
     overflow: hidden;
@@ -2925,12 +2930,16 @@ body {
     font-size: 14px;
 }
 
-/* 已经有值时用正文色，未设置时是占位“—”，保持弱化 */
-.sel-label-value.is-set {
-    color: var(--on-surface);
-}
+/*
+  可展开的箭头（v0.2.16）。
 
-/* 可展开的提示（设置项右侧的那类配件，同一规格 18×18） */
+  ⚠️ 用户指定图标：`keyboard_arrow_down` / `keyboard_arrow_up`。
+     收起时向下、展开时向上，是**两个不同的图标**，
+     所以这里**不再用 `transform: rotate`** ——
+     旋转会让 Google 的箭头偏离视觉中心。
+
+  ⚠️ `fill: currentColor` 由 svg 继承颜色，与标签行的色阶一致。
+*/
 .sel-label-caret {
     flex: 0 0 auto;
     display: grid;
@@ -2938,14 +2947,13 @@ body {
     width: 18px;
     height: 18px;
     color: var(--on-surface-variant);
-    font-size: 12px;
-    line-height: 1;
-    transition: transform 160ms ease;
 }
 
-/* 展开时箭头翻转，指向“收起” */
-.sel-label-caret.is-open {
-    transform: rotate(180deg);
+.sel-label-caret svg {
+    display: block;
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
 }
 
 /* 无子标签的选中行：右端一个勾（与设置项弹出菜单里的勾同规格） */

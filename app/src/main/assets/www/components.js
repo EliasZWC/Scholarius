@@ -984,6 +984,22 @@
         resegment: 'M240-80q-33 0-56.5-23.5T160-160v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-80H240Zm-80-440v-280q0-33 23.5-56.5T240-880h320l240 240v120h-80v-80H520v-200H240v280h-80ZM40-360v-80h880v80H40Zm440-160Zm0 240Z',
 
         /*
+          Material Symbols: keyboard_arrow_down / keyboard_arrow_up
+
+          用途：标注标签行右端的「可展开」指示（v0.2.16）。
+
+          ⚠️ 用户指定：`@drawable/keyboard_arrow_down_24`（收起时）
+                       `@drawable/keyboard_arrow_up_24`（展开时）
+
+          之前用的是字符 `▾`（U+25BE），用户要求换成图标。
+
+          ⚠️ 960 体系，已在 ICON_VIEWBOX 登记。
+             路径由 `tools/fetch_icon.py keyboard_arrow_down` 取官方值。
+        */
+        caretDown: 'M480-344 240-584l56-56 184 184 184-184 56 56-240 240Z',
+        caretUp: 'M480-528 296-344l-56-56 240-240 240 240-56 56-184-184Z',
+
+        /*
           Material Symbols: description（一张纸 + 两条横线）
 
           用途：阅读页**底栏**的「Metadata」按钮（v0.2.13）。
@@ -1414,6 +1430,9 @@
         /* ⚠️ dashboard_customize 是 Material Symbols（960 体系），
                不登记就是零像素渲染且不报错 */
         template: SYMBOLS_VIEWBOX,
+        /* 标签行右端的展开/收起箭头（v0.2.16），960 体系 —— 必须登记 */
+        caretDown: SYMBOLS_VIEWBOX,
+        caretUp: SYMBOLS_VIEWBOX,
         /*
           ⚠️ 详情按钮移到阅读页**底栏**后用的图标（v0.2.13）。
              用户指定 `@drawable/description_24` ——

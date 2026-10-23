@@ -4291,22 +4291,47 @@
                 var valEl = document.createElement('span');
                 valEl.className = 'sel-label-value';
                 /*
-                  ⚠️ 只有当前行才有实际选中的子标签值；
-                     其余行显示占位符，表示"可设置但没有值"。
+                  ══ ⚠️ 默认值就是「Not set」，不是破折号（v0.2.16）══
+
+                  用户原话：
+
+                    「最后是值得显示，下拉选项的子标签值默认明显是Not Set，
+                      应该以这个为默认值，而非破折号，因为默认值本身就有名字。」
+
+                  对。「未设置」在这个下拉里**本身就是一个选项**
+                  （`reader.fieldNone`），所以显示它的名字才是诚实的；
+                  破折号是个没有任何信息量的占位符。
+
+                  ⚠️ 所以这里**不再**区分"有值/无值"两套文案：
+                     无值时就显示 `reader.fieldNone`（Not set / 未设置）。
+                  ⚠️ 但仍然保留 `.is-set` 类用于**配色**区分 ——
+                     有值时用正文色（与设置项一致），
+                     默认值用弱化色，一眼能分清"设过没有"。
                 */
                 if (key === labelDraft && fieldDraft) {
                     valEl.textContent = t('reader.field.' + fieldDraft);
                     valEl.classList.add('is-set');
                 } else {
-                    valEl.textContent = '—';
+                    valEl.textContent = t('reader.fieldNone');
                 }
                 tailEl.appendChild(valEl);
 
+                /*
+                  ⚠️ 箭头用**图标**，不用字符 `▾`（v0.2.16）——
+                     用户指定 `keyboard_arrow_down_24` / `keyboard_arrow_up_24`。
+                     字符的形状随字体变，与全站图标不一致。
+                  ⚠️ 收起/展开是两个**不同的图标**（不是同一个旋转 180°）——
+                     Google 的两个箭头字形本来就不是中心对称的，
+                     旋转会让箭头偏离视觉中心。
+                */
                 var caretEl = document.createElement('span');
                 caretEl.className = 'sel-label-caret';
                 caretEl.setAttribute('aria-hidden', 'true');
-                caretEl.textContent = '▾';
                 if (subOpenKey === key) caretEl.classList.add('is-open');
+                if (global.ScholariusUI) {
+                    caretEl.innerHTML = global.ScholariusUI.icon(
+                        subOpenKey === key ? 'caretUp' : 'caretDown');
+                }
                 tailEl.appendChild(caretEl);
             } else if (key === labelDraft && subOpenKey !== key) {
                 /*
@@ -4397,6 +4422,50 @@
     }
 
     /**
+     * 吃掉「这一次触摸」剩下的所有事件（v0.2.16）。
+     *
+     * ══ ⚠️⚠️ 为什么需要 ══
+     *
+     * 下拉选项一被选中就重渲染，面板从 DOM 里消失；
+     * 而此时手指还没抬起 —— 同一个坐标暴露出来的是**下面那个标签行**。
+     * 浏览器随后把 pointerup / click 派发给那个新元素，
+     * 于是"选了姓名，标签却变成了 Heading 2"。
+     *
+     * 实测证据（选中「Name」的同一坐标）：
+     *
+     *     pointerdown 前  elementFromPoint = .sel-sub-option
+     *     pointerdown 后  elementFromPoint = BUTTON.sel-label-item
+     *
+     * ✅ 在 window 的**捕获阶段**注册一次性拦截器，把这些事件挡掉；
+     *    下一轮宏任务里自动拆除。
+     *
+     * ⚠️ 必须 `capture: true` —— 行按钮的监听在冒泡阶段，
+     *    只有捕获阶段才抢在它前面。
+     * ⚠️ 不要拦 `pointerdown`：那一个已经处理完了；
+     *    拦了反而可能影响同一次触摸在别处的正常逻辑。
+     * ⚠️ 用 `setTimeout(..., 0)` 拆除：一次触摸的 pointerup/click
+     *    都在当前任务之后立即派发完，0ms 足够，也不会误吞下一次点击。
+     */
+    function swallowRestOfTouch() {
+        var types = ['pointerup', 'mouseup', 'touchend', 'touchstart', 'click'];
+
+        function eat(ev) {
+            ev.stopPropagation();
+            ev.preventDefault();
+        }
+
+        types.forEach(function (type) {
+            global.addEventListener(type, eat, true);
+        });
+
+        global.setTimeout(function () {
+            types.forEach(function (type) {
+                global.removeEventListener(type, eat, true);
+            });
+        }, 0);
+    }
+
+    /**
      * 造一个行内下拉面板（v0.2.13）。
      *
      * ══ ⚠️ 为什么不用 `pickSheet` ══
@@ -4438,33 +4507,47 @@
             btn.textContent = opt.label;
 
             /*
-              ══ ⚠️⚠️ 必须用 `pointerdown`，不能用 `click`（v0.2.15 修 bug）══
+              ══ ⚠️⚠️ 必须用 `pointerdown`，而且必须**吃掉这一次触摸的后续事件**
+                 （v0.2.16 修 bug）══
 
-              用户实测：点下拉里的选项**毫无反应**（不收起、值也不变）。
+              用户反馈（原话）：
 
-              ── 真因 ──
+                「最大的bug，当下拉选项出来时，选中的是下拉选项对应区域
+                  下面的标签，而不是下拉选项中的子标签，比如点击作者下拉
+                  选项的姓名，则直接选中了Heading 2。」
 
-              文档级那个"点别处收起下拉"的监听用的是**捕获阶段**的
-              `pointerdown`。事件顺序是：
+              ── 真因（已实测确认）──
 
-                  pointerdown（捕获，document → 先跑，重渲染列表）
-                  ↓ 旧节点从 DOM 移除
-                  pointerup
-                  ↓ click 派发到**已被移除的旧节点**
-                  click 监听 —— 节点已不在文档里，逻辑照跑但
-                                 紧接着又被下一轮渲染覆盖
+              下拉面板是 `position: absolute`，**盖在下面几个标签行之上**。
+              手指按在「Name」上时事件顺序是：
 
-              结果就是"点了没用"。
+                  ① pointerdown  落在 .sel-sub-option
+                     → 我的处理：写 fieldDraft、subOpenKey = null、重渲染
+                     → **下拉从 DOM 里消失**
+                  ② pointerup / click
+                     → 此时同一个坐标已经是**下面那个标签行**
+                       （实测：elementFromPoint 从 `.sel-sub-option`
+                        变成了 `BUTTON.sel-label-item`）
+                     → 行按钮的 click 收到事件 → labelDraft 被改成下面的标签
+
+              于是"点了单位，结果选中了 Heading 2" ——
+              值写对了，但标签被覆盖掉了。
 
               ── ✅ 修法 ──
 
-              在这个按钮自己的 `pointerdown` 上处理，并且
-              `stopPropagation` 阻止它冒泡到 document。
+              选中后让**这一次触摸**的 pointerup / click / touchstart… 全部失效：
 
-              ⚠️ 同时保留 `click` 作为兜底（键盘/无障碍触发的 click
-                 没有 pointerdown 阶段）。
-              ⚠️ `hasPicked` 防止 pointerdown 与 click 都跑一遍
-                 —— 两次都设值不影响结果，但会渲染两次，闪一下。
+                · 在 `window` 的**捕获阶段**注册一次性拦截器，
+                  把这些事件 `stopPropagation` + `preventDefault`；
+                · 拦截器在下一轮宏任务（`setTimeout 0`）里自行拆除 ——
+                  一次触摸的全部事件都在这之前派发完，
+                  再晚就会错误地吃掉用户的下一次点击。
+
+              ⚠️ 只拦 `pointerup` / `click` / `mouseup` /
+                 `touchend` / `touchstart`，**不拦 pointerdown**
+                 —— pointerdown 已经在我们手上处理完了。
+              ⚠️ 必须在**重渲染之前**装好拦截器 ——
+                 否则中间那一下已经漏出去了。
             */
             var hasPicked = false;
             function pick(ev) {
@@ -4474,6 +4557,9 @@
                 }
                 if (hasPicked) return;
                 hasPicked = true;
+
+                swallowRestOfTouch();
+
                 /*
                   ⚠️ 选中即写值、即收起。
                      用户要的是"下拉选择子标签"，选完就该回到正常列表，
