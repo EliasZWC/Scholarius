@@ -6128,10 +6128,71 @@
                     pushLabelHead('author', false);
                     authorSeq++;
 
+                    /*
+                      ══ ⚠️⚠️ 作者项：左项名 + 右内容，`Author:` 不显示（v0.2.27）══
+
+                      用户裁决：
+                        「Author: 这个我们用来判别的字段不应该显示出来，
+                          同时作者信息文本应该右对齐。」
+                        「此时显示的样子是左对齐一个 Author Name，
+                          右对齐选中的 Author Name 文本」
+
+                      ✅ `- Author: xxx` 里的 `Author:` 只是**存储判别标记**
+                         （读回来知道这是作者区），不是给人看的内容。
+                         把它从显示文本里剥掉。
+
+                      ✅ 渲染成两栏（v0.1.74 原结构）：
+
+                          <div class="reader-author-box">
+                            <div class="reader-author-line">
+                              <span class="reader-author-field">Author Name</span>
+                              <span class="reader-author-value">Ashish Vaswani</span>
+                            </div>
+                          </div>
+
+                      · 有子标签（`Author Name:`）→ 左栏显示项名
+                      · 无子标签（`Author:`）    → 左栏**留空**，内容靠右
+                    */
+                    var authorBody = mdBullet[1];
+                    var fieldLabel = '';
+                    var m2 = /^Author\s+([A-Za-z]+)\s*:\s*([\s\S]*)$/i.exec(authorBody);
+                    var m1 = /^Author\s*:\s*([\s\S]*)$/i.exec(authorBody);
+                    if (m2) {
+                        authorBody = m2[2];
+                        fieldLabel = t('reader.field.' + m2[1].toLowerCase()) || m2[1];
+                    } else if (m1) {
+                        authorBody = m1[1];
+                        /* 无子标签 → 左栏留空 */
+                    }
+
                     var ap = document.createElement('p');
                     ap.className = 'reader-para is-labeled-body is-author-body';
                     ap.setAttribute('data-label', 'author');
-                    ap.textContent = mdBullet[1];
+
+                    var boxEl = document.createElement('div');
+                    boxEl.className = 'reader-author-box';
+                    var lineEl = document.createElement('div');
+                    lineEl.className = 'reader-author-line';
+                    /*
+                      ⚠️ 姓名字段用正常色，其他字段淡色（v0.1.79）。
+                    */
+                    if (m2 && m2[1].toLowerCase() === 'name') {
+                        lineEl.classList.add('is-author-name');
+                    }
+
+                    var fEl = document.createElement('span');
+                    fEl.className = 'reader-author-field';
+                    fEl.textContent = fieldLabel;
+
+                    var vEl = document.createElement('span');
+                    vEl.className = 'reader-author-value';
+                    vEl.textContent = authorBody;
+
+                    lineEl.appendChild(fEl);
+                    lineEl.appendChild(vEl);
+                    boxEl.appendChild(lineEl);
+                    ap.appendChild(boxEl);
+
                     attachBodyMarker(ap, 'A' + authorSeq);
                     copyBlockAttrs(ap, null, b);
                     frag.appendChild(ap);
@@ -6178,10 +6239,17 @@
                 refSeq++;
 
                 ordNum += 1;
+                /*
+                  ⚠️ `Ref:` 同样是**存储判别标记**，不显示（v0.2.27）。
+                */
+                var refBody = mdOrdered[2];
+                var rm = /^Ref\s*:\s*([\s\S]*)$/i.exec(refBody);
+                if (rm) refBody = rm[1];
+
                 var rp = document.createElement('p');
                 rp.className = 'reader-para is-labeled-body';
                 rp.setAttribute('data-label', 'reference');
-                rp.textContent = mdOrdered[2];
+                rp.textContent = refBody;
                 attachBodyMarker(rp, 'R' + refSeq);
                 copyBlockAttrs(rp, null, b);
                 frag.appendChild(rp);

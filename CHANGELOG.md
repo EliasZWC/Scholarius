@@ -4,6 +4,53 @@
 
 ---
 
+## [0.2.27] - 2026-10-24
+
+### 作者项：判別字段不显示 + 左右两欄
+
+用户裁决：
+
+> 「Author: 这个我们用来判别的字段不应该显示出来，
+>   同时作者信息文本应该右对齐。」
+> 「当子标签标注了这个区域内的文本，选中的文本应该自动成为
+>   这个无序列表项的一个子项，然后以（如果是姓名）Author Name:
+>   为标识来确定内容的性质。然后此时显示的样子是左对齐一个
+>   Author Name，右对齐选中的 Author Name 文本」
+
+### 问题
+
+`- Author: xxx` / `1. Ref: xxx` 里的 `Author:` / `Ref:` 是
+**存储判別标记**（读回来知道这是作者区/文献区），不是给人看的内容。
+之前直接显示了。
+
+### 修正
+
+渲染时剥掉前缀，并用 v0.1.74 的两欄结构：
+
+```html
+<div class="reader-author-box">
+  <div class="reader-author-line">
+    <span class="reader-author-field">Author Name</span>
+    <span class="reader-author-value">Noam Shazeer</span>
+  </div>
+</div>
+```
+
+| 输入 | 左欄 | 右欄 |
+|---|---|---|
+| `- Author: …` | *（空）* | 内容 |
+| `- Author Name: …` | Author Name | 内容 |
+| `- Author Affiliation: …` | Author Affiliation | 内容 |
+
+项名 `text-align: left` / `flex: 0 0 auto`，
+内容 `text-align: right` / `flex: 1 1 auto`。
+
+姓名字段额外加 `.is-author-name`（正常色），其他子标签保持淡色。
+
+文献同理：`1. Ref: …` 显示时剥掉 `Ref:`。
+
+---
+
 ## [0.2.26] - 2026-10-24
 
 ### 标签不能当普通列表渲染
