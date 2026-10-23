@@ -95,7 +95,20 @@ object Updater {
             if (newer != null) {
                 log(onLog, "newer release ${newer.version} (current $localVersion)")
             } else if (release != null) {
-                log(onLog, "latest ${release.version} is not newer than $localVersion")
+                /*
+                  ⚠️ 这条日志要能一眼区分两种"没有更新"（v0.2.8）：
+                       · 真的已是最新  → 版本号相同
+                       · 拿到了过期响应 → 远端版本**比本地旧**
+                     后者在发布刚完成时会出现（HTTP/CDN 缓存），
+                     看到它就说明是缓存问题，不是比较逻辑错。
+                */
+                val cmp = when {
+                    localVersion == null -> "本地版本未知"
+                    isNewer(localVersion, release.version) -> "远端更旧(疑似缓存)"
+                    else -> "已是最新"
+                }
+                log(onLog, "latest ${release.version} is not newer than " +
+                    "$localVersion [$cmp]")
             } else {
                 log(onLog, "release parse failed or empty")
             }
@@ -115,6 +128,39 @@ object Updater {
             readTimeout = 15_000
             setRequestProperty("Accept", "application/vnd.github+json")
             setRequestProperty("User-Agent", USER_AGENT)
+            /*
+              ══ ⚠️⚠️ 必须禁用缓存（v0.2.8）══
+
+              用户反馈：
+
+                「更新逻辑也有问题，不是更新最新版本，而是更新下一个版本」
+
+              ── 排查结论 ──
+
+              版本比较逻辑本身是对的（`0.2.10 > 0.2.9`、`0.2.7 > 0.2.6-debug`
+              这些边界都过）。真正的来源是**HTTP 缓存**：
+
+                · `HttpURLConnection` 默认 `useCaches = true`，
+                  同一 URL 的响应会被**进程内缓存**复用；
+                · GitHub 的 `releases/latest` 本身还有 CDN 缓存（约 60 秒）。
+
+              于是刚发布完新版时，检查会拿到**上一个版本**的快照 ——
+              用户看到的就是"总是差一个版本"。等再久一点重试又正常了，
+              所以这个问题很像是"偶发"。
+
+              ⚠️ 为什么可以放心禁缓存：
+                 这是一个每次启动最多查一次的轻量 JSON 请求，
+                 走 GitHub 的 60 次/小时未认证限额完全够用，
+                 缓存省下的那点流量毫无价值，而"拿到过期的版本号"
+                 直接导致功能失效。
+
+              ⚠️ `Cache-Control: no-cache` 是给 CDN 的，
+                 `useCaches = false` 是给本地连接的 —— 两者都要写：
+                 只写一个的话，另一层仍然会返回旧响应。
+            */
+            setRequestProperty("Cache-Control", "no-cache")
+            setRequestProperty("Pragma", "no-cache")
+            useCaches = false
         }
 
         try {
