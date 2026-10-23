@@ -2993,7 +2993,50 @@
         if (!marks.length) return null;
         marks.sort(function (x, y) { return x.start - y.start; });
 
-        var rows = (lines && lines.length > 1) ? lines : cleanLinesOf(text);
+        /*
+          ══ ⚠️⚠️ 没有 `lines` → 按**标注区间**切（v0.2.29 修）══
+
+          用户实测：
+            「当我标注子标签时，整个作者区域直接恢复成了正文段」
+            修掉那个之后，整块被显示成
+            `Author Affiliation: Ashish Vaswani Google Brain avaswani@google.com`
+            —— 整块都被当成单位了。
+
+          真因：`cleanLinesOf(text)` 在"整块是一行"时只返回**一个**元素，
+          于是这一整行被归给第一个命中的子标签（`mk.start <= at+1 &&
+          mk.end >= rowEnd-1` 对整行恒成立）。
+
+          ✅ 正确做法：**没有原始行边界时，用标注区间本身当切分依据**：
+             被某条子标签覆盖的部分 → 该项；
+             未被覆盖的部分        → 无名项（field = null）。
+             这样 `Google Brain` 被标成单位后，整块切成：
+               Ashish Vaswani  /  Google Brain(单位)  /  avaswani@google.com
+        */
+        if (!lines || lines.length <= 1) {
+            var segs = [];
+            var pos = 0;
+            for (var k = 0; k < marks.length; k++) {
+                var mk2 = marks[k];
+                if (mk2.start > pos) {
+                    segs.push({ text: text.slice(pos, mk2.start), field: null });
+                }
+                segs.push({ text: text.slice(mk2.start, mk2.end), field: mk2.field });
+                pos = Math.max(pos, mk2.end);
+            }
+            if (pos < text.length) {
+                segs.push({ text: text.slice(pos), field: null });
+            }
+            /* 去掉空白项，保留顺序 */
+            var trimmed = [];
+            for (var q2 = 0; q2 < segs.length; q2++) {
+                var t2 = String(segs[q2].text || '').replace(/^\s+|\s+$/g, '');
+                if (!t2) continue;
+                trimmed.push({ text: t2, field: segs[q2].field });
+            }
+            return trimmed.length ? trimmed : null;
+        }
+
+        var rows = lines;
         var items = [];
         var cursor = 0;
 
@@ -5286,11 +5329,42 @@
                 var drop;
                 if (labelDraft === 'author' && sp.label === 'author') {
                     /*
-                      ⚠️ 词条之间**不应该重叠**（一个词只能属于一个子标签），
-                         但仍然要允许"相邻"（前一条结束 == 后一条开始）。
-                      ⚠️ 与自身完全相同 → 覆盖（重复标注同一段）。
+                      ══ ⚠️⚠️ 整块 author 标注不能被局部子标签挤掉（v0.2.29）══
+
+                      用户实测：
+                        「当我标注子标签时，整个作者区域直接恢复成了正文段」
+
+                      真因：整块 author 标注是 `[0, 47)`（覆盖整块），
+                      用户给中间一段加子标签时是 `[16, 27)` ——
+                      两者**重叠**，按"词条间不应该重叠"的规则，
+                      整块那条被 drop 掉了。
+
+                      结果：`labels` 里只剩 `{16,27,author,field}`，
+                      而 `splitBlockByMarks` 认为"没有无 field 的块级标注"
+                      → 整块退化成正文 → 作者区消失。
+
+                      ✅ 正确语义：**"整块是作者区"和"块内某段是姓名/单位"
+                         是两层信息，不是互斥关系**。
+                         所以：
+                           · 整块标注（start≈0 且 end≈块长）→ **永远保留**
+                           · 其他 author 标注 → 按重叠判断（词条之间不重叠）
                     */
-                    drop = (sp.start < wb && sp.end > wa);
+                    var blockLen = String(blockTextOf(line) == null ? '' : blockTextOf(line)).length;
+                    var spCovers = (Number(sp.start) || 0) <= 1 &&
+                                   (Number(sp.end) || 0) >= blockLen - 1;
+                    if (spCovers) {
+                        /*
+                          ⚠️ 整块标注：**重复标注时覆盖**（不保留旧的）。
+                             判据：这次的新标注也是整块 + **不带 field**
+                             → 用户是在改"这块是不是作者区"，不是加子标签。
+                             此时旧的整块标注要丢掉，否则会积累多个重复项。
+                          ⚠️ 反之（新标注带 field）→ 保留整块，子标签是叠加。
+                        */
+                        var newCovers = wa <= 1 && wb >= blockLen - 1;
+                        drop = newCovers && !fieldDraft;
+                    } else {
+                        drop = (sp.start < wb && sp.end > wa);
+                    }
                 } else {
                     drop = !(sp.end <= wa || sp.start >= wb);
                 }
@@ -6140,7 +6214,38 @@
                     authorSeq++;
 
                     /*
+                      ⚠️ 先解析 md 文本里的前缀（`Author:` / `Author Name:`），
+                         后面按有没有子标签分两条路渲染。
+                    */
+                    var authorBody = mdBullet[1];
+                    var m2 = /^Author\s+([A-Za-z]+)\s*:\s*([\s\S]*)$/i.exec(authorBody);
+                    var m1 = /^Author\s*:\s*([\s\S]*)$/i.exec(authorBody);
+                    if (m2) {
+                        authorBody = m2[2];
+                    } else if (m1) {
+                        authorBody = m1[1];
+                    }
+
+                    /*
+                      ══ ⚠️⚠️ 子标签区间必须相对**原文**（v0.2.29）══
+
+                      `labels[line]` 里的 start/end 是相对**块原文**的
+                      （`blockTextOf(line)` 的返回值），不是相对加了
+                      md 前缀之后的 `text`。
+
+                      实测踩到：用 `text` 去切片，得到
+                        `- Author Affilia…tion: Ashis` —— 位置整体错位，
+                      因为 `text` 前面多出了 `- Author: ` 这 10 个字符。
+
+                      ✅ 所以这里取一次**原文**，用它做切片基准。
+                    */
+                    var rawText = blockTextOf(b.line);
+                    if (rawText == null) rawText = b.text || '';
+                    rawText = String(rawText);
+
+                    /*
                       ══ ⚠️⚠️ 作者项：左项名 + 右内容，`Author:` 不显示（v0.2.27）══
+                         多子项渲染成多行（v0.2.29）
 
                       用户裁决：
                         「Author: 这个我们用来判别的字段不应该显示出来，
@@ -6148,32 +6253,58 @@
                         「此时显示的样子是左对齐一个 Author Name，
                           右对齐选中的 Author Name 文本」
 
-                      ✅ `- Author: xxx` 里的 `Author:` 只是**存储判别标记**
-                         （读回来知道这是作者区），不是给人看的内容。
-                         把它从显示文本里剥掉。
+                      ⚠️ 一个作者块可能有**多个子标签**（姓名 + 单位 + 邮箱），
+                         每个子标签一行。之前只渲染第一条，其余丢失。
+                         ✅ 现在按 `authorItemsOf` 切出的项逐行输出：
 
-                      ✅ 渲染成两栏（v0.1.74 原结构）：
-
-                          <div class="reader-author-box">
-                            <div class="reader-author-line">
-                              <span class="reader-author-field">Author Name</span>
-                              <span class="reader-author-value">Ashish Vaswani</span>
-                            </div>
-                          </div>
-
-                      · 有子标签（`Author Name:`）→ 左栏显示项名
-                      · 无子标签（`Author:`）    → 左栏**留空**，内容靠右
+                             <div class="reader-author-line">
+                               <span class="reader-author-field">姓名</span>
+                               <span class="reader-author-value">张三</span>
+                             </div>
                     */
-                    var authorBody = mdBullet[1];
-                    var fieldLabel = '';
-                    var m2 = /^Author\s+([A-Za-z]+)\s*:\s*([\s\S]*)$/i.exec(authorBody);
-                    var m1 = /^Author\s*:\s*([\s\S]*)$/i.exec(authorBody);
-                    if (m2) {
-                        authorBody = m2[2];
-                        fieldLabel = t('reader.field.' + m2[1].toLowerCase()) || m2[1];
-                    } else if (m1) {
-                        authorBody = m1[1];
-                        /* 无子标签 → 左栏留空 */
+                    /*
+                      ⚠️ 先从 labels 取这一块的子标签区间，按区间切项。
+                         数据来源是 `spans`（真实的标注），不是 md 文本 ——
+                         因为 md 里作者子标签是写成多行的，渲染时块已经
+                         被拆成多块，单块内不一定带完整信息。
+                    */
+                    var authorRows = [];
+                    var blockSpans = (typeof b.line === 'number') ? (labels[b.line] || []) : [];
+                    var fieldMarks = [];
+                    for (var fm = 0; fm < blockSpans.length; fm++) {
+                        var fsp = blockSpans[fm];
+                        if (!fsp || fsp.label !== 'author' || !fsp.field) continue;
+                        fieldMarks.push(fsp);
+                    }
+
+                    if (fieldMarks.length) {
+                        /*
+                          ⚠️ 有子标签 → 按区间切：被覆盖的成一项，空隙成无名项。
+                             与 `authorItemsOf` 的"无 lines 分支"同逻辑。
+                        */
+                        fieldMarks.sort(function (x, y) {
+                            return (Number(x.start) || 0) - (Number(y.start) || 0);
+                        });
+                        var cur2 = 0;
+                        for (var fk = 0; fk < fieldMarks.length; fk++) {
+                            var fkSpan = fieldMarks[fk];
+                            var fs0 = Math.max(0, Math.min(Number(fkSpan.start) || 0, rawText.length));
+                            var fe0 = Math.max(0, Math.min(Number(fkSpan.end) || 0, rawText.length));
+                            if (fs0 > cur2) {
+                                authorRows.push({ text: rawText.slice(cur2, fs0), field: null });
+                            }
+                            authorRows.push({ text: rawText.slice(fs0, fe0), field: fkSpan.field });
+                            cur2 = Math.max(cur2, fe0);
+                        }
+                        if (cur2 < rawText.length) {
+                            authorRows.push({ text: rawText.slice(cur2), field: null });
+                        }
+                    } else if (m2) {
+                        /* 单行带字段前缀（`- Author Name: xxx`）*/
+                        authorRows.push({ text: m2[2], field: m2[1].toLowerCase() });
+                    } else {
+                        /* 无子标签 → 一行，左栏留空（用原文，不带 md 前缀）*/
+                        authorRows.push({ text: rawText, field: null });
                     }
 
                     var ap = document.createElement('p');
@@ -6182,26 +6313,34 @@
 
                     var boxEl = document.createElement('div');
                     boxEl.className = 'reader-author-box';
-                    var lineEl = document.createElement('div');
-                    lineEl.className = 'reader-author-line';
-                    /*
-                      ⚠️ 姓名字段用正常色，其他字段淡色（v0.1.79）。
-                    */
-                    if (m2 && m2[1].toLowerCase() === 'name') {
-                        lineEl.classList.add('is-author-name');
+
+                    for (var ar = 0; ar < authorRows.length; ar++) {
+                        var rowTxt = String(authorRows[ar].text || '').replace(/^\s+|\s+$/g, '');
+                        if (!rowTxt) continue;
+                        var rowField = authorRows[ar].field;
+
+                        var lineEl = document.createElement('div');
+                        lineEl.className = 'reader-author-line';
+                        /*
+                          ⚠️ 姓名字段用正常色，其他字段淡色（v0.1.79）。
+                        */
+                        if (rowField === 'name') lineEl.classList.add('is-author-name');
+
+                        var fEl = document.createElement('span');
+                        fEl.className = 'reader-author-field';
+                        fEl.textContent = rowField
+                            ? (t('reader.field.' + rowField) || rowField)
+                            : '';
+
+                        var vEl = document.createElement('span');
+                        vEl.className = 'reader-author-value';
+                        vEl.textContent = rowTxt;
+
+                        lineEl.appendChild(fEl);
+                        lineEl.appendChild(vEl);
+                        boxEl.appendChild(lineEl);
                     }
 
-                    var fEl = document.createElement('span');
-                    fEl.className = 'reader-author-field';
-                    fEl.textContent = fieldLabel;
-
-                    var vEl = document.createElement('span');
-                    vEl.className = 'reader-author-value';
-                    vEl.textContent = authorBody;
-
-                    lineEl.appendChild(fEl);
-                    lineEl.appendChild(vEl);
-                    boxEl.appendChild(lineEl);
                     ap.appendChild(boxEl);
 
                     attachBodyMarker(ap, 'A' + authorSeq);
