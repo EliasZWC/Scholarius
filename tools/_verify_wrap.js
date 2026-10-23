@@ -1,0 +1,16 @@
+﻿return (function () {
+    var r = window.ScholariusReader;
+    r.open({ id: 't9', title: 'T9' });
+    r.__testRender([
+        { line: 0, page: 1, text: 'Ashish Vaswani, Google Brain Niki Parmar, Google Research', kind: '', lines: ['Ashish Vaswani, Google Brain', 'Niki Parmar, Google Research'] }
+    ], { 0: [{ start: 0, end: 14, label: 'author', field: 'name' }] });
+    var p = document.querySelector('.is-author-body');
+    var lines = p.querySelectorAll('.reader-author-line');
+    var arr = [];
+    for (var i = 0; i < lines.length; i++) {
+        var f = lines[i].querySelector('.reader-author-field');
+        var v = lines[i].querySelector('.reader-author-value');
+        arr.push({ field: f ? f.textContent : '', value: v ? v.textContent : '' });
+    }
+    return JSON.stringify({ count: arr.length, rows: arr });
+})()

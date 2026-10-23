@@ -2788,6 +2788,38 @@ body {
 }
 
 /*
+  ══ ⚠️ 下拉展开时，下面的标签行不能有按下反馈（v0.2.18）══
+
+  用户反馈（原话）：
+
+    「操作手感上，选完子标签，下拉选项底下的标签也会又阴影一闪而过」
+
+  ── 真因 ──
+
+  下拉面板是 `position: absolute`，**盖在下面几行之上**。
+  手指按下时，触摸点命中的是下拉选项（对的），
+  但 WebView 在 `pointerdown` 阶段还会把 `:active` 状态
+  同步给**同一次触摸路径上**的其他可交互元素 ——
+  而重渲染发生在 `pointerdown` 里，下拉撤掉的那一瞬间，
+  原坐标露出的正是下面那个标签行，于是它被置为 `:active`，
+  闪一下 `--surface-raised` 的背景。
+
+  ── ✅ 修法 ──
+
+  只要某一行**正被下拉盖住**，就禁止它的按下反馈。
+  用 `:has()` 从列表层面判断：列表里存在 `.sel-sub-dropdown` 时，
+  所有行都不再有 `:active` 背景。
+
+  ⚠️ 为什么不在 JS 里清类：`:active` 是浏览器按真实触摸状态维护的，
+     JS 加类/删类没有意义 —— 必须是 CSS 层面的抑制。
+  ⚠️ 只在**下拉开着**时抑制。下拉收起后行必须恢复正常反馈，
+     否则用户会觉得"标签行点了没反应"。
+*/
+.sel-label-list:has(.sel-sub-dropdown) .sel-label-item:active {
+    background: transparent;
+}
+
+/*
   ══ 标注选项 + 行内子标签（v0.1.78）══
 
   用户要求：
@@ -7188,11 +7220,52 @@ body {
     transition: transform 240ms cubic-bezier(0.2, 0, 0, 1);
     /* 关闭时不能拦住点击（同上） */
     pointer-events: none;
+    /*
+      ══ ⚠️⚠️ 必须显式 `visibility: hidden`（v0.2.18 修 bug）══
+
+      用户反馈：
+
+        「当我编辑元数据中的作者信息时，出现了importing的表单」
+
+      ── 真因 ──
+
+      平时它是靠 `transform: translateY(100%)` "推出屏幕"来隐藏的。
+      但那只是**画到视口外面**，元素本身仍在渲染树里、仍参与布局，
+      一旦发生下面任一情况就会露出来：
+
+        · 编辑块 focus → Android 弹软键盘 → 视口高度变化（resize）
+          → 浏览器重新计算 `bottom: var(--keyboard)` 与 100% 的基准
+          → 过渡/重绘的中间帧里它出现在屏幕内；
+        · 设备旋转、分屏、或 `--keyboard` 变量在键盘动画期间抖动。
+
+      它的 `z-index` 是 105，而详情页只有 46 ——
+      所以任何一次"露头"都是**盖在元数据表单上面**，非常显眼。
+      实测它在屏幕内出现过：`transform` 仍是 translateY(100%)，
+      但 `--keyboard` 变化让它那一刻的 100% 不再是"视口外"。
+
+      ── ✅ 修法 ──
+
+      加上 `visibility: hidden`：
+       · 不可见、不绘制、不参与命中测试 —— 无论怎么 reflow 都露不出来；
+       · 打开时才 `visible`，配合原来的 transform 过渡，
+         动画效果不变（visibility 在过渡结束时才生效）。
+
+      ⚠️ 不能改成 `display: none` —— 那会打断 transform 的出场动画
+         （display 从 none 变回 block 的那一帧不会播放过渡）。
+      ⚠️ 同理不能只靠 `opacity: 0`：它仍会被 `elementFromPoint` 命中。
+    */
+    visibility: hidden;
+    transition: transform 240ms cubic-bezier(0.2, 0, 0, 1),
+                visibility 0s linear 240ms;
 }
 
 .import-sheet.is-open {
     transform: translateY(0);
     pointer-events: auto;
+    visibility: visible;
+    /* 打开时立即可见，不要等 240ms */
+    transition: transform 240ms cubic-bezier(0.2, 0, 0, 1),
+                visibility 0s linear 0s;
 }
 
 .import-sheet-title {

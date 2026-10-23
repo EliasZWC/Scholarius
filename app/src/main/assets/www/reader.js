@@ -4915,6 +4915,17 @@
         }
 
         /**
+         * 上一个词条行在 `flatText` 里的**结束位置**（行尾）。
+         *
+         * ⚠️ `pushPlain` 用它判断「这一片段是不是仍属于那条词条所在的行」：
+         *    片段起点 < 这个值 → 同一行，可以并；
+         *    否则 → 已经跨到下一行，必须新起一行。
+         *
+         * ⚠️ 0 表示"还没有词条行"，此时不允许并（`< 0` 恒假）。
+         */
+        var lastTermLineStop = 0;
+
+        /**
          * 输出一段未标注文本。
          *
          * ⚠️ 按 `\n` 换行，**每一段输出一个普通行**。
@@ -4986,47 +4997,35 @@
                 if (!rows[r].replace(/\s+/g, '')) continue;
 
                 /*
-                  ══ ⚠️ 若能并到「上一行的右列」，就不新起一行（v0.2.11）══
+                  ══ ⚠️⚠️ 能否并到上一行，取决于**片段起点是否在那一行内** ══
 
-                  这是同一条规则的另一半：词条行后面跟着的普通文字，
-                  只要还没跨过行边界，就该留在那一行里。
+                  ── 踩了三版才找对的判据 ──
 
-                  ⚠️ 只并 `.is-author-term` 的行 —— 普通行本来就该独占一行，
-                     把它并起来会让两段原文粘在一起。
+                  v0.2.12：无行信息时把整块当一行 → 吞掉整段。
+                  v0.2.13：无行信息时一律不并 → 凭空换行。
+                  v0.2.18（刚才）：用 `hasLineInfo && rows.length === 1` ——
+                    仍然错，因为词条自己已经并过尾巴、`cursor` 已推进到
+                    行尾（28），剩余片段（28→57）**跨到了下一行**，
+                    但它在 `pushPlain` 里被切成 1 段（`cuts` 没有落在
+                    28..57 之间），`rows.length === 1` 成立 →
+                    又被并回词条行，于是两行内容粘在一起。
 
-                  ══ ⚠️⚠️ 但**不能无限并**（v0.2.13 修 bug）══
+                  ── ✅ 正确判据 ──
 
-                  用户反馈（原话）：
+                  只有当**这一片段的起点 `base` 仍落在词条行的区间
+                  `[termStart, lineStop)` 之内**时才允许并。
+                  词条行已经并到 `lineStop`，之后的片段起点必然 >= lineStop，
+                  自然就不并了。
 
-                    「子标签标注出现问题，仅选中了段中第一行的文本，
-                      结果整个区域全部被标为某个子标签。」
-
-                  ── 真因 ──
-
-                  旧判据是 `rows.length === 1`。当 `lineBoundaries` 为空
-                  （这一块**没有多行信息**，PDF 把多行合并成一行时就是这样），
-                  `pushPlain` 走 `textChunk.split('\n')` 分支 —— 整块没有 `\n`，
-                  于是 `rows` 恒为 1 项，且那是**词条之后的全部剩余文字**。
-
-                  结果：`canJoin` 为真 → 把后面所有行全部追加到词条右列。
-                  明明只标了前 10 个字符，视觉上整段都成了“单位”。
-
-                  ── ✅ 修法 ──
-
-                  并入只允许在**同一个原始行内**发生，所以：
-
-                    · 有行边界（`cuts.length > 1`）：
-                      只有片段确实整段落在同一行里才并 —— 这是原来的正确行为；
-                    · 没有行边界：**不许并**，让剩余文字自己成普通行。
-
-                  判据用 `cuts && cuts.length > 1` 而不是 `rows.length === 1`，
-                  因为后者在没有边界时会给出一份误导性的“1 项”。
+                  ⚠️ 用 `chunkStart`（= 片段在大文本里的起点）与行尾比较，
+                     这是唯一能区分"同一行的尾巴"和"下一行的开头"的依据。
                 */
-                var hasRowCuts = !!(cuts && cuts.length > 1);
                 var prevLine = boxEl.lastElementChild;
-                var canJoin = hasRowCuts && prevLine &&
-                    prevLine.classList.contains('is-author-term') &&
-                    rows.length === 1;
+                var inTermLine = (typeof chunkStart === 'number') &&
+                    lastTermLineStop > 0 &&
+                    chunkStart < lastTermLineStop;
+                var canJoin = inTermLine && rows.length === 1 && prevLine &&
+                    prevLine.classList.contains('is-author-term');
 
                 if (canJoin) {
                     var vPrev = tailOf(prevLine);
@@ -5147,56 +5146,90 @@
             boxEl.appendChild(termLine);
             cursor = termB;
 
+            /*
+              ⚠️ `hasLineInfo` 已在 `pushPlain` 之前算好并供两处共用，
+                 这里不再重复定义（否则以后改一处、忘另一处就会不一致）。
+            */
+            var cuts2 = lineBoundaries;
+
             /* ① 先算出"同一原始行"能延伸到哪 */
             var lineStop = -1;
-            if (lineBoundaries && lineBoundaries.length) {
-                for (var lb2 = 0; lb2 < lineBoundaries.length; lb2++) {
-                    if (lineBoundaries[lb2] > cursor) {
-                        lineStop = lineBoundaries[lb2];
+            if (cuts2 && cuts2.length) {
+                for (var lb2 = 0; lb2 < cuts2.length; lb2++) {
+                    if (cuts2[lb2] > cursor) {
+                        lineStop = cuts2[lb2];
                         break;
                     }
                 }
             }
 
             /*
-              ══ ⚠️⚠️ 没有行边界信息时 **不许并**（v0.2.13 修 bug）══
+              ══ `b.lines` 没给切点时的兜底（v0.2.18）══
 
-              用户反馈（原话）：
+              ⚠️ 用文本里的 `\n` 找本行终点 —— 这是 `hasLineInfo`
+                 的第二种情形。
 
-                「子标签标注出现问题，仅选中了段中第一行的文本，
-                  结果整个区域全部被标为某个子标签。」
-
-              ── 真因（第二处，与 pushPlain 那处是同一条规则的两半）──
-
-              旧代码在这里写的是 `if (lineStop < 0) lineStop = flatText.length;`
-              —— 把"没有行信息"当成"整块就是一行"。
-
-              而 PDF 提取出的块**绝大多数没有 `b.lines`**（多行被合并成一段），
-              于是 `joinEnd = flatText.length`，词条右列接上了
-              **整块剩余的全部文字**。用户只选了前 10 个字符，
-              视觉上却是一整段都成了"单位"。
-
-              ── ✅ 修法 ──
-
-              没有行边界 → 无法判断"后面还是不是同一行" →
-              **一律不并**，让剩余文字按普通行输出。
-
-              ⚠️ 代价：像 `Ashish Vaswani, Google Brain` 这种
-                 "词条 + 同行尾巴"在没有行信息时会显示成两行。
-                 这是**已知且可接受**的退化 —— 多一个换行，
-                 远好过把整段错标成一个子标签。
-                 （有 `b.lines` 时仍会正确并回一行。）
+              ⚠️ **找不到 `\n` 就保持 -1**（= 不可并）。
+                 绝对不能像 v0.2.12 那样退化成 `flatText.length`，
+                 那会把整段文字吞进词条。
             */
-            if (lineStop < 0) {
-                lineStop = cursor;
+            if (lineStop < 0 && flatText.indexOf('\n') >= 0) {
+                var nl = flatText.indexOf('\n', cursor);
+                if (nl >= 0) lineStop = nl;
             }
+
+            /*
+              ══ ⚠️⚠️ 没有行边界信息时的正确做法（v0.2.18 修 bug）══
+
+              ── 前两版各错一半 ──
+
+              v0.2.12（旧）：`if (lineStop < 0) lineStop = flatText.length;`
+                → 把"没有行信息"当成"整块就是一行"，
+                  词条右列吞掉了**整块剩余的全部文字**。
+                  用户只选前 10 个字符，整段都成了"单位"。
+
+              v0.2.13（我上次的过度纠正）：`if (lineStop < 0) lineStop = cursor;`
+                → 完全**不并**，于是 `Ashish Vaswani, Google Brain`
+                  被拆成两行（"姓名 Ashish Vaswani" + 独立一行 ", Google Brain"）。
+                  用户报的就是这个换行 bug。
+
+              ── ✅ 真正的判据：看**有没有换行符** ──
+
+              `b.lines` 缺失时，剩下的唯一"行"信息就是文本里的 `\n`
+              （PDF 提取时多行会被合并成空格，但**有些**块保留了 `\n`）。
+              所以：
+
+                · 从 `cursor` 向后找最近的 `\n`，它就是这一行的终点；
+                · 找不到 `\n` → 说明块内没有换行信息，此时**只并到
+                  "下一处连续空白之后的第一个非空格分隔点"都不安全**，
+                  那就退回"不并"，保证不会误吞整段。
+
+              ⚠️ 关键区别：v0.2.12 的错误是"并到块尾"，
+                 而这里并到 **最近的 `\n` 或块尾——但仅当该区间内
+                 确实没有 `\n` 时才并到块尾**。两者不是一回事：
+                 没有 `\n` 的老数据仍然不并（避免误吞），
+                 有 `\n` 的数据能正确并回本行。
+            */
+            /*
+              ⚠️ v0.2.18：`lineStop` 的兜底（用文本里的 `\n`）已经在
+                 上面统一算过了 ——
+                 这里**不要再算一遍**，否则：
+                   · 重复声明 `nl`（eslint no-redeclare）；
+                   · 更糟的是两套判据并存，改一处忘一处就会不一致。
+            */
 
             /* ② 同一行内、且在下一条标注之前的文字 → 接到右列尾部 */
             var nextMarkStart = flatText.length;
             if (m + 1 < marks.length) {
                 nextMarkStart = marks[m + 1].start;
             }
-            var joinEnd = Math.min(lineStop, flatText.length);
+            /*
+              ⚠️ `lineStop < 0` 表示"不知道这一行到哪结束" ——
+                 此时 `joinEnd` 必须等于 `cursor`，即**什么都不并**。
+                 用 `Math.max` 兜住，避免负值参与后续比较时被误判。
+            */
+            var joinEnd = lineStop < 0 ? cursor
+                : Math.min(lineStop, flatText.length);
             if (nextMarkStart > cursor && nextMarkStart < joinEnd) {
                 joinEnd = nextMarkStart;
             }
@@ -5212,6 +5245,14 @@
                     cursor = joinEnd;
                 }
             }
+
+            /*
+              ⚠️ 记录这一条词条行的**行尾位置**，供 `pushPlain` 判断
+                 "后续片段是否还在同一行内"（见 canJoin 的说明）。
+                 没有行信息时（`lineStop` 从未被赋值），用 `cursor`
+                 —— 效果是"只有紧跟词条的那一小段能并"，这正是我们要的。
+            */
+            lastTermLineStop = (lineStop > 0) ? lineStop : cursor;
         }
         pushPlain(flatText.slice(cursor), cursor);
 

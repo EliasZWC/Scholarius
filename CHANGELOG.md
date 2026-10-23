@@ -4,6 +4,118 @@
 
 ---
 
+## [0.2.18] - 2026-10-23
+
+### ① ⚠️ 编辑作者信息时冒出 Importing 表单
+
+用户反馈：
+
+> 「当我编辑元数据中的作者信息时，出现了importing的表单」
+
+#### 真因
+
+导入进度表单平时靠 `transform: translateY(100%)` “推出屏幕”来隐藏。
+但那只是**画到视口外面**，元素仍在渲染树里、仍参与布局。
+
+而它是 `position: fixed; bottom: var(--keyboard)` ——
+编辑块 focus 弹出软键盘时 `--keyboard` 变化 → 重新布局 →
+过渡/重绘的中间帧里它出现在屏幕内。
+
+它的 `z-index` 是 **105**，详情页只有 **46** ——
+所以任何一次“露头”都是盖在元数据表单上面，非常显眼。
+
+#### ✅ 修法
+
+加上 `visibility: hidden`：
+
+```css
+.import-sheet { visibility: hidden; }
+.import-sheet.is-open { visibility: visible; }
+```
+
+- 不可见、不绘制、不参与命中测试 —— 无论怎么 reflow 都露不出来；
+- 配合 `transition: visibility 0s linear 240ms`，收起时等滑出动画播完
+  才生效，动画效果不变。
+
+⚠️ 不能改成 `display: none`（会打断出场动画），
+也不能只靠 `opacity: 0`（仍会被 `elementFromPoint` 命中）。
+
+### ② ⚠️ 加子标签后文本换行（第三次修，终于找到真正原因）
+
+用户反复反馈的旧 bug。前两版各错一半：
+
+| 版本 | 做法 | 后果 |
+|---|---|---|
+| v0.2.12 | 无行信息 → 把整块当一行 | 只选 10 字符，整段都变成“单位” |
+| v0.2.13 | 无行信息 → 一律不并 | `Ashish Vaswani, Google Brain` 被拆成两行 |
+
+#### ✅ 真正的判据
+
+用 `lastTermLineStop` 记录**前一条词条行的行尾位置**，
+`pushPlain` 里判断“片段起点是否还在那一行内”：
+
+```js
+var inTermLine = (typeof chunkStart === 'number') &&
+    lastTermLineStop > 0 &&
+    chunkStart < lastTermLineStop;
+var canJoin = inTermLine && rows.length === 1 && ...;
+```
+
+词条自己已经把尾巴并到了行尾（`cursor == lineStop`），
+之后的片段起点必然 `>= lineStop`，自然就不并了。
+
+⚠️ 之前的 `hasLineInfo && rows.length === 1` 为什么不行：
+   词条并完之后，剩余片段（行尾→块尾）在 `pushPlain` 里被切成
+   **1 段**（因为中途没有切点），`rows.length === 1` 成立，
+   于是又被并回词条行 —— 两行内容粘在一起。
+   判据必须**看片段的绝对位置**，不能只看“被切成了几段”。
+
+#### 真机验证
+
+```text
+输入: 'Ashish Vaswani, Google Brain Niki Parmar, Google Research'
+      lines: ['Ashish Vaswani, Google Brain', 'Niki Parmar, Google Research']
+      mark:  [0, 14) = author/name
+
+输出: 行 1  field=Name  value='Ashish Vaswani, Google Brain'   ✓
+      行 2  field=''    value=' Niki Parmar, Google Research'  ✓
+```
+
+回归检查（两个旧坑都没复发）：
+
+```text
+只标 [0,10)      → Affiliation='1 arXiv:13'（不吞整段）✓
+无 b.lines 无 \n  → 拆两行（无信息时的保守选择）    ✓
+```
+
+### ③ 选完子标签后，下面那行阴影一闪
+
+用户反馈：
+
+> 「选完子标签，下拉选项底下的标签也会又阴影一闪而过」
+
+#### 真因
+
+下拉用 `position: absolute` 盖在下面几行之上。
+`pointerdown` 时下拉被收起并重渲染，原坐标露出的正是**下面那个标签行**，
+它被置为 `:active` → 闪一下 `--surface-raised` 背景。
+
+#### ✅ 修法
+
+下拉展开期间，抑制所有标签行的按下反馈：
+
+```css
+.sel-label-list:has(.sel-sub-dropdown) .sel-label-item:active {
+    background: transparent;
+}
+```
+
+⚠️ `:active` 是浏览器按真实触摸维护的，JS 加/删类没用 ——
+   必须在 CSS 层抑制。
+⚠️ 只在下拉开着时抑制，收起后恢复正常反馈。
+
+---
+
 ## [0.2.17] - 2026-10-23
 
 ### ① ⚠️ 子标签“选了却跳到下一个标签”——真正的最后一处修复
