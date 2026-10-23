@@ -7274,7 +7274,46 @@
                     ratio = bodyEl.scrollTop /
                         (bodyEl.scrollHeight - bodyEl.clientHeight);
                 }
-                continueWith(docId, null, null, null, out, true);
+                continueWith(docId, null, null, null, out, true, true);
+                /*
+                  ══ ⚠️⚠️ 切分完必须落盘（v0.2.5）══
+
+                  用户反馈：
+
+                    「模型切分后阅读视图没有更新，还是原始切分，
+                      这导致渲染错误」
+
+                  ── 真因 ──
+
+                  `continueWith()` 只更新了**内存**（`docModel.blocks`）
+                  并重绘，但**没有调用 `saveDocBlocks()` / `pushMdToNative()`**：
+
+                      saveDocBlocks()  只在 applyEdit() 里
+                      pushMdToNative() 只在 applyEdit() / 标注里
+
+                  于是切分结果只活在当前这一次渲染里。下一次进入该文档时：
+
+                    · `continueWith` 开头会从 `localStorage` 的
+                      `scholarius.blocks.<id>` 读"存档"并**覆盖**刚算好的
+                      块结构（见那段 restored 的代码）；
+                    · 而那个存档还是切分**之前**的 —— 因为切分从没写进去过。
+
+                  ✅ 所以用户看到的是"切回去又是原来的分段"，
+                     同时块数与标注/编号对不上 → 渲染错乱。
+
+                  ⚠️ 顺序：先 `saveDocBlocks()`（结构）→ 再 `pushMdToNative()`
+                     （md 正文）。两者是不同层次的持久化：
+                       · localStorage 存档  → 下次在网页侧恢复时用；
+                       · doc.md             → 原生侧的唯一真源。
+                     少写任何一个，都会在某个入口读到旧数据。
+
+                  ⚠️ 必须放在 `continueWith` **之后**：
+                     那个函数会重建 `docModel.blocks` 并处理存档恢复，
+                     之前调用会写入上一版结构。
+                */
+                saveDocBlocks();
+                pushMdToNative();
+
                 if (bodyEl && bodyEl.scrollHeight > bodyEl.clientHeight) {
                     bodyEl.scrollTop = ratio *
                         (bodyEl.scrollHeight - bodyEl.clientHeight);
@@ -7293,8 +7332,18 @@
      *
      * ⚠️ 独立成函数是因为语义分段是异步的（见上面的 `semanticReflow`）。
      *    这里做的每一件事都和 v0.1.94 完全一致，只是入口晚了一点。
+     *
+     * @param {string} id
+     * @param {string} text
+     * @param {*} outline
+     * @param {*} meta
+     * @param {Array} blocks
+     * @param {boolean} fromMd
+     * @param {boolean} [skipRestore] 跳过「用 localStorage 存档覆盖 blocks」
+     *        这一步。**语义切分必须传 true** —— 它算出的 blocks 就是
+     *        最新的真源，再让旧存档覆盖回去就等于切分没生效（v0.2.5）。
      */
-    function continueWith(id, text, outline, meta, blocks, fromMd) {
+    function continueWith(id, text, outline, meta, blocks, fromMd, skipRestore) {
         if (!contentEl) return;
 
         if (blocks && blocks.length) {
@@ -7353,8 +7402,37 @@
                  · 每项要有 `line`（数字）与 `text`（字符串）。
                  存档损坏时静默退回原始块，不能因此打不开文档。
               ⚠️ 存档的块数可能与原始不同（合并/拆分过），这是正常的。
+
+              ══ ⚠️⚠️ `skipRestore`：切分路径必须跳过这一步（v0.2.5）══
+
+              用户反馈：
+
+                「模型切分后阅读视图没有更新，还是原始切分，
+                  这导致渲染错误」
+
+              真因就在这里。`resegmentCurrent()` 调用的形式是：
+
+                  continueWith(docId, null, null, null, out, true)
+
+              `out` 是刚刚算出来的**新**分段结果。但这个函数不管三七二十一，
+              紧接着就读 localStorage 存档并**覆盖** `docModel.blocks` ——
+              而那份存档还是切分**之前**的旧结构。
+
+              于是：
+                · 模型明明跑完了（trace 里有 `applying: 121 -> 7`）；
+                · 屏幕上却还是 121 段 —— 因为被旧存档顶回去了；
+                · 更糟的是 `labels` 已经被清空，而块结构还是旧的
+                  → 编号/提示条与正文对不上，也就是用户说的「渲染错误」。
+
+              正确做法不是"切完再存一次"（那只是把洞补上，恢复仍会发生），
+              而是**切分的结果本身就是最新的真源**，不该被存档覆盖。
+
+              ⚠️ 用显式参数而不是猜"blocks 是不是来自存档"：
+                 两种情况的入参形状完全一样，靠形状分不出来。
             */
-            var saved = readStore('scholarius.blocks.' + docStoreKey, '');
+            var saved = skipRestore
+                ? ''
+                : readStore('scholarius.blocks.' + docStoreKey, '');
             if (saved) {
                 try {
                     var arr = JSON.parse(saved);

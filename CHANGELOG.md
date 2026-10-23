@@ -4,6 +4,115 @@
 
 ---
 
+## [0.2.5] - 2026-10-23
+
+### ① 切分后阅读视图不更新（严重）
+
+用户反馈：
+
+> 「模型切分后阅读视图没有更新，还是原始切分，这导致渲染错误」
+
+`resegmentCurrent()` 算完新分段后调用：
+
+```js
+continueWith(docId, null, null, null, out, true);
+```
+
+`out` 是刚算出来的**新**结构。但 `continueWith` 紧接着会做这件事：
+
+```js
+var saved = readStore('scholarius.blocks.' + docStoreKey, '');
+if (saved) { docModel.blocks = 恢复出来的旧结构; }
+```
+
+**存档还是切分之前的**，于是新结果被旧结构直接顶掉。更糟的是
+`labels` 已经被清空，而块结构还是旧的 —— 编号与正文错位，
+这就是用户看到的「渲染错误」。
+
+而且这条链路**从来没落盘**：`saveDocBlocks()` 只在 `applyEdit()` 里，
+`pushMdToNative()` 只在编辑/标注里。切分结果只活在当前这一次渲染。
+
+✅ 两处修复：
+- `continueWith` 增加 `skipRestore` 参数，切分路径传 `true` ——
+  切分结果本身就是最新真源，不该被存档覆盖；
+- 切分成功后补 `saveDocBlocks()` + `pushMdToNative()`。
+
+真机验证：
+
+```
+119 段 → 切分 → 7 段，localStorage 存档 = 7  ✅
+重开文档 → 仍是 7 段                            ✅
+再切一次 → 7 段 → 2 段                          ✅
+```
+
+### ② 元数据从 index.json 拆到 meta.json
+
+用户要求：
+
+> 「具体文章目录下也存一份 json，是本文章的详细信息，比如作者、标题、
+>   时间啥的，就是在详情表单中填的那些，然后 index.json 不储存文章
+>   自己的信息，只管理库数据索引」
+
+旧设计把 20+ 个详情字段全塞进 `index.json`：100 篇文献就是一个几百 KB
+的文件，每次打开列表都要全量读取解析；任何一次详情编辑都要重写整个
+索引，一次写坏全库元数据都没了。
+
+现在是：
+
+```
+files/library/
+├── index.json          只留 id/addedAt/title/author/pages/size/sha256
+└── <docId>/
+    ├── meta.json       完整详情（venue/year/venueType/shortTitle/fields…）
+    ├── doc.pdf
+    ├── thumb.png
+    └── doc.md
+```
+
+⚠️ `list()` **合并**两者：索引给骨架，meta 覆盖。老数据（没有 meta.json）
+升级后照常显示，不会变空文库。启动时 `ensureMeta()` 幂等补全。
+
+### ③ PDF 内容哈希
+
+新增 `Doc.sha256`，导入时计算并落盘。
+
+**为什么**：排版模板要精确绑定某一份 PDF。同一篇论文的预印版与期刊版
+结构完全不同，共用一个模板必然套错；而标题/文件名都不可靠（用户会改名、
+PDF 元数据常为空）。内容哈希是唯一能确定"就是这份文件"的判据。
+
+### ④ 排版模板基础设施
+
+新增 `TemplateStore`：一个模板一个 `.json` 文件。
+
+```
+filesDir/templates/<templateId>.json     用户导入/保存
+assets/templates/<name>.json             内置（随 APK）
+```
+
+**⚠️ 模板里绝对不包含原文** —— 这是设计前提，不是巧合：
+
+```jsonc
+{
+  "source": { "sha256": "a44d7e22…", "size": 228716, "pages": 4 },
+  "blockCount": 120,
+  "blocks": [[0,"title"], [1,"author"], [2,"abstract"], [3,"drop"],
+             [5,"heading",1], [6,"body"]],
+  "ops": [["merge",[7,8]], ["split",9,143], ["drop",[3,4]]],
+  "style": { "indent": "2em" }
+}
+```
+
+只有**序号、角色枚举、字符偏移、CSS 值**。拿到这个文件无法还原论文 ——
+任何人都能打开确认这一点，这正是它可被公开分享的前提。
+
+安全措施：
+- `sha256` 必须是 64 位十六进制（否则空串会"匹配"到别的空模板）
+- `id` 做文件名净化（防 `../` 路径穿越）
+- 大小上限 2 MB，`schema` 版本校验
+- 网页保存时**重新解析校验**，不信任传入的字符串
+
+---
+
 ## [0.2.4] - 2026-10-23
 
 ### 编辑里敲的空行，没有变成新段落

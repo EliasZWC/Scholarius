@@ -510,6 +510,19 @@ class MainActivity : AppCompatActivity() {
                     )
                 },
                 onSemanticCancelDownload = { SemanticModel.cancel() },
+                // --- 排版模板（v0.2.5）---
+                onListTemplates = { listTemplatesJson() },
+                onGetTemplate = { id -> getTemplateJson(id) },
+                onSaveTemplate = { json -> saveTemplateFromWeb(json) },
+                onDeleteTemplate = { id ->
+                    TemplateStore.delete(this@MainActivity, id)
+                },
+                onExportTemplate = { id ->
+                    runOnUiThread { exportTemplate(id) }
+                },
+                onApplyTemplate = { docId, templateId ->
+                    thread { applyTemplateTo(docId, templateId) }
+                },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,
@@ -661,6 +674,28 @@ class MainActivity : AppCompatActivity() {
                 safely("推送账号") { pushAccountToWeb() }
                 // 文献列表：本地数据，不依赖网络，但读文件可能失败，同样要隔离
                 safely("推送文献库") { pushLibraryToWeb() }
+                /*
+                  ⚠️ v0.2.5：老数据补 sha256 + meta.json。
+
+                  必须在后台线程（要读全库 PDF 算哈希），而且要在
+                  pushLibraryToWeb 之后再跑一次 —— 补完之后网页才知道
+                  哪些文献现在有 sha256 可用于模板匹配。
+
+                  ⚠️ 幂等：已补过的会跳过，所以每次启动调用是安全的。
+                  ⚠️ 隔离在 safely 里：迁移失败不该影响启动。
+                */
+                safely("补全元数据") {
+                    thread {
+                        try {
+                            val n = LibraryStore.ensureMeta(this@MainActivity)
+                            if (n > 0) {
+                                runOnUiThread { safely("刷新文献库") { pushLibraryToWeb() } }
+                            }
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "ensureMeta 失败", t)
+                        }
+                    }
+                }
                 if (::layoutRoot.isInitialized) {
                     ViewCompat.requestApplyInsets(layoutRoot)
                 }
@@ -1271,6 +1306,132 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    // -----------------------------------------------------------------------
+    // 排版模板（v0.2.5）
+    // -----------------------------------------------------------------------
+
+    /**
+     * 列出模板（轻量清单，不含 blocks/ops）。
+     *
+     * ⚠️ 同步实现、在 JS 线程上跑：模板文件只有几 KB，
+     *    几十个也就是几毫秒。真要变慢再挪到后台 + 回调。
+     */
+    private fun listTemplatesJson(): String {
+        return try {
+            val arr = org.json.JSONArray()
+            TemplateStore.list(this).forEach { t ->
+                arr.put(org.json.JSONObject().apply {
+                    put("id", t.id)
+                    put("name", t.name)
+                    put("author", t.author)
+                    put("license", t.license)
+                    put("sha256", t.pdfSha256)
+                    put("blockCount", t.blockCount)
+                    put("pages", t.pdfPages)
+                    put("size", t.pdfSize)
+                })
+            }
+            arr.toString()
+        } catch (t: Throwable) {
+            Log.w(TAG, "列出模板失败", t)
+            "[]"
+        }
+    }
+
+    /** 取单个模板的完整 JSON（含 blocks/ops）；不存在给空串 */
+    private fun getTemplateJson(id: String): String {
+        return try {
+            val t = TemplateStore.get(this, id) ?: return ""
+            TemplateStore.toJson(t).toString()
+        } catch (e: Throwable) {
+            Log.w(TAG, "读取模板失败：$id", e)
+            ""
+        }
+    }
+
+    /**
+     * 网页保存模板。
+     *
+     * ⚠️ 必须**重新解析校验一遍**，不能直接落盘：
+     *    网页传进来的字符串是外部输入，可能被篡改或本身就是坏的。
+     *    `TemplateStore.parse` 会把 sha256 格式、schema 版本都验一遍。
+     */
+    private fun saveTemplateFromWeb(json: String): Boolean {
+        return try {
+            val t = TemplateStore.parse(json) ?: run {
+                Log.w(TAG, "模板校验失败，拒绝保存")
+                null
+            }
+            if (t == null) false else TemplateStore.save(this, t)
+        } catch (e: Throwable) {
+            Log.w(TAG, "保存模板失败", e)
+            false
+        }
+    }
+
+    /**
+     * 套用模板到某篇文献。
+     *
+     * 只做一件事：把 `templateId` 写进该文献的 meta.json。
+     *
+     * ⚠️ **不在原生侧解析模板并重排块**。块的角色化、拆分、合并
+     *    都发生在网页的渲染层 —— 那里才有 `docModel.blocks`
+     *    和真实的字符偏移。原生只负责"记住用户选了哪个模板"，
+     *    网页下次打开时读到 templateId 自己应用。
+     *
+     *    这样分工的理由：如果一个模板在网页里被编辑过（未来可能支持），
+     *    原生侧再解析一遍就会有两份真相。
+     */
+    private fun applyTemplateTo(docId: String, templateId: String) {
+        val doc = LibraryStore.readMeta(this, docId) ?: run {
+            Log.w(TAG, "套用模板失败：找不到 $docId")
+            return
+        }
+        val updated = doc.copy(templateId = templateId)
+        if (LibraryStore.save(this, updated)) {
+            Log.i(TAG, "[template] $docId -> '${templateId.ifBlank { "(none)" }}'")
+            runOnUiThread {
+                safely("刷新文献库") { pushLibraryToWeb() }
+            }
+        }
+    }
+
+    /**
+     * 把模板导出成文件。
+     *
+     * ⚠️ 与 `exportDocs` 用**同一套 SAF 机制**，但内容是模板 JSON。
+     *    文件名用 `<模板名>-<sha前8>.json` —— 用户可能同时存多个，
+     *    光靠模板名会重名。
+     */
+    private fun exportTemplate(id: String) {
+        val t = TemplateStore.get(this, id) ?: run {
+            Log.w(TAG, "导出模板失败：找不到 $id")
+            return
+        }
+        val json = try {
+            TemplateStore.toJson(t).toString(2)
+        } catch (e: Throwable) {
+            Log.w(TAG, "序列化模板失败", e)
+            return
+        }
+
+        val safeName = t.name.replace(Regex("[\\\\/:*?\"<>|\\n\\r]"), "_").take(60)
+        val name = "$safeName-${t.pdfSha256.take(8)}.json"
+
+        try {
+            exportBuffer = json
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/json"
+                putExtra(Intent.EXTRA_TITLE, name)
+            }
+            startActivityForResult(intent, REQ_EXPORT_TEMPLATE)
+        } catch (e: Throwable) {
+            Log.w(TAG, "无法打开保存对话框：${e.message}")
+            exportBuffer = null
+        }
+    }
+
     /**
      * 导出若干文献的 md 到用户选的位置。
      *
@@ -1467,6 +1628,13 @@ class MainActivity : AppCompatActivity() {
                 put("pages", doc.pages)
                 put("size", doc.size)
                 put("sourceName", doc.sourceName)
+                /*
+                  ⚠️ v0.2.5：PDF 内容哈希与套用的模板 id。
+                     网页需要 sha256 来判断「有没有对应模板可用」，
+                     需要 templateId 来显示当前套的是哪个模板。
+                */
+                if (doc.sha256.isNotBlank()) put("sha256", doc.sha256)
+                if (doc.templateId.isNotBlank()) put("templateId", doc.templateId)
                 // 有缩略图才标 true，网页据此决定要不要来取
                 put(
                     "hasThumb",
@@ -2138,9 +2306,37 @@ class MainActivity : AppCompatActivity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        val uri = if (resultCode == RESULT_OK) data?.data else null
+
+        /*
+          ⚠️ 模板导出是**单次**的，不走队列，所以单独分支。
+             它复用同一个 `exportBuffer`，两者不可能同时进行
+             （都是用户在主线程发起、都会弹全屏选择器）。
+        */
+        if (requestCode == REQ_EXPORT_TEMPLATE) {
+            val json = exportBuffer
+            exportBuffer = null
+            if (uri == null || json == null) {
+                Log.i(TAG, "[template] 导出已取消")
+                return
+            }
+            thread {
+                val ok = try {
+                    contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(json.toByteArray(Charsets.UTF_8))
+                    }
+                    true
+                } catch (t: Throwable) {
+                    Log.w(TAG, "[template] 写入失败", t)
+                    false
+                }
+                Log.i(TAG, "[template] exported=$ok")
+            }
+            return
+        }
+
         if (requestCode != REQ_EXPORT_MD) return
 
-        val uri = if (resultCode == RESULT_OK) data?.data else null
         if (uri == null) {
             /* 用户取消 → 结束这一轮导出（不再弹后面的） */
             pendingExports.clear()
@@ -2189,6 +2385,8 @@ class MainActivity : AppCompatActivity() {
 
         /** 导出 md 的 startActivityForResult 请求码（v0.1.92） */
         const val REQ_EXPORT_MD = 4097
+        /** 导出排版模板（v0.2.5，单次，不走队列） */
+        const val REQ_EXPORT_TEMPLATE = 4098
 
         /** 网页一直没通知启动动画结束时的兜底时长（网页那边约 2.2s） */
         const val SPLASH_TIMEOUT_MS = 4000L

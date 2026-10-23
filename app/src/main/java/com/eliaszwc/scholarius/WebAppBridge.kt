@@ -56,6 +56,24 @@ class WebAppBridge(
     private val onSemanticCancelDownload: () -> Unit,
     /** 取消正在进行的 PDF 导入（v0.1.95） */
     private val onCancelImport: () -> Unit,
+    // --- 排版模板（v0.2.5）---
+    /**
+     * 列出所有可用模板（返回 JSON 数组字符串）。
+     *
+     * ⚠️ **同步返回**：模板清单很小（几 KB），网页需要在渲染
+     *    模板选择器时立即拿到，异步会让面板先空一下。
+     */
+    private val onListTemplates: () -> String,
+    /** 取单个模板的完整 JSON；不存在返回空串 */
+    private val onGetTemplate: (String) -> String,
+    /** 保存一个模板（JSON 字符串）；返回是否成功 */
+    private val onSaveTemplate: (String) -> Boolean,
+    /** 删除一个模板 */
+    private val onDeleteTemplate: (String) -> Unit,
+    /** 导出模板到用户选的位置（走 SAF） */
+    private val onExportTemplate: (String) -> Unit,
+    /** 套用模板到某篇文献（templateId 为空串 = 取消套用，回通用规则） */
+    private val onApplyTemplate: (String, String) -> Unit,
     // --- 临时诊断（v0.0.6，定位完删）---
     private val onTrace: (String) -> Unit,
 ) {
@@ -160,6 +178,51 @@ class WebAppBridge(
     @JavascriptInterface
     fun requestLibrary() {
         onRequestLibrary()
+    }
+
+    // -----------------------------------------------------------------------
+    // 排版模板（v0.2.5）
+    // -----------------------------------------------------------------------
+
+    /**
+     * 列出所有可用模板。返回 JSON 数组：
+     * `[{"id":…,"name":…,"sha256":…,"blockCount":…}, …]`
+     *
+     * ⚠️ **不返回 `blocks` / `ops` 两个大数组** ——
+     *    网页列模板只需要元信息，几百个块的数组塞进去会让
+     *    每次打开模板面板都多传几百 KB。要用时走 `getTemplate`。
+     */
+    @JavascriptInterface
+    fun listTemplates(): String = onListTemplates()
+
+    /** 取一个模板的完整内容（JSON 字符串）；不存在返回空串 */
+    @JavascriptInterface
+    fun getTemplate(id: String): String = onGetTemplate(id)
+
+    /** 保存模板（网页侧生成好 JSON 后交过来）；返回是否成功 */
+    @JavascriptInterface
+    fun saveTemplate(json: String): Boolean = onSaveTemplate(json)
+
+    /** 删除模板 */
+    @JavascriptInterface
+    fun deleteTemplate(id: String) {
+        onDeleteTemplate(id)
+    }
+
+    /** 把模板导出成文件（用户选位置） */
+    @JavascriptInterface
+    fun exportTemplate(id: String) {
+        onExportTemplate(id)
+    }
+
+    /**
+     * 套用模板。
+     *
+     * @param templateId 空串表示取消套用（回退通用规则）
+     */
+    @JavascriptInterface
+    fun applyTemplate(docId: String, templateId: String) {
+        onApplyTemplate(docId, templateId)
     }
 
     /**

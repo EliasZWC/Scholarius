@@ -55,6 +55,26 @@ object LibraryStore {
     private const val THUMB_FILE = "thumb.png"
     private const val MD_FILE = "doc.md"
 
+    /**
+     * 每篇文献自己的完整元数据（v0.2.5）。
+     *
+     * ══ 为什么要从 index.json 里拆出来 ══
+     *
+     * 用户要求（原话）：
+     *   「具体文章目录下也存一份 json，是本文章的详细信息，比如作者、
+     *     标题、时间啥的，就是在详情表单中填的那些，然后 index.json
+     *     不储存文章自己的信息，只管理库数据索引」
+     *
+     * 旧设计把所有详情（含 `fields` 里的 20+ 个键）都塞进 index.json：
+     *   · 100 篇文献 = 一个几百 KB 的文件，**每次打开列表全量读+解析**；
+     *   · 任何一次详情编辑都要重写整个索引 —— 一次写坏全库元数据都没了；
+     *   · 文献目录被拷走时，它的元数据**不跟着走**（在索引里）。
+     *
+     * 拆开之后：详情只有打开时才读那一个文件；索引只留列表渲染要用的
+     * 轻量字段（见 [Doc.toIndexJson]）。
+     */
+    private const val META_FILE = "meta.json"
+
     /** 缩略图宽度（像素）。列表卡片里显示尺寸很小，够用且省空间 */
     private const val THUMB_WIDTH = 240
 
@@ -170,6 +190,24 @@ object LibraryStore {
         val size: Long,
         /** 原文件名，仅用于展示与兜底标题 */
         val sourceName: String,
+        /**
+         * PDF 文件的 SHA-256（小写十六进制，64 位）。空串 = 尚未计算。
+         *
+         * ══ 为什么需要它（v0.2.5）══
+         *
+         * 排版模板要**精确绑定某一份 PDF** —— 同一篇论文的预印版与
+         * 期刊版排版完全不同，用同一个模板会套错。
+         * 靠标题/文件名匹配都不可靠（用户会改名、PDF 元数据常为空），
+         * 而内容哈希是唯一确定同一份文件的判据。
+         *
+         * ⚠️ 哈希只对**本机文件**有意义，不联网、不外传。
+         * ⚠️ 老数据没有这个键 → 读出来是空串，下次打开时懒计算。
+         */
+        val sha256: String = "",
+        /**
+         * 当前套用的排版模板 id。空串 = 未套用（走通用规则）。
+         */
+        val templateId: String = "",
     )
 
     // -----------------------------------------------------------------------
@@ -248,6 +286,120 @@ object LibraryStore {
 
     fun thumbFile(context: Context, id: String): File = File(docDir(context, id), THUMB_FILE)
 
+    // -----------------------------------------------------------------------
+    // 每篇文献的 meta.json（v0.2.5）
+    // -----------------------------------------------------------------------
+
+    fun metaFile(context: Context, id: String): File =
+        File(docDir(context, id), META_FILE)
+
+    /**
+     * 写某篇文献的完整元数据。
+     *
+     * ⚠️ 同样是**原子替换**：先写 `.tmp` 再改名。
+     *    详情表单是「填完点保存」，中途被杀进程时旧文件必须完好。
+     */
+    fun writeMeta(context: Context, doc: Doc): Boolean {
+        return try {
+            val dir = docDir(context, doc.id)
+            if (!dir.exists() && !dir.mkdirs()) {
+                false
+            } else {
+                val target = File(dir, META_FILE)
+                val tmp = File(dir, "$META_FILE.tmp")
+                tmp.writeText(doc.toMetaJson().toString(2))
+                if (target.exists()) target.delete()
+                if (tmp.renameTo(target)) {
+                    true
+                } else {
+                    target.writeText(doc.toMetaJson().toString(2))
+                    tmp.delete()
+                    true
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "写 meta.json 失败：${doc.id}", t)
+            false
+        }
+    }
+
+    /** 读某篇文献的 meta.json；不存在或损坏返回 null（调用方回退到索引里的值） */
+    fun readMeta(context: Context, id: String): Doc? {
+        val f = metaFile(context, id)
+        if (!f.exists()) return null
+        return try {
+            parseMeta(JSONObject(f.readText()), id)
+        } catch (t: Throwable) {
+            Log.w(TAG, "读 meta.json 失败：$id", t)
+            null
+        }
+    }
+
+    /**
+     * 从 meta.json 的 JSON 解析出 [Doc]。
+     *
+     * ⚠️ 与 [parseDoc] 分开写，因为两者的**必填程度不同**：
+     *    index.json 里的条目缺 `id` 就无效；
+     *    meta.json 里缺 `pages`/`size` 这类展示字段是可以接受的
+     *    （由索引补齐），不该整条丢掉。
+     */
+    private fun parseMeta(json: JSONObject, id: String): Doc = Doc(
+        id = json.optString("id").ifBlank { id },
+        title = json.optString("title"),
+        author = json.optString("author"),
+        venue = json.optString("venue"),
+        year = json.optString("year"),
+        venueType = normaliseVenueType(json.optString("venueType")),
+        shortTitle = json.optString("shortTitle"),
+        fields = parseFields(json.optJSONObject("fields")),
+        addedAt = json.optLong("addedAt"),
+        pages = json.optInt("pages"),
+        size = json.optLong("size"),
+        sourceName = json.optString("sourceName"),
+        sha256 = json.optString("sha256"),
+        templateId = json.optString("templateId"),
+    )
+
+    /**
+     * 索引条目：**只为列表渲染服务**的轻量投影。
+     *
+     * 刻意**不含** `fields` / `shortTitle` / `venue` / `year` / … ——
+     * 那些是「详情里的东西」，属于 meta.json。
+     * 列表卡片要显示标题、作者、页数、大小、缩略图，加上排序要的 addedAt，
+     * 以及模板匹配要的 sha256，就这些。
+     */
+    private fun Doc.toIndexJson(): JSONObject = JSONObject().apply {
+        put("id", id)
+        put("addedAt", addedAt)
+        put("title", title)
+        put("author", author)
+        put("pages", pages)
+        put("size", size)
+        if (sha256.isNotBlank()) put("sha256", sha256)
+    }
+
+    /** 完整元数据：写进 meta.json 的全部内容 */
+    private fun Doc.toMetaJson(): JSONObject = JSONObject().apply {
+        put("id", id)
+        put("title", title)
+        put("author", author)
+        put("venue", venue)
+        put("year", year)
+        put("venueType", venueType)
+        put("shortTitle", shortTitle)
+        if (fields.isNotEmpty()) {
+            put("fields", JSONObject().apply {
+                fields.forEach { (k, v) -> put(k, v) }
+            })
+        }
+        put("addedAt", addedAt)
+        put("pages", pages)
+        put("size", size)
+        put("sourceName", sourceName)
+        put("sha256", sha256)
+        if (templateId.isNotBlank()) put("templateId", templateId)
+    }
+
     private fun indexFile(context: Context): File = File(libraryDir(context), INDEX_FILE)
 
     // -----------------------------------------------------------------------
@@ -259,6 +411,25 @@ object LibraryStore {
      *
      * 索引损坏时返回空列表而不是抛异常 —— 一处 JSON 解析失败不该让
      * 整个文库打不开。真正的文件都在各子目录里，不会因此丢失。
+     *
+     * ══ v0.2.5：索引只给「骨架」，详情从各目录的 meta.json 合并 ══
+     *
+     * 现在的顺序是：
+     *   ① 读 index.json（很小，只有 id/title/author/pages/size/addedAt）；
+     *   ② 对每个 id 读 `<docId>/meta.json` 并覆盖骨架字段。
+     *
+     * ⚠️ 为什么还是要**合并**而不是"只读 meta"：
+     *    老数据（v0.2.4 及之前）没有 meta.json，只有索引。
+     *    若只读 meta，升级后老用户会看到**空文库**。
+     *
+     * ⚠️ 为什么不是"只读索引"：
+     *    详情表单改的是 meta.json，索引里的 title/author 只是
+     *    方便列表显示的副本 —— 必须以后者为准。
+     *
+     * ⚠️ meta.json 的 I/O 是这里唯一的开销：每篇一次 open+read。
+     *    几十篇的量级下完全可接受（几毫秒）。如果将来上百篇变慢，
+     *    可以把「只列卡片」的路径拆出去（列表不读 meta），
+     *    但那会让刚刚说的"以谁为准"变复杂，现在不做。
      */
     fun list(context: Context): List<Doc> {
         val file = indexFile(context)
@@ -267,12 +438,49 @@ object LibraryStore {
         return try {
             val array = JSONArray(file.readText())
             (0 until array.length()).mapNotNull { i ->
-                array.optJSONObject(i)?.let(::parseDoc)
+                val obj = array.optJSONObject(i) ?: return@mapNotNull null
+                val skeleton = try {
+                    parseDoc(obj)
+                } catch (t: Throwable) {
+                    null
+                } ?: return@mapNotNull null
+
+                mergeMeta(context, skeleton)
             }.sortedByDescending { it.addedAt }
         } catch (t: Throwable) {
             Log.w(TAG, "文献索引读取失败", t)
             emptyList()
         }
+    }
+
+    /**
+     * 用 `<docId>/meta.json` 覆盖索引骨架。
+     *
+     * ⚠️ 合并规则是**逐字段**的，不是整体替换：
+     *    meta.json 里有值的（非空）用它；
+     *    没有的保留索引里的。因为索引里的 `pages`/`size`/`sourceName`
+     *    是导入时写死的、可靠；而 meta 是用户可改的。
+     *    但 `addedAt` 不该被用户改，所以固定用索引的。
+     */
+    private fun mergeMeta(context: Context, skeleton: Doc): Doc {
+        val meta = readMeta(context, skeleton.id) ?: return skeleton
+        return skeleton.copy(
+            title = meta.title.ifBlank { skeleton.title },
+            author = meta.author.ifBlank { skeleton.author },
+            venue = meta.venue,
+            year = meta.year,
+            venueType = meta.venueType,
+            shortTitle = meta.shortTitle,
+            fields = meta.fields,
+            // ⚠️ 这四个坚持用索引里的：它们是导入时的事实，
+            //    meta 里可能因为手改文件而不准。
+            addedAt = skeleton.addedAt,
+            pages = if (skeleton.pages != 0) skeleton.pages else meta.pages,
+            size = if (skeleton.size != 0L) skeleton.size else meta.size,
+            sourceName = skeleton.sourceName.ifBlank { meta.sourceName },
+            sha256 = meta.sha256.ifBlank { skeleton.sha256 },
+            templateId = meta.templateId,
+        )
     }
 
     private fun parseDoc(json: JSONObject) = Doc(
@@ -295,6 +503,8 @@ object LibraryStore {
         pages = json.optInt("pages"),
         size = json.optLong("size"),
         sourceName = json.optString("sourceName"),
+        sha256 = json.optString("sha256"),
+        templateId = json.optString("templateId"),
     )
 
     /** 合法的发表物类别。与前端 meta.js 的 VENUE_TYPES 必须一致 */
@@ -334,31 +544,55 @@ object LibraryStore {
         // 索引里按导入时间正序存，读的时候再倒序 —— 与磁盘顺序无关，
         // 只为了 JSON 文件本身可读（新加的追加在后面）
         docs.sortedBy { it.addedAt }.forEach { doc ->
-            array.put(JSONObject().apply {
-                put("id", doc.id)
-                put("title", doc.title)
-                put("author", doc.author)
-                put("venue", doc.venue)
-                put("year", doc.year)
-                put("venueType", doc.venueType)
-                // ⚠️ 短标题必须写出，否则重开就没了（见 Doc.shortTitle）。
-                //    空串也写 —— 与 fields 不同，它是个固定顶层键，
-                //    省略会让 parseDoc 读到 ""，效果一样但索引里
-                //    看不出这个键存在，排查时不直观。
-                put("shortTitle", doc.shortTitle)
-                // fields 为空时**不写这个键**（老版本读到会当成空 Map）
-                if (doc.fields.isNotEmpty()) {
-                    put("fields", JSONObject().apply {
-                        doc.fields.forEach { (k, v) -> put(k, v) }
-                    })
-                }
-                put("addedAt", doc.addedAt)
-                put("pages", doc.pages)
-                put("size", doc.size)
-                put("sourceName", doc.sourceName)
-            })
+            /*
+              ══ v0.2.5：索引只写**列表要用的**字段 ══
+
+              详情（venue / year / venueType / shortTitle / fields /
+              sourceName）全部搬进了各目录的 meta.json。
+
+              ⚠️ 这样索引就能一直很小：100 篇文献也就十几 KB，
+                 打开列表时读取和解析都是常量级的小开销。
+              ⚠️ 代价：**不能**再靠索引拿详情。任何需要完整信息的
+                 地方都必须 `list()`（它会合并 meta）或 `readMeta()`。
+                 直接读 index.json 的代码会拿到不完整的 Doc ——
+                 目前只有本类里的 writeIndex 这么做，安全。
+            */
+            array.put(doc.toIndexJson())
         }
         indexFile(context).writeText(array.toString())
+    }
+
+    /**
+     * 保存一篇文献的**完整元数据**（v0.2.5）。
+     *
+     * 这是详情表单保存的入口：写 meta.json + 同步索引里的展示字段。
+     *
+     * ⚠️ 索引里只同步 `title` / `author` 这类列表要显示的，不是全量。
+     * ⚠️ 两处必须一起写：只写 meta 会让列表显示旧标题（用户会以为没保存）；
+     *    只写索引会让详情下次打开退回旧值。
+     */
+    fun save(context: Context, doc: Doc): Boolean {
+        val okMeta = writeMeta(context, doc)
+
+        val docs = list(context)
+        val exists = docs.any { it.id == doc.id }
+        val next = if (exists) {
+            docs.map { if (it.id == doc.id) it.copy(
+                title = doc.title,
+                author = doc.author,
+                venue = doc.venue,
+                year = doc.year,
+                venueType = doc.venueType,
+                shortTitle = doc.shortTitle,
+                fields = doc.fields,
+                sha256 = doc.sha256,
+                templateId = doc.templateId,
+            ) else it }
+        } else {
+            docs + doc
+        }
+        writeIndex(context, next)
+        return okMeta
     }
 
     // -----------------------------------------------------------------------
@@ -591,9 +825,31 @@ object LibraryStore {
              用 `ret !== 'ignored'` 处理了迟到的 stage 事件）。
         */
         if (isCancelled()) throw ImportCancelled()
+        onProgress(ImportStage.INDEX, 0.3f)
+
+        /*
+          ══ v0.2.5：导入时就写 meta.json + 算 sha256 ══
+
+          ⚠️ 顺序很重要：**先算哈希 → 写 meta → 写索引**。
+             索引是提交点，必须最后写（见上面那段说明）。
+             meta.json 先写，即使后续索引写失败，外层也会
+             把整个目录删掉，不会留下孤儿。
+
+          ⚠️ sha256 放在导入时算，而不是懒计算：
+             模板匹配要靠它，而"导入后立刻套模板"是最自然的时机。
+             复制完文件才几百毫秒，多算一次哈希（几十毫秒）用户感知不到。
+        */
         onProgress(ImportStage.INDEX, 0.5f)
+        val withHash = try {
+            doc.copy(sha256 = sha256Of(pdf))
+        } catch (t: Throwable) {
+            Log.w(TAG, "导入后计算哈希失败", t)
+            doc
+        }
+        writeMeta(context, withHash)
+
         try {
-            writeIndex(context, list(context) + doc)
+            writeIndex(context, list(context) + withHash)
         } catch (t: Throwable) {
             Log.w(TAG, "写入文献索引失败", t)
             /* ⚠️ 不在这里删目录 —— 外层 try/catch 统一清理 */
@@ -601,8 +857,13 @@ object LibraryStore {
         }
         onProgress(ImportStage.INDEX, 1f)
 
-        Log.i(TAG, "[library] imported ${doc.id} '${doc.title}' pages=$pages size=${doc.size}")
-        return doc
+        Log.i(
+            TAG,
+            "[library] imported ${withHash.id} '${withHash.title}' " +
+                "pages=${withHash.pages} size=${withHash.size} " +
+                "sha=" + withHash.sha256.take(8)
+        )
+        return withHash
     }
 
     /**
@@ -784,8 +1045,7 @@ object LibraryStore {
             fields = newFields,
         )
 
-        writeIndex(context, docs.map { if (it.id == id) updated else it })
-        return true
+        return save(context, updated)
     }
 
     /**
@@ -801,6 +1061,80 @@ object LibraryStore {
     private val TOP_LEVEL_KEYS = setOf(
         "title", "author", "year", "venueType", "venue", "shortTitle"
     )
+
+    /**
+     * 算 PDF 的 SHA-256（小写十六进制）。**必须在后台线程调用**。
+     *
+     * ⚠️ 全文件流式读取：一篇 50 MB 的 PDF 要一两百毫秒。
+     */
+    fun sha256Of(file: File): String {
+        if (!file.exists()) return ""
+        return try {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            md.digest().joinToString("") { b ->
+                val v = b.toInt() and 0xFF
+                if (v < 16) "0" + Integer.toHexString(v) else Integer.toHexString(v)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "计算 SHA-256 失败：${file.name}", t)
+            ""
+        }
+    }
+
+    /**
+     * 补齐缺失的 sha256 / meta.json（v0.2.5 迁移）。**必须在后台线程调用**。
+     *
+     * ══ 为什么需要 ══
+     *
+     * 老数据的 meta.json 不存在、sha256 也没算过。
+     * 直接调用 `list()` 那些文献的 `sha256` 是空串 —— 模板匹配会静默失败，
+     * 用户看到的是"模板怎么都套不上"，很难联想到是升级遗留问题。
+     *
+     * ⚠️ **幂等**：已经有 sha256 的跳过，不重复算（否则每次启动都
+     *    把全库 PDF 读一遍，几十篇就是几秒钟）。
+     * ⚠️ 也要为「有 sha256 但没有 meta.json」的补写 meta，
+     *    否则详情页会退回读索引 —— 能显示，但下次保存时字段不完整。
+     */
+    fun ensureMeta(context: Context): Int {
+        val docs = list(context)
+        var fixed = 0
+        docs.forEach { doc ->
+            var cur = doc
+            var changed = false
+
+            if (cur.sha256.isBlank()) {
+                val h = sha256Of(pdfFile(context, doc.id))
+                if (h.isNotBlank()) {
+                    cur = cur.copy(sha256 = h)
+                    changed = true
+                }
+            }
+            if (!metaFile(context, doc.id).exists()) {
+                changed = true
+            }
+            if (changed) {
+                writeMeta(context, cur)
+                fixed++
+            }
+        }
+        if (fixed > 0) {
+            // 索引里的 sha256 也要补 —— 否则下次 list() 又得重新算
+            writeIndex(context, docs.map { d ->
+                if (d.sha256.isNotBlank()) d
+                else d.copy(sha256 = readMeta(context, d.id)?.sha256.orEmpty())
+            })
+            Log.i(TAG, "[library] meta 迁移补全 $fixed 篇")
+        }
+        return fixed
+    }
 
     /**
      * 删除若干文献（含文件）。
