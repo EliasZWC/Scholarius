@@ -204,6 +204,22 @@
         renderAll();
         syncShortName();
 
+        /*
+          ══ ⚠️⚠️ 必须重置保存按钮（v0.2.17）══
+
+          踩过：`save()` 一进来就 `saveBtn.disabled = true`，
+          等原生回报 `docUpdated` 才恢复。但如果那次保存**失败**
+          （或回报没到），下次打开详情页时按钮仍是禁用状态 ——
+          表现为「保存按钮点不动」，而且没有任何提示。
+
+          ⚠️ 这个 bug 在自动化里极难发现：我连续测了几轮，
+             每次 `click()` 都没进 `save()`，一度以为是桥接问题。
+             实际是**上一轮把按钮禁用了**。
+
+          ✅ 每次打开都显式恢复。
+        */
+        if (saveBtn) saveBtn.disabled = false;
+
         root.hidden = false;
         // 取消上一次关闭残留的收尾定时器（快速连续开关时）
         if (closeTimer) {
@@ -216,13 +232,54 @@
         root.classList.add('is-open');
         isOpenFlag = true;
 
+        notifyOpenState(true);
+
         trace('detail:open', doc.id);
+    }
+
+    /**
+     * 告诉外部「详情页现在开着还是关了」（v0.2.17）。
+     *
+     * ══ ⚠️⚠️ 为什么需要 ══
+     *
+     * 用户反馈：
+     *
+     *   「元数据选项也存在一个bug，那就是退出表单后还用深色显示，
+     *     即便打开新的选项（比如设置选项）时，元数据选项仍然深色」
+     *
+     * 根因：阅读页底栏的 Metadata 按钮只被**置为**
+     * `aria-expanded="true"`，**从来没有置回 false** ——
+     * 而 `.reader-action[aria-expanded="true"]` 正是那个深色高亮。
+     * 于是关掉详情后按钮一直是深色，看起来像“还开着”。
+     *
+     * ── ✅ 修法 ──
+     *
+     * 不在 reader.js 里到处补 `false`（关闭路径有好几个：
+     * 取消、保存、返回键、点遮罩…很容易漏一个），
+     * 而是**由详情页自己广播开关状态** ——
+     * 它才是唯一知道真相的一方。
+     *
+     * ⚠️ 用可选的全局钩子（`if (fn)`），
+     *     这样 detail.js 不依赖 reader.js 是否已加载 ——
+     *     详情页也能在其它上下文里单独使用。
+     */
+    function notifyOpenState(open) {
+        if (global.ScholariusReader &&
+            typeof global.ScholariusReader.onDetailOpenState === 'function') {
+            global.ScholariusReader.onDetailOpenState(open);
+        }
     }
 
     function close() {
         if (!root) return;
         root.classList.remove('is-open');
         isOpenFlag = false;
+        /*
+          ⚠️ 立即广播关闭 —— 不等 280ms 的收尾定时器。
+             按钮高亮应该和「面板开始滑出」同步消失；
+             等到 DOM 真的 hidden 再取消高亮，视觉上会晚半拍。
+        */
+        notifyOpenState(false);
         /*
           ⚠️ 延时 280ms 与 CSS transition 对齐。
              期间若又打开另一篇，open() 会清掉这个定时器 ——
@@ -573,9 +630,38 @@
         label.className = 'detail-field-label';
         label.textContent = t(field.label);
         label.setAttribute('for', 'detail-input-' + field.key);
-        wrap.appendChild(label);
+        /*
+          ⚠️ 字段行改由 buildEditableField 造（v0.2.17）——
+             这里保留 `for` 只为下拉/日期等**非编辑块**类型
+             （它们仍是一行控件，没有"展开编辑"这一步）。
+        */
 
         var value = readValue(field.key);
+
+        /*
+          ══ ⚠️ 普通文本字段走「只读显示 + 编辑图标 + 编辑块」（v0.2.17）══
+ 
+          用户要求（原话）：
+ 
+            「每个项都不用框显示，而是正常显示在背景里，但右边加一个编辑图标，
+              点击编辑图标才显示编辑区域（对，不是一行的框，而是编辑块，
+              不是编辑框）。」
+ 
+          ✅ 所以只有这几类**一行控件**保留原样：
+               select（类别/学位类型）、date（八格日期）、doi（两框）
+               以及 number（纯数字、单行足够）
+             其余（title / author / venue / abstract 等自由文本）
+             全部改成只读 + 编辑块。
+ 
+          ⚠️ 为什么 number 不进去：它的值是 "436-444" 这种短串，
+             一个编辑块反而更难点。保持单行输入更顺手。
+        */
+        if (field.kind !== 'select' && field.kind !== 'date' &&
+            field.kind !== 'doi' && field.kind !== 'number') {
+            return buildEditableField(field, value);
+        }
+
+        wrap.appendChild(label);
 
         /*
           ⚠️ thesisType 是下拉（见 meta.js：学位类型只有那么几种，
@@ -757,6 +843,181 @@
 
         inputs[field.key] = input;
         wrap.appendChild(input);
+        return wrap;
+    }
+
+    /**
+     * 造一个「只读显示 + 编辑图标 + 编辑块」的字段（v0.2.17）。
+     *
+     * ══ 用户要求（原话）══
+     *
+     *   「每个项都不用框显示，而是正常显示在背景里，但右边加一个编辑图标，
+     *     点击编辑图标才显示编辑区域（对，不是一行的框，而是编辑块，
+     *     不是编辑框）。」
+     *   「然后显示的时候一个作者换行一次，编辑框中换行默认为分割不同作者。」
+     *
+     * ══ ⚠️⚠️ 作者为什么要换行（存储是逗号分隔）══
+     *
+     * 存储层（Kotlin `Doc.author`）一直是**逗号分隔的一串**，
+     * 显示成一行会变成
+     *
+     *     Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, …
+     *
+     * 十个作者挤在一起，很难一眼数清、也难改其中某一个。
+     *
+     * ✅ 现在的约定：
+     *   · **显示**：按作者拆开，一行一个；
+     *   · **编辑**：块里也是换行分隔，一行 = 一个作者；
+     *   · **存储**：仍然是逗号分隔（换行 → 逗号，写回时转换）。
+     *
+     * ⚠️ 换行 → 逗号是**有损**的（作者名内部的逗号无法区分），
+     *     但作者名本身极少含逗号，而且老数据本来就是逗号格式，
+     *     这个方向是唯一能兼容两者的。
+     * ⚠️ 只在 `field.key === 'author'` 上生效，别的字段保留原样换行 ——
+     *     它们没有「一行一个」的语义。
+     *
+     * @param {Object} field 字段定义（key / label / placeholder / maxLength）
+     * @param {string} value 当前值
+     * @returns {HTMLElement} 字段行
+     */
+    function buildEditableField(field, value) {
+        var isAuthor = field.key === 'author';
+
+        var wrap = document.createElement('div');
+        wrap.className = 'detail-field';
+
+        /* ── 标签行：左标签 + 右编辑图标 ── */
+        var head = document.createElement('div');
+        head.className = 'detail-field-head';
+
+        var label = document.createElement('label');
+        label.className = 'detail-field-label';
+        label.textContent = t(field.label);
+        head.appendChild(label);
+
+        var editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'detail-field-edit';
+        editBtn.setAttribute('aria-label', t('detail.edit'));
+        editBtn.setAttribute('aria-expanded', 'false');
+        if (global.ScholariusUI) {
+            editBtn.innerHTML = global.ScholariusUI.icon('editPencil');
+        }
+        head.appendChild(editBtn);
+
+        wrap.appendChild(head);
+
+        /* ── 只读的值（无边框，可换行） ── */
+        var valueEl = document.createElement('div');
+        valueEl.className = 'detail-field-value';
+        wrap.appendChild(valueEl);
+
+        /* ── 编辑块（默认隐藏） ── */
+        var editor = document.createElement('textarea');
+        editor.className = 'detail-field-editor';
+        editor.id = 'detail-input-' + field.key;
+        editor.autocomplete = 'off';
+        editor.autocapitalize = 'off';
+        editor.spellcheck = false;
+        if (field.maxLength) editor.maxLength = field.maxLength;
+        if (field.placeholder) editor.placeholder = t(field.placeholder);
+        editor.hidden = true;
+        wrap.appendChild(editor);
+
+        label.setAttribute('for', editor.id);
+
+        /**
+         * 存储值 → 显示/编辑用的文本。
+         *
+         * ⚠️ 作者：逗号分隔 → 一行一个。
+         *    同时兼容**已经有换行**的旧值（有的文档是手填的），
+         *    避免出现空行。
+         */
+        function toDisplay(raw) {
+            if (!isAuthor) return raw || '';
+            return String(raw || '')
+                .split(/[,\n]/)
+                .map(function (s) { return s.trim(); })
+                .filter(function (s) { return s.length > 0; })
+                .join('\n');
+        }
+
+        /**
+         * 编辑框里的文本 → 存储值。
+         *
+         * ⚠️ 作者：一行一个 → 逗号分隔（与 Kotlin 侧、老数据一致）。
+         *    忽略空行，否则多出来的换行会变成 ",,," 这种脏数据。
+         */
+        function toStored(text) {
+            if (!isAuthor) return text;
+            return String(text || '')
+                .split('\n')
+                .map(function (s) { return s.trim(); })
+                .filter(function (s) { return s.length > 0; })
+                .join(', ');
+        }
+
+        /** 把 draft 里的值刷到界面上 */
+        function refresh() {
+            var raw = readValue(field.key);
+            var shown = toDisplay(raw);
+            valueEl.textContent = shown;
+            valueEl.classList.toggle('is-empty', !shown);
+            if (!shown) {
+                valueEl.textContent = t('meta.placeholder');
+            }
+            /*
+              ⚠️ 编辑中不覆盖 textarea ——
+                 用户正在打字，回写会跳到行首。
+            */
+            if (editor.hidden) {
+                editor.value = shown;
+            }
+        }
+
+        /**
+         * 让编辑块高度随内容变化（真机 WebView 支持 `field-sizing: content`
+         * 时其实不需要，但老版本不支持，这里是兜底）。
+         */
+        function autoresize() {
+            editor.style.height = 'auto';
+            editor.style.height = editor.scrollHeight + 'px';
+        }
+
+        function setEditing(on) {
+            wrap.classList.toggle('is-editing', on);
+            editor.hidden = !on;
+            editBtn.setAttribute('aria-expanded', on ? 'true' : 'false');
+            if (on) {
+                editor.value = toDisplay(readValue(field.key));
+                autoresize();
+                editor.focus();
+                /* 光标放到末尾，而不是全选 —— 用户多是"追加/修改" */
+                var len = editor.value.length;
+                try { editor.setSelectionRange(len, len); } catch (e) { /* 忽略 */ }
+            } else {
+                refresh();
+            }
+        }
+
+        editBtn.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            setEditing(editor.hidden);
+        });
+
+        editor.addEventListener('input', function () {
+            writeValue(field.key, toStored(editor.value));
+            autoresize();
+        });
+
+        /*
+          ⚠️ 失焦不自动收起 ——
+             用户可能在编辑块和下一个字段之间来回看。
+             收起由再点一次图标触发（图标变成"完成"状态）。
+        */
+
+        refresh();
+        inputs[field.key] = editor;
         return wrap;
     }
 
@@ -1456,6 +1717,26 @@
             }
 
             var el = inputs[field.key];
+            /*
+              ══ ⚠️⚠️ author 必须从 draft 取，不能读 textarea（v0.2.17）══
+
+              编辑块里存的是**换行分隔**（一行一个作者），
+              而存储格式是**逗号分隔**。如果走下面那条通用分支
+              `el.value`，存进去的就会是带换行的字符串 ——
+              列表页、Markdown 导出、原生索引都会拿到一个"名字里带换行"的作者串。
+
+              写入 draft 时已经由 `toStored()` 转成逗号格式
+              （见 buildEditableField），所以这里读 draft 才是对的。
+
+              ⚠️ 不只 author —— 所有"可编辑块"字段都有这个差异，
+                 但只有 author 做了格式转换；其余块的 draft 值与
+                 编辑块文本完全相同，走哪边都一样。
+                 这里统一走 draft，语义更明确。
+            */
+            if (el && el.classList && el.classList.contains('detail-field-editor')) {
+                patch[field.key] = String(draft.fields && draft.fields[field.key] || '');
+                return;
+            }
             patch[field.key] = el ? String(el.value || '') : '';
         });
 

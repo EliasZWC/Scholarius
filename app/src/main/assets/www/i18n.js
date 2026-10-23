@@ -83,7 +83,7 @@
               ⚠️ 这些标签会出现在**弹窗表单的左侧**，宽度约 40%。
                  措辞要短，且必须能自解释（没有说明文字的位置）。
             */
-            'meta.title': 'Document Details',
+            'meta.title': 'Document Metadata',
             'meta.close': 'Close',
             'meta.save': 'Save',
             'meta.saved': 'Saved',
@@ -100,6 +100,11 @@
             'detail.saveFailed': 'Could Not Save Changes.',
             // ⚠️ 排版模板（v0.2.6）—— 模板只含块序号与角色，不含原文
             'detail.template': 'Layout Template',
+            /*
+              ⚠️ 元数据字段右侧编辑图标的无障碍文案（v0.2.17）。
+                 图标本身没有文字，读屏用户需要它。
+            */
+            'detail.edit': 'Edit',
             'detail.templateNone': 'None (use default)',
             'detail.templateEmpty': 'No template matches this PDF yet.',
             // ⚠️ v0.2.7：模板与切分互斥，切分会丢弃当前模板
@@ -495,7 +500,7 @@
               ⚠️ 中文标签比英文短，但「学位论文」「预印本平台」这类
                  仍是 4~5 字，表单一列放得下。
             */
-            'meta.title': '文献详情',
+            'meta.title': '文献元数据',
             'meta.close': '关闭',
             'meta.save': '保存',
             'meta.saved': '已保存',
@@ -512,6 +517,7 @@
             'detail.saveFailed': '无法保存修改。',
             // ⚠️ 排版模板（v0.2.6）—— 模板只含块序号与角色，不含原文
             'detail.template': '排版模板',
+            'detail.edit': '编辑',
             'detail.templateNone': '不使用模板',
             'detail.templateEmpty': '还没有适配这份 PDF 的模板。',
             // ⚠️ v0.2.7：模板与切分互斥，切分会丢弃当前模板

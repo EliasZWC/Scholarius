@@ -4655,6 +4655,168 @@ body {
     color: var(--on-surface);
 }
 
+/* --------------------------------------------------------------------------
+   元数据字段：只读展示 + 右侧编辑图标 + 展开的编辑块（v0.2.17）
+   -------------------------------------------------------------------------- */
+
+/*
+  ══ ⚠️⚠️ 为什么改成"只读显示 + 点图标才编辑" ══
+
+  用户要求（原话）：
+
+    「把元数据表单标题改为document metadata，然后每个项都不用框显示，
+      而是正常显示在背景里，但右边加一个编辑图标，点击编辑图标才显示
+      编辑区域（对，不是一行的框，而是编辑块，不是编辑框）。」
+
+  ⚠️ 关键区别：**编辑块**，不是编辑框。
+     所以展开后不是给一行加边框，而是在下面**长出一块区域**：
+     多行文本、可以换行、高度随内容增加。
+
+  ── 行结构 ──
+
+      ┌────────────────────────────────────────┐
+      │ 标题                              ✎    │  ← 只读，无边框
+      │ Efficient Estimation of Word ...        │
+      └────────────────────────────────────────┘
+        ↓ 点 ✎
+      ┌────────────────────────────────────────┐
+      │ 标题                              ✎    │
+      │ Efficient Estimation of Word ...        │
+      │ ╭────────────────────────────────────╮ │  ← 编辑块
+      │ │ Efficient Estimation of Word       │ │
+      │ │ Representations                    │ │
+      │ ╰────────────────────────────────────╯ │
+      └────────────────────────────────────────┘
+*/
+
+/* 一行字段：标签与编辑图标同一行；值在下一行（可换行） */
+.detail-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 48px;
+    justify-content: center;
+}
+
+/* 标签行：左标签 + 右编辑图标 */
+.detail-field-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.detail-field-head .detail-field-label {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/*
+  编辑图标按钮。
+
+  ⚠️ 28×28 的点击区（图标本身 18），比视觉尺寸大一圈 ——
+     它是个小目标，太小的热区在真机上点不准。
+  ⚠️ 颜色用 `--on-surface-variant`：它是个**次级**操作，
+     不该和字段标签抢视觉权重。
+*/
+.detail-field-edit {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    margin: -4px -4px -4px 0;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--on-surface-variant);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.detail-field-edit svg {
+    display: block;
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+}
+
+.detail-field-edit:active {
+    background: var(--surface-raised);
+}
+
+/* 展开编辑时图标换成"完成"，用主色提示它现在是可点的确认 */
+.detail-field.is-editing .detail-field-edit {
+    color: var(--on-surface);
+}
+
+/*
+  ══ 值的只读显示 ══
+
+  ⚠️ **没有边框、没有底色**（用户要求「正常显示在背景里」）。
+  ⚠️ `white-space: pre-wrap` —— 作者按行分隔，显示时也要换行
+     （见下面 autoresize 的说明）。
+  ⚠️ 空值用占位色，并且不撑高。
+*/
+.detail-field-value {
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--on-surface);
+    white-space: pre-wrap;
+    word-break: break-word;
+    /*
+      ⚠️ 长列表（10 个作者）会把详情页撑得很长 ——
+         限制最多显示 3 行，其余省略号，点编辑才能看全。
+    */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+}
+
+.detail-field-value.is-empty {
+    color: var(--on-surface-variant);
+    -webkit-line-clamp: 1;
+}
+
+/*
+  ══ 编辑块 ══
+
+  ⚠️ 这才是有边框的那个东西 —— 它**只在编辑时出现**，
+     而且用 `textarea`（多行），不是 input。
+
+  ⚠️ `field-sizing: content` 让 textarea 随内容长高，
+     不出现内部滚动条。WebView 123+ 支持；
+     不支持时 JS 里还有 autoresize 兜底（见 detail.js）。
+*/
+.detail-field-editor {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 6px;
+    padding: 10px 12px;
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--on-surface);
+    background: var(--surface);
+    border: 1px solid var(--outline);
+    border-radius: 10px;
+    outline: none;
+    resize: none;
+    /* 兜底的最小高度：至少能看两行 */
+    min-height: 76px;
+    overflow: hidden;
+}
+
+.detail-field-editor:focus {
+    border-color: var(--on-surface-variant);
+}
+
+.detail-field-editor::placeholder {
+    color: var(--on-surface-variant);
+    opacity: 1;
+}
+
 /*
   ══ 详情页的说明性文字（v0.2.6）══
 

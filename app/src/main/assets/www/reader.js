@@ -967,7 +967,12 @@
             }
             detailBtn.addEventListener('click', function () {
                 if (global.ScholariusDetail && currentDoc) {
-                    detailBtn.setAttribute('aria-expanded', 'true');
+                    /*
+                      ⚠️ 这里**不再**自己设 aria-expanded（v0.2.17）——
+                         它由详情的真实开关状态回推（见 onDetailOpenState）。
+                         以前只设 true、从不设 false，
+                         导致关掉详情后按钮一直深色。
+                    */
                     global.ScholariusDetail.open(currentDoc);
                 }
             });
@@ -4422,7 +4427,7 @@
     }
 
     /**
-     * 吃掉「这一次触摸」剩下的所有事件（v0.2.16）。
+     * 吃掉「这一次触摸」剩下的所有事件（v0.2.17）。
      *
      * ══ ⚠️⚠️ 为什么需要 ══
      *
@@ -4431,38 +4436,82 @@
      * 浏览器随后把 pointerup / click 派发给那个新元素，
      * 于是"选了姓名，标签却变成了 Heading 2"。
      *
-     * 实测证据（选中「Name」的同一坐标）：
+     * ══ ⚠️⚠️ 为什么不能用 `setTimeout(0)` 拆除（v0.2.16 的错）══
      *
-     *     pointerdown 前  elementFromPoint = .sel-sub-option
-     *     pointerdown 后  elementFromPoint = BUTTON.sel-label-item
+     * 上一版在 `pointerdown` 里注册拦截器、`setTimeout(…, 0)` 拆除。
+     * 合成的瞬间点击能过，但**真实手指按住稍久一点就漏**：
      *
-     * ✅ 在 window 的**捕获阶段**注册一次性拦截器，把这些事件挡掉；
-     *    下一轮宏任务里自动拆除。
+     *   实测（`adb shell input swipe x y x y 250`，按住 250ms）：
+     *       active = "Heading 2"     ← 又选错成下面的标签了
+     *   而 250ms 的按住期间，浏览器的任务队列早已跑过一轮，
+     *   `setTimeout(0)` 的回调已经执行 → 拦截器被拆 → click 漏到行上。
      *
+     * 换句话说：**"下一次点击"和"这一次触摸的 click"在时间上无法区分**，
+     * 任何基于定时器的拆除都是猜的。
+     *
+     * ── ✅ 改成按**事件**拆除，不猜时间 ──
+     *
+     * 一次触摸的收尾事件是**唯一的 `click`**（或触摸被取消时的
+     * `pointercancel` / `touchcancel`）。所以：
+     *
+     *   · 一直拦着，直到真的拦到一次 `click`（或 cancel）为止；
+     *   · 拦到之后**立刻**全部拆除。
+     *
+     * 这样无论手指按 1ms 还是 1s，都能覆盖到那一次 click；
+     * 也不会误吞用户的下一次点击（它的 click 是拦截拆除**之后**才来的）。
+     *
+     * ⚠️ 兜底：万一 `click` 从不出现（例如手势被系统判成滚动），
+     *     用一个**较长**的定时器（1200ms）强制拆除 ——
+     *     宁可偶尔漏一次，也不能让整个界面永久收不到 click。
+     *     这个值必须**大于任何正常的按住时长**，250ms 已被实测证明不够。
+     * ⚠️ 不拦 `pointerdown`：那一个已经处理完了；
+     *     拦了反而会影响同一次触摸在别处的正常逻辑。
      * ⚠️ 必须 `capture: true` —— 行按钮的监听在冒泡阶段，
      *    只有捕获阶段才抢在它前面。
-     * ⚠️ 不要拦 `pointerdown`：那一个已经处理完了；
-     *    拦了反而可能影响同一次触摸在别处的正常逻辑。
-     * ⚠️ 用 `setTimeout(..., 0)` 拆除：一次触摸的 pointerup/click
-     *    都在当前任务之后立即派发完，0ms 足够，也不会误吞下一次点击。
      */
     function swallowRestOfTouch() {
-        var types = ['pointerup', 'mouseup', 'touchend', 'touchstart', 'click'];
+        /*
+          ⚠️ 只拦"手指抬起之后"的事件。
+             拦 `touchstart` 没有意义（那时已经过去了），
+             却会在极少数情况下挡住下一个手势的开头。
+        */
+        var types = ['pointerup', 'mouseup', 'touchend', 'click'];
+        var safetyTimer = null;
+
+        function teardown() {
+            types.forEach(function (type) {
+                global.removeEventListener(type, eat, true);
+            });
+            if (safetyTimer) {
+                global.clearTimeout(safetyTimer);
+                safetyTimer = null;
+            }
+        }
 
         function eat(ev) {
             ev.stopPropagation();
             ev.preventDefault();
+            /*
+              ⚠️ `click` 是一次触摸的终点 —— 吃掉的这一下必须拆掉拦截器，
+                 否则之后所有点击都会被永久吞掉。
+
+              ⚠️ `pointerup` / `mouseup` / `touchend` **不拆**：
+                 它们出现在 click 之前，提前拆就等于没拦。
+            */
+            if (ev.type === 'click') {
+                teardown();
+            }
         }
 
         types.forEach(function (type) {
             global.addEventListener(type, eat, true);
         });
 
-        global.setTimeout(function () {
-            types.forEach(function (type) {
-                global.removeEventListener(type, eat, true);
-            });
-        }, 0);
+        /*
+          ⚠️ 兜底拆除：真机上如果截图/切后台/手势被系统改写导致
+             `click` 没来，界面会永久失去点击响应 —— 那比偶尔选错更糟。
+        */
+        safetyTimer = global.setTimeout(teardown, 1200);
     }
 
     /**
@@ -10167,6 +10216,21 @@ function tocTitleFrom(text) {
 
     global.ScholariusReader = {
         init: init,
+        /**
+         * 详情页开关状态回调（v0.2.17，由 detail.js 调用）。
+         *
+         * ⚠️ 底栏 Metadata 按钮的高亮由 `aria-expanded="true"` 驱动
+         *     （见 styles.css 的 `.reader-action[aria-expanded="true"]`）。
+         *     以前只在打开时设 true、关闭时不管，
+         *     于是关掉详情后按钮一直是深色 —— 用户报的就是这个。
+         *
+         * ⚠️ 由详情页**主动广播**，而不是在 reader.js 里补每条关闭路径
+         *     （取消/保存/返回键/点遮罩…），因为那种写法必然漏一个。
+         */
+        onDetailOpenState: function (open) {
+            if (!detailBtn) return;
+            detailBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        },
         open: open,
         close: close,
         isOpen: isOpen,
