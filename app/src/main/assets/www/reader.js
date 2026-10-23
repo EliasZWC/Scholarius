@@ -730,7 +730,12 @@
         for (var i = 0; i < list.length; i++) {
             var b = list[i];
             var line = b.line;
-            var text = String(blockTextOf(line) || '').replace(/\r\n/g, '\n');
+            /*
+              ⚠️ 用 `textOfBlock(b)` 而不是 `blockTextOf(line)`（v0.2.35）——
+                 行号在语义切分后可能重复，按行号回查会拿到**别的块**的文本。
+                 见 `textOfBlock` 的说明。
+            */
+            var text = String(textOfBlock(b) || '').replace(/\r\n/g, '\n');
             if (!text.replace(/\s+/g, '')) continue;
 
             var kind = b.kind || '';
@@ -2767,7 +2772,8 @@
         for (var i = 0; i < list.length; i++) {
             var b = list[i];
             var line = b.line;
-            var text = blockTextOf(line);
+            /* ⚠️ 同上：按块取文本，不按行号回查（v0.2.35） */
+            var text = textOfBlock(b);
             if (!text || !text.replace(/\s+/g, '')) continue;
 
             var kind = b.kind || 'body';
@@ -3332,6 +3338,49 @@
             }
         }
         return '';
+    }
+
+    /**
+     * 取**这一块自己**的文本（v0.2.35）。
+     *
+     * ══ ⚠️⚠️ 为什么需要它，而不是 `blockTextOf(b.line)` ══
+     *
+     * 用户原话：
+     *
+     *   「再全面改md之前，模型切分是真实有效的，现在突然错误了，
+     *     一定是流程出了问题」
+     *
+     * 对。`blockTextOf(line)` 的实现是「遍历所有块，返回**第一个**
+     * 行号匹配的那一块的文本」。这在行号唯一时没问题，
+     * 但语义切分会让多个新段落共享同一个行号：
+     *
+     *     rebuilt[p].line = allLines[lo]     // lo 由字符占比算出，必然重复
+     *
+     * 于是那些共享行号的段落**全都拿到第一块的文本** ——
+     * 屏幕上和 md 里同一段反复出现（重复），
+     * 而原本属于其他行号的文本再也没有块引用它（缺失）。
+     *
+     * ⚠️ 重构之前没有这个问题：旧渲染器 `renderFlat(blocks)`
+     *    直接遍历数组、用块对象自身渲染，从不按 `line` 回查。
+     *    是我把 `line` 抬成"唯一事实来源"之后才炸的。
+     *
+     * ✅ 修法：凡是**手上已经有块对象**的地方，就不要再用行号回查，
+     *    直接用块自己的 `text`。行号只用于"定位到哪一块"，
+     *    不用于"取文本"。这样行号重复也不再影响内容。
+     *
+     * ⚠️ 仍然尊重 `edits[line]`：用户改过这一块时，编辑结果是权威的。
+     *    只有在没有编辑时，才用块自身文本。
+     *
+     * @param {Object} b    块对象
+     * @param {number} idx  块在数组中的下标（兜底定位用）
+     * @return {string}
+     */
+    function textOfBlock(b) {
+        if (!b) return '';
+        var line = b.line;
+        /* 用户编辑过 → 编辑结果优先（与 blockTextOf 的优先级一致） */
+        if (line != null && edits[line] != null) return edits[line];
+        return (b.text == null) ? '' : String(b.text);
     }
 
     /**
@@ -6144,7 +6193,22 @@
             var b = blocks[i];
             if (!b) continue;
 
-            var text = blockTextOf(b.line);
+            /*
+              ══ ⚠️⚠️ 按**块**取文本，不按行号回查（v0.2.35）══
+
+              这里原本是 `blockTextOf(b.line)`，它遍历所有块、
+              返回第一个行号匹配的那一块的文本。
+
+              语义切分后多个段落会共享同一个行号
+              （`line: allLines[lo]`，`lo` 由字符占比算出，必然重复），
+              于是**它们全都渲染成第一块的文字** —— 这就是
+              「大量重复内容和缺失内容」的直接来源。
+
+              ✅ 手上已经有 `b`，就用 `b.text`。
+                 渲染本来就该是"遍历数组、逐块输出"，
+                 与旧实现 `renderFlat(blocks)` 一致。
+            */
+            var text = textOfBlock(b);
             if (text == null) text = b.text || '';
             text = String(text);
             if (text.replace(/\s+/g, '') === '') continue;
@@ -6364,7 +6428,12 @@
 
                       ✅ 所以这里取一次**原文**，用它做切片基准。
                     */
-                    var rawText = blockTextOf(b.line);
+                    /*
+                      ⚠️ 用 `textOfBlock(b)`（v0.2.35）——
+                         子标签的 `labels` 坐标是相对**原始块文本**的，
+                         而行号重复时 `blockTextOf(b.line)` 会取到别的块。
+                    */
+                    var rawText = textOfBlock(b);
                     if (rawText == null) rawText = b.text || '';
                     rawText = String(rawText);
 
@@ -7358,6 +7427,7 @@
                     */
                     var rebuilt = [];
                     var prevEnd = -1;
+                    var lastTo = -1;
                     for (var p = 0; p < ranges.length; p++) {
                         var rg = ranges[p];
                         var s0 = sentsWithOff[rg.from];
@@ -7387,6 +7457,38 @@
                         */
                         if (rg.from < 0 || rg.to >= sentsWithOff.length) continue;
                         if (rg.to < rg.from) continue;
+                        /*
+                          ══ ⚠️⚠️ 区间必须**无缝衔接**（v0.2.34）══
+
+                          用户连续两版反馈「大量缺失内容和重复内容」，
+                          而我前两次都在改"切片方式"，没查**区间本身**。
+
+                          模型返回的 `ranges` 是它自己数的段落边界。
+                          它可能出现两种错：
+
+                            ① `rg.from < 上一段的 to + 1` → 两句重叠 → **重复**
+                            ② `rg.from > 上一段的 to + 1` → 中间几句被跳过 → **缺失**
+
+                          旧代码只拦了"起点早于上一段终点"（①的一半），
+                          **完全没管 ②** —— 跳过的句子既不在任何段落里，
+                          也不会被任何补丁覆盖，直接从输出里消失。
+
+                          ✅ 现在必须**严格连续**：
+                             第一段 `from === 0`；
+                             之后每段 `from === 上一段的 to + 1`。
+                             不满足就说明模型的下标不可信 →
+                             这一区段整体放弃（保留原块），
+                             而不是"跳过坏段落继续" ——
+                             那样必然缺内容。
+                        */
+                        var expectedFrom = (p === 0) ? 0 : (lastTo + 1);
+                        if (rg.from !== expectedFrom) {
+                            trace('reader:seg', 'range gap/overlap at p=' + p +
+                                  ': expected from=' + expectedFrom +
+                                  ' got ' + rg.from + ' (to=' + rg.to + ')');
+                            return null;
+                        }
+                        lastTo = rg.to;
                         if (s0.start < prevEnd) {
                             trace('reader:seg', 'non-monotonic range at ' +
                                   p + ' (' + s0.start + ' < ' + prevEnd +
@@ -7444,10 +7546,25 @@
                         recon += rebuilt[rc].text;
                     }
                     if (recon !== joined) {
-                        trace('reader:seg', 'integrity check FAILED for run at ' +
+                        trace('reader:seg', 'integrity FAILED for run at ' +
                               patchStart + ': rebuilt ' + recon.length +
                               ' chars vs joined ' + joined.length +
                               ' — keeping original blocks');
+                        /*
+                          ⚠️ 逐段定位：哪一段开始偏了？
+                             只打前 3 处差异，够定位即可。
+                        */
+                        var dl = 0, shown = 0;
+                        for (var di = 0; di < Math.min(recon.length, joined.length) &&
+                             shown < 3; di++) {
+                            if (recon.charAt(di) !== joined.charAt(di)) {
+                                trace('reader:seg', 'DIFF@' + di +
+                                      ' expected ' + JSON.stringify(joined.slice(di, di + 40)) +
+                                      ' got ' + JSON.stringify(recon.slice(di, di + 40)));
+                                shown++;
+                                break;
+                            }
+                        }
                         return null;
                     }
 
@@ -7462,19 +7579,31 @@
                     }
                     if (!allLines.length) return null;
 
-                    var totalChars = 0;
-                    for (var c2 = 0; c2 < rebuilt.length; c2++) {
-                        totalChars += rebuilt[c2].text.length;
-                    }
-                    if (!totalChars) return null;
+                    /*
+                      ══ ⚠️ 行号在这里**不分配**（v0.2.35）══
 
-                    var usedChars = 0;
+                      用户指出：
+
+                        「切分后是重新渲染的，渲染需要重新编号计数，
+                          没道理拿到同样的编号」
+
+                      对。切分是**对整篇重新排版**，行号应该跟着
+                      新结构重编，而不是"从旧行号里挑一个"。
+                      所以编号统一放到重建之后整篇做 ——
+                      见下面 ④ 之后的 `renumber`。
+                    */
+                    var allLines = [];
+                    for (var q = 0; q < partBlocks.length; q++) {
+                        allLines.push(blocks[partBlocks[q]].line);
+                    }
+                    if (!allLines.length) return null;
+
                     for (var p2 = 0; p2 < rebuilt.length; p2++) {
-                        var lo = Math.floor(usedChars / totalChars * allLines.length);
-                        usedChars += rebuilt[p2].text.length;
-                        if (lo > allLines.length - 1) lo = allLines.length - 1;
-                        var src = blocks[partBlocks[lo]];
-                        rebuilt[p2].line = allLines[lo];
+                        /* `page` 仅作提示用，按位置粗略对应原块 */
+                        var srcIdx = Math.min(
+                            allLines.length - 1,
+                            Math.floor(p2 / Math.max(1, rebuilt.length) * allLines.length));
+                        var src = blocks[partBlocks[srcIdx]];
                         rebuilt[p2].page = src ? src.page : null;
                         rebuilt[p2].kind = 'paragraph';
                         rebuilt[p2].level = undefined;
@@ -7529,8 +7658,64 @@
                 var args = [pt.start, pt.count].concat(pt.items);
                 Array.prototype.splice.apply(out, args);
             }
+
+            /*
+              ══ ⚠️⚠️⚠️ 整篇重编号（v0.2.35 —— 真正的根因）══
+
+              用户指出：
+
+                「切分后是重新渲染的，渲染需要重新编号计数，
+                  没道理拿到同样的编号」
+
+              ── 为什么必须重编 ──
+
+              `line` 在重构后是**一切数据的键**：
+
+                  blockTextOf(line)  取文本
+                  edits[line]        用户编辑
+                  labels[line]       标注
+                  buildMdText()      按 line 输出 md
+                  renderMd()         按 line 挂标注
+
+              切分把 N 个块重组成 M 个块，若 M > N 却沿用旧行号
+              （"从旧行号里挑一个"），**必然有重复**：
+
+                  7 个原块 → 20 段 → 行号 0,0,0,1,1,1,2,2,2,...
+
+              后果正好是用户看到的：
+
+                · 拿到重复行号的几段 → `blockTextOf` 返回同一段文字
+                  → md 里同一段出现多次 → **重复**
+                · 行号被顶掉的原块 → 再也取不到自己的文本 → **缺失**
+
+              ⚠️ 重构之前**没有这个 bug**：那时渲染按数组下标取文本，
+                 `line` 只是元信息，重复无所谓。
+                 是我把 `line` 抬成主键之后才炸的 ——
+                 与用户判断的「是流程出了问题」一致。
+
+              ── ✅ 修法 ──
+
+              切分 = 整篇重新排版 → 行号也必须整篇重编。
+              输出序列里**每一个块**都拿一个新的连续编号：
+
+                  0, 1, 2, 3, ... , out.length - 1
+
+              这样：
+                · 唯一性由构造保证，不依赖任何"挑一个"的算法；
+                · `edits` / `labels` 在切分前已被清空（见 resegmentCurrent），
+                  不会与旧键冲突；
+                · 编号连续，正文段号（A1 / R1 / 1,2,3）自然也对齐。
+
+              ⚠️ 只重编**输出序列**，不改 `blocks` 本身 ——
+                 切分失败时原数组要完好无损地返回。
+            */
+            for (var rn = 0; rn < out.length; rn++) {
+                if (out[rn]) out[rn].line = rn;
+            }
+
             trace('reader:seg', 'reflowed ' + blocks.length + ' -> ' +
-                  out.length + ' blocks in ' + patches.length + ' runs');
+                  out.length + ' blocks in ' + patches.length + ' runs, renumbered 0..' +
+                  (out.length - 1));
             if (prog) prog.finish('done');
             return out;
         }, function (err) {
@@ -7995,9 +8180,64 @@
         return yieldFrame()
             .then(yieldFrame)
             .then(function () {
+                /*
+                  ══ ⚠️⚠️ 切分前后内容审计（v0.2.34）══
+
+                  用户连续两版反馈：
+
+                    「模型切分后反而出现了大量缺失内容和重复内容」
+                    「问题没有丝毫改善」
+
+                  前两次我都靠推断改代码，结果是"看起来该对"。
+                  这次直接在**真实运行路径**上记账，把数字写进日志，
+                  不再猜。
+
+                  记账内容：
+                    · 源块数 / 源字符数（去空白，只算正文）
+                    · 结果块数 / 结果字符数
+                    · 两者是否相等（**内容守恒**）
+                    · 每个区段的完整性校验结果
+
+                  ⚠️ 用 `\s` 全去空白再比 —— 切分只该移动空白，
+                     不该增删实字。这个判据与用户在屏幕上看到的一致。
+                */
+                var srcChars = 0;
+                for (var si = 0; si < source.length; si++) {
+                    srcChars += String((source[si] && source[si].text) || '')
+                        .replace(/\s+/g, '').length;
+                }
+                trace('reader:seg', 'AUDIT in: ' + source.length +
+                      ' blocks, ' + srcChars + ' chars');
+
                 return withTimeout(semanticReflow(source), source, 120000);
             })
             .then(function (out) {
+                /*
+                  ⚠️ 结果审计：字符数必须与输入相等。
+                     不等就是**数据损坏** —— 明确报出来，并且
+                     **不应用**这个结果（下面的 return false 走原块）。
+                */
+                var outChars = 0;
+                for (var oi = 0; oi < (out || []).length; oi++) {
+                    outChars += String((out[oi] && out[oi].text) || '')
+                        .replace(/\s+/g, '').length;
+                }
+                var inChars = 0;
+                for (var ii = 0; ii < source.length; ii++) {
+                    inChars += String((source[ii] && source[ii].text) || '')
+                        .replace(/\s+/g, '').length;
+                }
+                var conserved = (inChars === outChars);
+                trace('reader:seg', 'AUDIT out: ' + ((out || []).length) +
+                      ' blocks, ' + outChars + ' chars, conserved=' + conserved);
+                if (!conserved) {
+                    trace('reader:seg', 'CONTENT NOT CONSERVED (' +
+                          inChars + ' -> ' + outChars +
+                          ') — refusing to apply, keeping original blocks');
+                    if (prog) prog.finish('failed');
+                    return false;
+                }
+
                 if (!currentDoc || currentDoc.id !== docId) {
                     trace('reader:seg', 'doc changed during resegment');
                     return false;
