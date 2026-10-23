@@ -2745,6 +2745,22 @@
             var kind = b.kind || 'body';
             var level = b.level;
 
+            /*
+              ══ ⚠️⚠️ `listMarker` 是 md 结构，优先级最高（v0.2.22）══
+
+              这份块来自 `MdDoc.parse` 时，`listMarker` 就是 md 里
+              `- ` / `1. ` 的**原文**。用户没改过它，就必须原样写回去 ——
+              不重新判断"这块是不是文献"。
+
+              ⚠️ 之前这里只靠 `kind === 'reference'`（用户标注才有），
+                 于是从 md 读进来、用户没动过的文献列表，
+                 再导出时**全部退化成普通段落** —— 结构破坏。
+
+              ✅ 现在：有 `listMarker` 就按它输出，后面的标注判断只用于
+                 "用户新标注了这一块"的情形。
+            */
+            var mdListMarker = String(b.listMarker || '');
+
             var spans = (typeof line === 'number') ? labels[line] : null;
             if (spans && spans.length) {
                 var whole = null;
@@ -2883,6 +2899,12 @@
                     level: pieceLevel,
                     text: pieceText,
                     lines: (pieces.length === 1) ? b.lines : null,
+                    /*
+                      ⚠️ md 原有的列表记号，原样带过去（v0.2.22）——
+                         这是**读进来的结构**，不是我们判断出来的。
+                         切段后只有"整块一段"时才沿用，否则由类型决定。
+                    */
+                    listMarker: (pieces.length === 1) ? mdListMarker : '',
                     authorItems: (pieceKind === 'author' && pieceSpans && pieceSpans.length)
                         ? authorItemsOf(pieceText, null, pieceSpans)
                         : null
@@ -5028,511 +5050,6 @@
         return true;
     }
 
-    /**
-     * 渲染「一个块里的多行作者信息」（v0.1.81）。
-     *
-     * 每行输出一个 `<p class="reader-para is-labeled-body is-author-body">`，
-     * 行首按该行的子标签插入项名。
-     *
-     * ⚠️⚠️ 编号（A1/A2…）**整个块只加一次**，加在第一行 ——
-     *     用户在语义上只标了"一个作者条目"，
-     *     三行各加一个编号会显得像三个作者。
-     * ⚠️ 每行都带 `data-line`，编辑/标注的字符偏移才找得到块。
-     * ⚠️ 同一块的多行共享同一个 `data-line`，
-     *     与"部分标注拆残片"的既有约定一致。
-     */
-    function makeAuthorLinesEl(b, spans, fullText, bodyIndex, authorIndex, markTyped) {
-        var frag = document.createDocumentFragment();
-
-        /*
-          ══ ⚠️⚠️ 按**已标注的词条**组织，不再按换行切（v0.1.88）══
-
-          用户要求（原话）：
-            「既然某个区域内的一些词可以选中，将这些词切出来，
-              然后重新放到作者信息区域，当作成一个新标签，
-              只不过这个新标签放在作者信息区域内，不单独显示」
-
-          ══ ✅ 新逻辑 ══
-
-          把整块文本按**已标注的区间**切成若干片段：
-
-              [未标注文本] [词条(field=name)] [未标注文本] [词条(field=affiliation)] …
-
-          · 每条已标注的区间 = 一个**词条**，带上它的子标签名（左列）；
-          · 区间之间的文本 = 普通行（左列为空占位）；
-          · 全部放进同一个作者区域，**不单独显示标签名**（不新起区域）。
-
-          ⚠️⚠️ 为什么不再按 `\n` 切：
-             真机上块文本的多行边界与用户"选中的词"不一定重合，
-             硬按 `\n` 切会导致「选的是一行中间几个词」时对不上，
-             而且没有换行符时整块退化成一行、所有子标签挤在一起。
-
-          ✅ 现在**以用户的选择为准**：
-             他选了什么，那一段就是一条词条 —— 这是最可靠的依据，
-             不需要推断任何换行。
-        */
-        var flatText = String(fullText == null ? '' : fullText).replace(/\r\n?/g, '\n');
-
-        var p = document.createElement('p');
-        p.className = 'reader-para is-labeled-body is-author-body';
-        p.setAttribute('data-label', 'author');
-
-        if (b.page) p.setAttribute('data-page', String(b.page));
-        if (typeof b.line === 'number' && b.line >= 0) {
-            p.setAttribute('data-line', String(b.line));
-        }
-
-        var boxEl = document.createElement('span');
-        boxEl.className = 'reader-author-box';
-
-        /*
-          ══ ① 收集并规范化已标注区间 ══
-
-          ⚠️ 夹到 [0, len] 内 —— 编辑过之后旧区间可能越界。
-          ⚠️ 丢掉空区间。
-          ⚠️ 按起点排序，保证输出顺序与原文一致。
-        */
-        var marks = [];
-        for (var i = 0; i < spans.length; i++) {
-            var sp = spans[i];
-            if (!sp) continue;
-            var ms = Math.max(0, Math.min(sp.start || 0, flatText.length));
-            var me = Math.max(ms, Math.min(sp.end || 0, flatText.length));
-            if (me <= ms) continue;
-            marks.push({ start: ms, end: me, field: sp.field || null });
-        }
-        marks.sort(function (x, y) { return x.start - y.start; });
-
-        /* ② 逐个片段输出：未标注文本 → 词条 → 未标注文本 → … */
-        var cursor = 0;
-
-        /**
-         * 这一块**已知的行边界**（在 `flatText` 里的字符下标，含末尾）。
-         *
-         * ══ ⚠️⚠️ 为什么需要（v0.1.93 修 bug）══
-         *
-         * 用户反馈：
-         *   「当给作者信息区域第二行标注子标签时，出现了换行——
-         *     请确定，是否目前是遵循 md 格式切分实现的，
-         *     因为如果按照嵌套项而言，应该不会出现切分问题。」
-         *
-         * 之前按 `\n` 切行，但 md 存储时块文本已用空格合并，
-         * 里面根本没有 `\n` → 整块当成一行，被词条切开后变成两行。
-         *
-         * ✅ 现在用 `b.lines`（提取层/md 里保留的原始行）算出边界，
-         *    按边界切分，保证一行原文不会被词条劈开。
-         *
-         * ⚠️ 用 indexOf 逐行定位（不是累加长度）——
-         *    因为合并时行间插入了一个空格，累加会偏移。
-         * ⚠️ 找不到就退回空数组（老数据），行为回到旧版，不会更糟。
-         */
-        var lineBoundaries = [];
-        if (b.lines && b.lines.length > 1) {
-            var scan = 0;
-            var okAll = true;
-            for (var lb = 0; lb < b.lines.length; lb++) {
-                var lrow = String(b.lines[lb] || '').replace(/^\s+|\s+$/g, '');
-                if (!lrow) continue;
-                var at = flatText.indexOf(lrow, scan);
-                if (at < 0) { okAll = false; break; }
-                scan = at + lrow.length;
-                lineBoundaries.push(scan);
-            }
-            if (!okAll || lineBoundaries.length < 1) {
-                lineBoundaries = [];
-            }
-        }
-
-        /**
-         * 上一个词条行在 `flatText` 里的**结束位置**（行尾）。
-         *
-         * ⚠️ `pushPlain` 用它判断「这一片段是不是仍属于那条词条所在的行」：
-         *    片段起点 < 这个值 → 同一行，可以并；
-         *    否则 → 已经跨到下一行，必须新起一行。
-         *
-         * ⚠️ 0 表示"还没有词条行"，此时不允许并（`< 0` 恒假）。
-         */
-        var lastTermLineStop = 0;
-
-        /**
-         * 输出一段未标注文本。
-         *
-         * ⚠️ 按 `\n` 换行，**每一段输出一个普通行**。
-         *
-         * ══ 为什么不做"同一原行碎片合并"（v0.1.90 结论）══
-         *
-         * 我一度想让它把 `Jacob Devlin` 与 `, Ming-Wei Chang`
-         * 拼回同一视觉行，但那是**做不到**的：
-         *
-         *   · 词条是一个完整的"左右两列"行元素（左 = 项名，右 = 内容），
-         *     它自己就占一整行，无法与别的文字并排；
-         *   · 所以除非放弃"左列项名"的显示，
-         *     否则一行原文被词条切开后，两截必然各占一行。
-         *
-         * ✅ 用户已明确选择「按选区硬切」（见 v0.1.89 的确认），
-         *    所以这就是预期行为，不再尝试合并。
-         */
-        function pushPlain(textChunk, chunkStart) {
-            if (!textChunk) return;
-
-            /*
-              ══ ⚠️⚠️ 用**已知的行边界**切，而不是按 `\n` 硬切（v0.1.93 修 bug）══
-
-              用户反馈（原话）：
-                「当给作者信息区域第二行标注子标签时，出现了换行——
-                  请确定，是否目前是遵循 md 格式切分实现的，
-                  因为如果按照嵌套项而言，应该不会出现切分问题。」
-
-              **用户说对了。** 之前 `textChunk.split('\n')` ——
-              但 md 合并后块文本里**没有 `\n`**，所以整段落进 rows[0]，
-              然后被词条切开：前半截进一个 `.reader-author-line`、
-              后半截进另一个 → 视觉上"凭空多了一行"。
-
-              ✅ 改用 `b.lines`（提取层/md 给的原始行边界）：
-                 把每个片段再按这些边界切开，保证
-                 **一行原文永远落在同一个 `.reader-author-line` 里**。
-
-              ⚠️ `b.lines` 缺失时（老数据）退回按 `\n` 切 —— 不会更糟。
-              ⚠️ 片段边界（`chunkStart`）要与行边界做坐标对齐：
-                 词条切出来的片段只是整块文本的一部分，
-                 必须传它在大文本里的起点，否则每个片段都被当成从 0 开始。
-            */
-            var cuts = lineBoundaries;
-            var base = (typeof chunkStart === 'number') ? chunkStart : 0;
-            var chunkEnd = base + textChunk.length;
-
-            var rows = [];
-            if (cuts && cuts.length > 1) {
-                /* 把这一片段与行边界求交，得到它在每行里的那一段 */
-                var pos = base;
-                while (pos < chunkEnd) {
-                    var nextCut = chunkEnd;
-                    for (var ci = 0; ci < cuts.length; ci++) {
-                        if (cuts[ci] > pos && cuts[ci] < nextCut) nextCut = cuts[ci];
-                    }
-                    /*
-                      ⚠️ 从 `textChunk` 自身切（下标减 base），
-                         不能从 `flatText` 切 —— 否则越界取到别的行。
-                    */
-                    var piece = textChunk.slice(pos - base, nextCut - base);
-                    if (piece.replace(/\s+/g, '')) rows.push(piece);
-                    pos = nextCut;
-                }
-            } else {
-                rows = textChunk.split('\n');
-            }
-
-            for (var r = 0; r < rows.length; r++) {
-                if (!rows[r].replace(/\s+/g, '')) continue;
-
-                /*
-                  ══ ⚠️⚠️ 能否并到上一行，取决于**片段起点是否在那一行内** ══
-
-                  ── 踩了三版才找对的判据 ──
-
-                  v0.2.12：无行信息时把整块当一行 → 吞掉整段。
-                  v0.2.13：无行信息时一律不并 → 凭空换行。
-                  v0.2.18（刚才）：用 `hasLineInfo && rows.length === 1` ——
-                    仍然错，因为词条自己已经并过尾巴、`cursor` 已推进到
-                    行尾（28），剩余片段（28→57）**跨到了下一行**，
-                    但它在 `pushPlain` 里被切成 1 段（`cuts` 没有落在
-                    28..57 之间），`rows.length === 1` 成立 →
-                    又被并回词条行，于是两行内容粘在一起。
-
-                  ── ✅ 正确判据 ──
-
-                  只有当**这一片段的起点 `base` 仍落在词条行的区间
-                  `[termStart, lineStop)` 之内**时才允许并。
-                  词条行已经并到 `lineStop`，之后的片段起点必然 >= lineStop，
-                  自然就不并了。
-
-                  ⚠️ 用 `chunkStart`（= 片段在大文本里的起点）与行尾比较，
-                     这是唯一能区分"同一行的尾巴"和"下一行的开头"的依据。
-                */
-                var prevLine = boxEl.lastElementChild;
-                var inTermLine = (typeof chunkStart === 'number') &&
-                    lastTermLineStop > 0 &&
-                    chunkStart < lastTermLineStop;
-                var canJoin = inTermLine && rows.length === 1 && prevLine &&
-                    prevLine.classList.contains('is-author-term');
-
-                if (canJoin) {
-                    var vPrev = tailOf(prevLine);
-                    if (vPrev) {
-                        vPrev.textContent = vPrev.textContent + rows[r];
-                        continue;
-                    }
-                }
-
-                var lineEl = document.createElement('span');
-                lineEl.className = 'reader-author-line';
-                var fEl = document.createElement('span');
-                fEl.className = 'reader-author-field';
-                lineEl.appendChild(fEl);
-                var vEl = document.createElement('span');
-                vEl.className = 'reader-author-value';
-                vEl.textContent = rows[r];
-                lineEl.appendChild(vEl);
-                boxEl.appendChild(lineEl);
-            }
-        }
-
-        /**
-         * 造一行「左项名 + 右内容」。
-         *
-         * @param {string} field     项名键（空串 = 无项名）
-         * @param {string} value     右列文字
-         * @param {boolean} isName   姓名行（用正文色）
-         * @return {Element} 这一行的元素
-         */
-        function makeAuthorLine(field, value, isName) {
-            var lineEl = document.createElement('span');
-            lineEl.className = 'reader-author-line';
-            if (field) lineEl.classList.add('is-author-term');
-            if (isName) lineEl.classList.add('is-author-name');
-
-            var fEl = document.createElement('span');
-            fEl.className = 'reader-author-field';
-            fEl.textContent = field ? t('reader.field.' + field) : '';
-            lineEl.appendChild(fEl);
-
-            var vEl = document.createElement('span');
-            vEl.className = 'reader-author-value';
-            vEl.textContent = value;
-            lineEl.appendChild(vEl);
-
-            return lineEl;
-        }
-
-        /**
-         * 这一行的「右列文字」是否还能继续接内容。
-         *
-         * ⚠️ 判断依据是**这一行是否由词条产生**（`.is-author-term`）——
-         *    只有词条行才值得接后续文字；普通行本来就该独占一行。
-         */
-        function tailOf(el) {
-            return el ? el.querySelector('.reader-author-value') : null;
-        }
-
-        /*
-          ══ ⚠️⚠️ 没有行信息时的渲染（v0.2.20 重写）══
-
-          ── 我在这段上错了三版，先说清楚错在哪 ──
-
-          v0.2.12：无行信息 → 把整块当一行 → 词条右列吞掉整段文字。
-          v0.2.13：无行信息 → 一律不并 → `Ashish Vaswani, Google Brain`
-                   被劈成三行（原文被切断）。
-          v0.2.19：无行信息 → 整块输出成一行，左列取第一个词条的项名，
-                   右列放**整块原文** → 只标了 "Vaswani"（7 个字符），
-                   作者区却把 1398 字符全吃进去 →「整个区域全成了子标签」。
-
-          ── 用户的正确模型（这次听清楚了）──
-
-          `A1` 是**一整段作者区域**，一个编号。区域内部可以有若干子信息：
-
-              Name           Vaswani
-              Affiliation    Google Brain
-
-          —— 这些**都在 A1 内部**，不是三个独立编号。
-
-          所以正确的渲染是：**按词条切分**（每行 = 左项名 + 右内容），
-          未标注的文字仍然留在同一个 A1 区域里（作为无项名的普通行）。
-
-          ══ ⚠️ 关键：这与 v0.2.13 的"劈开原文"有什么区别 ══
-
-          没有区别 —— v0.2.13 的**分行方式其实是对的**，
-          用户当时报"换行"是因为**另一件事**：
-          他的块本来有 `b.lines`（只有那一版 `lineStop` 兜底写错了）。
-          我却把"分行"本身当成了病根，一路改成"不分行"，
-          于是一步步滑到 v0.2.19 的"整块吞掉"。
-
-          ✅ 所以现在**恢复按词条切分**：
-             · 每行 = `makeAuthorLine(项名, 该词条的文字)`；
-             · 词条之间的文字 → 无项名的普通行；
-             · 全部仍在同一个 `.reader-author-box` 里（= 同一个 A1）。
-
-          ⚠️ 右列**只放该词条自己的文字**（`flatText.slice(termA, termB)`），
-             绝不能放整块 —— 那是上一版把全段吞进 A1 的直接原因。
-        */
-
-        for (var m = 0; m < marks.length; m++) {
-            var mk = marks[m];
-            /* 跳过与上一条重叠的部分（取先出现的），避免文字重复 */
-            if (mk.start < cursor) mk.start = cursor;
-            if (mk.end <= mk.start) continue;
-
-            /*
-              ⚠️ 词条**前后**的空格交给相邻的普通行，词条本身不带（v0.1.88）——
-                 否则右对齐时词条右边会空出一格，
-                 而普通行又以空格开头，看起来多一处缩进。
-            */
-            var termA = mk.start;
-            var termB = mk.end;
-            while (termA < termB && /\s/.test(flatText.charAt(termA))) termA++;
-            while (termB > termA && /\s/.test(flatText.charAt(termB - 1))) termB--;
-            if (termB <= termA) continue;
-
-            pushPlain(flatText.slice(cursor, termA), cursor);
-
-            /*
-              ══ ⚠️⚠️ 同一行的剩余文字要**并回词条行**（v0.2.11）══
-
-              用户反馈：
-
-                「之前改掉的那个子标签选定后（比如机构）换行的 bug 重新出现，
-                  需修复」
-
-              ── 现象 ──
-
-                       姓名          Ashish Vaswani
-                                     , Google Brain      ← 凭空多一行
-
-              原文是 `Ashish Vaswani, Google Brain` 一个块。
-              用户只把 `Ashish Vaswani` 标成"姓名"，
-              逗号与单位留在同一段的后续文字里。
-
-              ── 真因 ──
-
-              `pushTerm` 把词条渲染成**独立的一整行**（左项名 + 右内容），
-              而 `pushPlain` 处理剩余文字时又**另起一行**。
-              于是一行原文被强行拆成两行 —— 不是数据问题，是渲染分行的粒度
-              定得太粗：按"词条"分行，而不是按"原文行"分行。
-
-              ── ✅ 修法 ──
-
-              词条之后的文字，只要**还在同一个原始行边界内**，
-              就并到词条那一行的右列尾部，而不是新起一行。
-              这样：
-
-                       姓名          Ashish Vaswani, Google Brain
-
-              ⚠️ 必须在**行边界**处停下 —— 一旦越过 `lineBoundaries`，
-                 就说明真的换行了，剩下的部分要按普通行继续输出。
-              ⚠️ `b.lines` 为空时没有边界信息，此时**整块当作一行**处理
-                 （并回去），而不是每段一行 —— 后者必然产生多余换行。
-            */
-            var termLine = makeAuthorLine(
-                mk.field, flatText.slice(termA, termB), mk.field === 'name');
-            boxEl.appendChild(termLine);
-            cursor = termB;
-
-            /*
-              ⚠️ `hasLineInfo` 已在 `pushPlain` 之前算好并供两处共用，
-                 这里不再重复定义（否则以后改一处、忘另一处就会不一致）。
-            */
-            var cuts2 = lineBoundaries;
-
-            /* ① 先算出"同一原始行"能延伸到哪 */
-            var lineStop = -1;
-            if (cuts2 && cuts2.length) {
-                for (var lb2 = 0; lb2 < cuts2.length; lb2++) {
-                    if (cuts2[lb2] > cursor) {
-                        lineStop = cuts2[lb2];
-                        break;
-                    }
-                }
-            }
-
-            /*
-              ══ `b.lines` 没给切点时的兜底（v0.2.18）══
-
-              ⚠️ 用文本里的 `\n` 找本行终点 —— 这是 `hasLineInfo`
-                 的第二种情形。
-
-              ⚠️ **找不到 `\n` 就保持 -1**（= 不可并）。
-                 绝对不能像 v0.2.12 那样退化成 `flatText.length`，
-                 那会把整段文字吞进词条。
-            */
-            if (lineStop < 0 && flatText.indexOf('\n') >= 0) {
-                var nl = flatText.indexOf('\n', cursor);
-                if (nl >= 0) lineStop = nl;
-            }
-
-            /*
-              ══ ⚠️⚠️ 没有行边界信息时的正确做法（v0.2.18 修 bug）══
-
-              ── 前两版各错一半 ──
-
-              v0.2.12（旧）：`if (lineStop < 0) lineStop = flatText.length;`
-                → 把"没有行信息"当成"整块就是一行"，
-                  词条右列吞掉了**整块剩余的全部文字**。
-                  用户只选前 10 个字符，整段都成了"单位"。
-
-              v0.2.13（我上次的过度纠正）：`if (lineStop < 0) lineStop = cursor;`
-                → 完全**不并**，于是 `Ashish Vaswani, Google Brain`
-                  被拆成两行（"姓名 Ashish Vaswani" + 独立一行 ", Google Brain"）。
-                  用户报的就是这个换行 bug。
-
-              ── ✅ 真正的判据：看**有没有换行符** ──
-
-              `b.lines` 缺失时，剩下的唯一"行"信息就是文本里的 `\n`
-              （PDF 提取时多行会被合并成空格，但**有些**块保留了 `\n`）。
-              所以：
-
-                · 从 `cursor` 向后找最近的 `\n`，它就是这一行的终点；
-                · 找不到 `\n` → 说明块内没有换行信息，此时**只并到
-                  "下一处连续空白之后的第一个非空格分隔点"都不安全**，
-                  那就退回"不并"，保证不会误吞整段。
-
-              ⚠️ 关键区别：v0.2.12 的错误是"并到块尾"，
-                 而这里并到 **最近的 `\n` 或块尾——但仅当该区间内
-                 确实没有 `\n` 时才并到块尾**。两者不是一回事：
-                 没有 `\n` 的老数据仍然不并（避免误吞），
-                 有 `\n` 的数据能正确并回本行。
-            */
-            /*
-              ⚠️ v0.2.18：`lineStop` 的兜底（用文本里的 `\n`）已经在
-                 上面统一算过了 ——
-                 这里**不要再算一遍**，否则：
-                   · 重复声明 `nl`（eslint no-redeclare）；
-                   · 更糟的是两套判据并存，改一处忘一处就会不一致。
-            */
-
-            /* ② 同一行内、且在下一条标注之前的文字 → 接到右列尾部 */
-            var nextMarkStart = flatText.length;
-            if (m + 1 < marks.length) {
-                nextMarkStart = marks[m + 1].start;
-            }
-            /*
-              ⚠️ `lineStop < 0` 表示"不知道这一行到哪结束" ——
-                 此时 `joinEnd` 必须等于 `cursor`，即**什么都不并**。
-                 用 `Math.max` 兜住，避免负值参与后续比较时被误判。
-            */
-            var joinEnd = lineStop < 0 ? cursor
-                : Math.min(lineStop, flatText.length);
-            if (nextMarkStart > cursor && nextMarkStart < joinEnd) {
-                joinEnd = nextMarkStart;
-            }
-            if (joinEnd > cursor) {
-                var joined = flatText.slice(cursor, joinEnd);
-                /*
-                  ⚠️ 只并"非空"的尾巴；纯空白并进去会让右列多出空格，
-                     看起来像缩进变了。
-                */
-                if (joined.replace(/\s+/g, '')) {
-                    var vTail = tailOf(termLine);
-                    if (vTail) vTail.textContent = vTail.textContent + joined;
-                    cursor = joinEnd;
-                }
-            }
-
-            /*
-              ⚠️ 记录这一条词条行的**行尾位置**，供 `pushPlain` 判断
-                 "后续片段是否还在同一行内"（见 canJoin 的说明）。
-                 没有行信息时（`lineStop` 从未被赋值），用 `cursor`
-                 —— 效果是"只有紧跟词条的那一小段能并"，这正是我们要的。
-            */
-            lastTermLineStop = (lineStop > 0) ? lineStop : cursor;
-        }
-        pushPlain(flatText.slice(cursor), cursor);
-
-        /* 整块一个编号，加在这一整个 `<p>` 上 */
-        if (markTyped) markTyped(p, 'author');
-        p.appendChild(boxEl);
-
-        frag.appendChild(p);
-        return frag;
-    }
 
     /**
      * 求「覆盖 [start, end) 的完整行」的字符区间（v0.1.81）。
@@ -6268,231 +5785,197 @@
      */
     function renderBlocks(blocks) {
         if (!blocks || !blocks.length) return;
-        /*
-          ══ ⚠️⚠️ 预计算有序列表的真实序号（v0.2.21）══
-
-          md 里文献是有序列表，编号是绝对的（`1.` `2.` …）。
-          渲染时不能靠 CSS 计数器 —— 一条文献往往跨多个块，
-          计数器会在每块重新开始，全变成 1。
-
-          ✅ 在这里**一遍扫过**算出每条有序项的编号，
-             挂到块的 `mdNum` 上，`makeBlockEl` 直接读。
-             只有 `reader-md-ordered` 的块递增。
-
-          ⚠️ 序号从 1 开始，连续；遇到非有序块**不重置** ——
-             文献区分成多段（正文夹注释）时编号仍应连续。
-        */
-        var num = 0;
-        for (var i = 0; i < blocks.length; i++) {
-            var b = blocks[i];
-            if (!b) continue;
-            var lm = String(b.listMarker || '');
-            if (lm && lm.indexOf('-') < 0 && lm.indexOf('*') < 0) {
-                num += 1;
-                b.mdNum = num;
-            }
-        }
-        renderFlat(blocks);
+        renderMd(blocks);
     }
 
     /**
-     * 平坦渲染：一段一个 `<p>`，没有区域、没有等级。
+     * ══ 按 md 结构渲染（v0.2.22）══
      *
-     * ⚠️ v0.1.39 起这是**唯一**的正文渲染路径（`renderBlocks` 直接调它）。
-     *    早期它是"分区失败时的兜底"，现在成了主路径 ——
-     *    因为用户要求「不允许有任何模板」。
+     * 用户裁决：
+     *   「我觉得完成了md作为基础数据储存结构之后，渲染就很简单了吧」
+     *   「直接清理，完全按照md格式来渲染」
+     *
+     * ✅ md 是唯一数据源，渲染只做一件事：**把结构画出来**。
+     *
+     *     `#`    → `<h1>`        （文章标题）
+     *     `##`   → `<h2>`
+     *     `###`  → `<h3>`
+     *     `####` → `<h4>`
+     *     `- `   → `<ul><li>`
+     *     `1. `  → `<ol><li>`
+     *     空行   → `<p>`
+     *
+     * ⚠️ 不再有"这块是标题还是正文"的判断 —— `kind` / `level` /
+     *    `listMarker` 就是 md 的结构，直接用。
+     * ⚠️ 不再有模板角色参与语义判定（`role` 只影响视觉修饰）。
+     *
+     * ══ 保留的东西（都不是"模板"，是功能）══
+     *
+     *   · 正文段编号 + 左侧提示条 —— 用户 v0.1.57 明确要求
+     *   · 分类编号前缀（A1 / R1）—— 用户 v0.1.72 明确要求
+     *   · 标签段（「文章标题」「作者信息」）—— 现有交互的一部分
+     *   · `data-line` —— 选中/编辑/标注的锚点
+     *
+     * @param {Array} blocks [{line, text, kind, level, listMarker, ...}]
      */
-    /**
-     * 平坦渲染：一段一个 `<p>`，没有区域、没有等级。
-     *
-     * ⚠️ v0.1.39 起这是**唯一**的正文渲染路径（`renderBlocks` 直接调它）。
-     *    早期它是"分区失败时的兜底"，现在成了主路径 ——
-     *    因为用户要求「不允许有任何模板」。
-     *
-     * ══ ⚠️⚠️ 相邻且同标签的块要合并成**一个区域**（v0.1.50）══
-     *
-     * 用户实测反馈：
-     *   「区域划分怎么还是按段呢？我将多段加一个段的末尾都分到了作者信息，
-     *     结果末尾那个直接没有前置文本，然后后面的都是一段一个前置文本 ——
-     *     这不对，他们都是一个区域的。」
-     *
-     * 旧实现是**逐块**渲染的（makeBlockEl 自己决定要不要加标签段），
-     * 它根本不知道邻居是谁，所以跨块标注必然渲染成「一段一个前置文本」。
-     *
-     * ✅ 现在先**分组**再渲染：
-     *     · 连续的、标注标签相同的块 → 归为同一个区域
-     *     · 每个区域只在最前面输出**一次**标签段
-     *     · 区域内部是一串普通段落（v0.1.39 的"无等级"仍然成立）
-     *
-     * ⚠️ 判据是「**相邻**」而不是「标签相同」：
-     *    同一标签出现在文中两处（比如两个不同的"一级标题"）时，
-     *    中间隔着正文，它们必须是**两个**区域，各自带自己的标签。
-     */
-    function renderFlat(blocks) {
+    function renderMd(blocks) {
         var frag = document.createDocumentFragment();
-
-        /*
-          ══ 正文段计数（v0.1.57）══
-
-          用户要求：
-            「增加一个功能，那就是正文段计数，左边加提示条和正文段编号。
-              编号在提示条左边。」
-            「不包括标注了不是正文的段，剩下的正文段都标，
-              然后连续，从全文的第一个到最后一个」
-
-          ⚠️ 所以计数器只对**正文段**递增：
-             · 被标注为 title / h1 / h2 / h3 / author / abstract /
-               reference 的块**不计数**（它们不是正文）；
-             · 未标注的块、标注为 body 的块都算正文；
-             · 一个块被拆成多段（部分标注）时，只有**未标注的残片**
-               算正文段，标注段本身不算。
-
-          ⚠️ 计数器必须活在整个 `renderFlat` 期间（跨 run 累加），
-             不能每个 run 重置 —— 用户要求"连续，从全文第一个到最后一个"。
-        */
         var bodyIndex = { n: 0 };
-
-        /*
-          ══ 分类编号计数器（v0.1.72）══
-
-          用户要求：
-            「为了区别正文段编号，参考文献区域段编号加个 R 前缀，
-              然后作者加个 A 前缀，前缀后面是数字编号。」
-
-          ⚠️ 每类**各算各的**：
-             正文 1,2,3…、文献 R1,R2,R3…、作者 A1,A2,A3…
-             不能共用一个计数器，否则 R 编号会出现 1、5、9 这种跳号。
-        */
         var refIndex = { n: 0 };
         var authorIndex = { n: 0 };
 
-        /**
-         * 给一个区域挂编号（带类型前缀）。
-         *
-         * ⚠️ 正文段不走这里 —— 它没有前缀，由 `bodyIndex` 直接处理。
-         */
-        function markTyped(el, labelKey) {
-            var prefix = LABEL_NO_PREFIX[labelKey];
-            if (!prefix) return;
-            var counter = (labelKey === 'reference') ? refIndex : authorIndex;
-            counter.n++;
-            attachBodyMarker(el, prefix + counter.n);
-        }
+        /*
+          ⚠️ 有序列表编号：md 里写的是绝对编号，必须原样还原。
+             越过非列表块**不重置** —— 文献区被正文打断时编号仍连续。
+        */
+        var ordNum = 0;
 
         /*
-          ══ ⚠️⚠️ 跳过已变空的块（v0.1.66）══
+          ══ 列表容器（v0.2.22）══
 
-          用户反馈：
-            「还有一个问题就是当编辑使得段落减少（比如令两段合并为一段）
-              之后，编号却没有，就会导致空段落的出现，应该自动删除空段落。」
-
-          场景：跨块编辑时，`applyEdit()` 把用户写的内容按空行切分，
-          分别写回 `edits[lines[i]]`。如果用户把两段合成一段，
-          后面的块就拿到空串 `''` —— 但这个块仍然留在 `blocks` 里，
-          `renderFlat` 仍会给它造一个 `<p>`：
-            · 屏幕上出现一个只有竖线、没有文字的空段落；
-            · 它还会占掉一个正文段编号，导致后面的编号错位。
-
-          ✅ 所以在建 run **之前**先把空块滤掉：
-             不渲染 → 不占编号 → 编号保持连续。
-
-          ⚠️ 判据用 `trim()` 而不是 `=== ''`：
-             用户编辑时可能只留下空格/换行，那些同样应该被视为空段落。
-          ⚠️ 只在这次渲染时过滤，**不删掉数据** ——
-             `edits[line]` 仍保留着，用户以后在别处恢复文本还能回来。
+          ⚠️ 连续的同类列表项要装进**同一个** `<ul>` / `<ol>`，
+             否则 md 里一个列表会被画成 N 个只有一个条目的列表，
+             视觉上段落间距全错（列表项之间应该紧贴）。
         */
-        var live = [];
-        for (var q = 0; q < blocks.length; q++) {
-            var qt = blockTextOf(blocks[q].line);
-            if (qt == null) qt = '';
-            if (String(qt).replace(/\s+/g, '') === '') continue;
-            live.push(blocks[q]);
+        var openList = null;      // 当前打开的 <ul>/<ol>
+        var openType = null;      // 'ul' | 'ol'
+
+        function closeList() {
+            if (openList) {
+                frag.appendChild(openList);
+                openList = null;
+                openType = null;
+            }
         }
-        blocks = live;
 
-        /*
-          把块切成"运行"（run）：连续、且标注标签集合完全相同的块归一段。
-          ⚠️ 比较的是整个标签签名而不是单个标签 —— 一个块里可能同时
-             有多个标签（虽然少见），签名一致才算同一个区域。
-        */
-        var runs = [];
-        var curRun = null;
+        function ensureList(type) {
+            if (openType === type && openList) return openList;
+            closeList();
+            openList = document.createElement(type);
+            openList.className = 'reader-list reader-list-' + type;
+            openType = type;
+            return openList;
+        }
 
         for (var i = 0; i < blocks.length; i++) {
             var b = blocks[i];
-            var sig = labelSignatureOf(b);
+            if (!b) continue;
 
-            if (curRun && sig === curRun.sig && sig !== '') {
-                curRun.blocks.push(b);
-            } else {
-                curRun = { sig: sig, blocks: [b] };
-                runs.push(curRun);
-            }
-        }
+            var text = blockTextOf(b.line);
+            if (text == null) text = b.text || '';
+            text = String(text);
+            if (text.replace(/\s+/g, '') === '') continue;
 
-        for (var r = 0; r < runs.length; r++) {
-            var run = runs[r];
+            var lm = String(b.listMarker || '');
+            var isBullet = !!lm && (lm.indexOf('-') >= 0 || lm.indexOf('*') >= 0);
+            var isOrdered = !!lm && !isBullet;
 
-            /*
-              ⚠️ 无标签的运行 → 普通段落，一块一个 `<p>`。
-            */
-            if (!run.sig) {
-                for (var k = 0; k < run.blocks.length; k++) {
-                    var plain = makeBlockEl(run.blocks[k]);
-
-                    /*
-                      ⚠️ 无标签块必然是正文段 → 计数 + 挂编号。
-                     */
-                    if (plain && plain.nodeType === 1) {
-                        bodyIndex.n++;
-                        attachBodyMarker(plain, bodyIndex.n);
-                    }
-
-                    if (plain && plain.nodeType === 11) {
-                        frag.appendChild(plain);
-                    } else if (plain) {
-                        frag.appendChild(plain);
-                    }
-                }
+            /* ── 标题：`#` 数量 → h1..h4 ── */
+            if (b.kind === 'heading') {
+                closeList();
+                var lv = Number(b.level);
+                if (!(lv >= 1)) lv = 1;
+                if (lv > 4) lv = 4;
+                var h = document.createElement('h' + lv);
+                h.className = 'reader-heading reader-h' + lv;
+                h.textContent = text;
+                copyBlockAttrs(h, null, b);
+                frag.appendChild(h);
                 continue;
             }
 
+            /* ── 无序列表项 → <ul><li> ── */
+            if (isBullet) {
+                var ul = ensureList('ul');
+                var li1 = document.createElement('li');
+                li1.className = 'reader-li reader-li-bullet';
+                /*
+                  ══ ⚠️⚠️ 作者子标签：渲染成 `Author Name: xxx`（v0.2.22）══
+
+                  用户裁决：
+                    「标注了姓名，则应该是
+                       - Author Name: ashish vaswani
+                       - Author Affiliation: Google Brain
+                     子标签可以按 md 中的横杠加空格加特定字段来定位
+                     其文本的性质。」
+
+                  ⚠️ 这里渲染的**就是保存后 md 的样子** ——
+                     用户标注之后立刻看到 `Author Name: Ashish Vaswani`，
+                     与磁盘上的 md 完全一致，不存在"界面对、文件错"。
+
+                  ⚠️ 数据来源是 `labels[line]` 里 `field != null` 的 author 标注。
+                     保存后这些标注会变成 md 文本的一部分（`- Author Name: xxx`），
+                     读回来时由原生 `MdDoc.parse` 还原成同样的标注，
+                     所以两条路径的视觉结果一致。
+                */
+                var bulletText = text;
+                var bSpans = (typeof b.line === 'number') ? labels[b.line] : null;
+                if (bSpans && bSpans.length) {
+                    for (var bs = 0; bs < bSpans.length; bs++) {
+                        var bsp = bSpans[bs];
+                        if (!bsp || bsp.label !== 'author' || !bsp.field) continue;
+                        /*
+                          ⚠️ 只在标注**覆盖整块**时加前缀。
+                             局部标注（只标了几个词）加前缀会把半截文本
+                             变成条目，那是错的。
+                        */
+                        if ((bsp.start || 0) <= 1 &&
+                            (bsp.end || 0) >= text.length - 1) {
+                            bulletText = t('reader.field.' + bsp.field) + ': ' + text;
+                            break;
+                        }
+                    }
+                }
+                li1.textContent = bulletText;
+                copyBlockAttrs(li1, null, b);
+                ul.appendChild(li1);
+                continue;
+            }
+
+            /* ── 有序列表项 → <ol><li> ── */
+            if (isOrdered) {
+                ordNum += 1;
+                var ol = ensureList('ol');
+                var li2 = document.createElement('li');
+                li2.className = 'reader-li reader-li-ordered';
+                li2.textContent = text;
+                li2.setAttribute('data-md-num', String(ordNum));
+                copyBlockAttrs(li2, null, b);
+                ol.appendChild(li2);
+                continue;
+            }
+
+            /* ── 普通段落 → <p> ── */
+            closeList();
+            var p = document.createElement('p');
+            p.className = 'reader-para';
+            p.textContent = text;
+
             /*
-              ⚠️ 有标签的运行 → **先输出一次标签段**，再输出所有内容段。
-              ⚠️ 传入计数器对象（而不是数字）—— 它要被就地递增，
-                 数字是按值传递的，传出去改了外面看不到。
+              ⚠️ 正文段编号：只有**真正未标注的正文**才计数。
+                 标成 title / h1-3 / author / abstract / reference 的块
+                 已经在上面各自的分支里返回了，走到这里的就是正文。
             */
-            appendLabeledRun(frag, run, bodyIndex, refIndex, authorIndex, markTyped);
+            if (bodyIndex) {
+                bodyIndex.n++;
+                attachBodyMarker(p, bodyIndex.n);
+            }
+            copyBlockAttrs(p, null, b);
+            frag.appendChild(p);
         }
 
-        /*
-          ══ ⚠️⚠️ 渲染前必须清空旧内容（v0.2.3 实测事故）══
-
-          用户报的现象：
-
-            「分成不同的段之后，正文段编号居然没有更新？」
-            「好像切分后就固定了一样」
-
-          实测：语义切分把 120 块正确合并成 7 块，`getBlocks()` 也对，
-          **但屏幕上还是原来那 121 段**，编号`1 2 A1 3 4…`原封不动。
-
-          真因：`renderFlat` 只做 `contentEl.appendChild(frag)`，
-          **从来没有清空 contentEl**。它一直依赖调用方（`continueWith`）
-          事先清空 —— 首次打开时确实清了，但重新渲染（切分后）时
-          两条路径的时序没对齐，旧的 121 个 `<p>` 还在，
-          新的 7 个被**追加到最后**。
-
-          于是屏幕上看起来"什么都没变"（旧内容占满视口），
-          而实际数据已经换了。这正是"像被固定住"的观感。
-
-          ✅ 渲染函数自己负责清空自己的容器 —— 这是渲染函数的本分。
-             依赖调用方清空是脆弱的：少一次就出这种"幽灵内容"bug，
-             而且**很难查**（数据层全对，界面层全错）。
-        */
+        closeList();
         contentEl.textContent = '';
-
         contentEl.appendChild(frag);
     }
+
+    /**
+     * 平坦渲染：一段一个 `<p>`，没有区域、没有等级。
+     *
+     * ⚠️ v0.1.39 起这是**唯一**的正文渲染路径（`renderBlocks` 直接调它）。
+     *    早期它是"分区失败时的兜底"，现在成了主路径 ——
+     *    因为用户要求「不允许有任何模板」。
+     */
 
     /**
      * 给一个段落挂上编号 + 左侧提示条（v0.1.57 / v0.1.68 重做）。
@@ -6633,934 +6116,12 @@
         return keys.join('|');
     }
 
-    /**
-     * 输出一个「已标注区域」：**一个标签段 + 若干内容段**（v0.1.50）。
-     *
-     * ══ 用户要求（原话）══
-     *
-     *   「我将多段加一个段的末尾都分到了作者信息……他们都是一个区域的。」
-     *
-     * 所以：
-     *
-     *   ┌──────────────────────────────┐
-     *   │ 作者信息                       │  ← 只出现**一次**
-     *   │ 第一段内容…                    │
-     *   │ 第二段内容…                    │
-     *   │ 第三段内容…                    │
-     *   └──────────────────────────────┘
-     *
-     * ⚠️ 区域内部的每段仍是独立 `<p>`（保留段落边界），
-     *    但**不再重复**标签文字 —— 这正是用户指出的问题所在。
-     *
-     * ⚠️ 标签段取区域内**第一个块**的标签名。同一区域内所有块的
-     *    标签签名相同（见 labelSignatureOf），所以取哪个都一样。
-     */
-    function appendLabeledRun(frag, run, bodyIndex, refIndex, authorIndex, markTyped) {
-        var firstBlock = run.blocks[0];
-        var firstLine = firstBlock.line;
-        var spans = labels[firstLine] || [];
 
-        /*
-          ══ ⚠️⚠️ 模板角色的块没有 `labels`，必须单独处理（v0.2.6）══
 
-          `labelSignatureOf` 让模板块拿到了非空签名（因此进了这个函数），
-          但这里的 `spans` 读的是 `labels[line]` —— 模板块上**没有**用户标注，
-          所以 `spans` 是空的，`labelKey` 会是 null，
-          最终落到"无标签"分支，模板角色一点效果都没有。
 
-          实测现象：`getDocBlocks()` 里 role 全对，
-          DOM 里 `reader-role-*` 一个都没有 —— 数据对、界面错。
 
-          ✅ 所以先看 role：`roleSignatureOf` 给出签名时，
-             就用 role 自己当标签来源，跳过所有 `labels` 相关逻辑。
-             （模板是**显式**排版意图，它本身就是完整的分类依据。）
 
-          ⚠️ 标签文字走 `t('reader.label.' + key)`，
-             与手工标注共用同一套 i18n 文案 —— 模板不需要新文案。
-        */
-        var roleSig = roleSignatureOf(firstBlock);
-        if (roleSig !== undefined && roleSig !== '') {
-            /*
-              ⚠️ `reference` 每块独立成区（与手工标注保持一致）——
-                 每条文献都要自己的 R 编号，不能合并成一个大区域。
-            */
-            var perBlock = labelSplitsPerBlock(roleSig);
-            for (var r3 = 0; r3 < run.blocks.length; r3++) {
-                var rb3 = run.blocks[r3];
-                if (perBlock) {
-                    var h3 = document.createElement('p');
-                    h3.className = 'reader-label-head';
-                    h3.setAttribute('data-label', roleSig);
-                    h3.setAttribute('data-from', 'template');
-                    h3.textContent = t('reader.label.' + roleSig);
-                    frag.appendChild(h3);
-                } else if (r3 === 0) {
-                    /* 合并型角色（heading / title / author / abstract）只输出一次 */
-                    var h3b = document.createElement('p');
-                    h3b.className = 'reader-label-head';
-                    h3b.setAttribute('data-label', roleSig);
-                    h3b.setAttribute('data-from', 'template');
-                    h3b.textContent = t('reader.label.' + roleSig);
-                    frag.appendChild(h3b);
-                }
-                var el3 = makeContentEl(rb3, bodyIndex, refIndex, authorIndex, markTyped);
-                if (el3) frag.appendChild(el3);
-            }
-            return;
-        }
 
-        /*
-          ══ ⚠️⚠️ 文献 / 作者：**每块各自一个区域**（v0.1.71 / v0.1.72）══
-
-          用户要求：
-            「当选中文本跨段时，每个段自动作为一个文献项
-              从而得到多个文献区域，而不是整合成一个大的文献区域。」
-            「我希望作者信息也这么样，可以通过段来自动分别成
-              不同的作者信息区域。」
-
-          ✅ 所以这两类标签直接走"逐块独立"分支，
-             每块一个 `.reader-label-head` + 一个编号。
-
-          ⚠️ 不在 `makeLabeledBlock` 里做，那个函数是"一块多标签"的兜底，
-             它生成的是"标签段 + 内容段"的复合结构，语义不同。
-        */
-        var splitKey = spans[0] ? spans[0].label : null;
-        if (splitKey && labelSplitsPerBlock(splitKey)) {
-            for (var r2 = 0; r2 < run.blocks.length; r2++) {
-                var rb = run.blocks[r2];
-
-                var h2 = document.createElement('p');
-                h2.className = 'reader-label-head';
-                h2.setAttribute('data-label', splitKey);
-                h2.textContent = t('reader.label.' + splitKey);
-                frag.appendChild(h2);
-
-                var el2 = makeContentEl(rb, bodyIndex, refIndex, authorIndex, markTyped);
-                frag.appendChild(el2);
-            }
-            return;
-        }
-        /*
-          ⚠️ 一个块里可能有多个不同标签（虽然少见）。此时无法只用一个
-             标签段表达整个区域，退化为"逐块带标签"——
-             宁可多显示几个标签，也不能漏掉某个标签的信息。
-        */
-        /*
-          ⚠️ 判据改成"是否有**不同类型**的标签"（v0.1.81）：
-
-             旧判据 `spans.length > 1` 会把"一个块里多条同类型
-             作者行标注"也当成多标签，于是整块被拆散。
-
-             ✅ 现在只有真有两种以上不同标签时才退化，
-                同类型的多条（逐行子标签）走正常路径。
-        */
-        var kindCount = 0;
-        var kindSeen = {};
-        for (var kk = 0; kk < spans.length; kk++) {
-            var ksp = spans[kk];
-            if (!ksp || !ksp.label || kindSeen[ksp.label]) continue;
-            kindSeen[ksp.label] = true;
-            kindCount++;
-        }
-        var hasMultiple = kindCount > 1;
-
-        if (hasMultiple) {
-            for (var m = 0; m < run.blocks.length; m++) {
-                var sub = makeLabeledBlock(run.blocks[m], null,
-                    labels[run.blocks[m].line], bodyIndex, refIndex, authorIndex, markTyped);
-                if (sub) frag.appendChild(sub);
-            }
-            return;
-        }
-
-        var labelKey = spans[0] ? spans[0].label : null;
-
-        /* ① 标签段：整个区域只输出一次 */
-        if (labelKey) {
-            var head = document.createElement('p');
-            head.className = 'reader-label-head';
-            head.setAttribute('data-label', labelKey);
-
-            /*
-              ══ ⚠️⚠️ 一级标题：前置文本 + 一条分隔线（v0.1.71）══
-
-              用户要求：
-                「对于标题一，我希望前置文本后面跟着一条分隔线，
-                  意思是把整个文章通过一级标题分割成了不同章节。
-                  分割线的颜色和前置文本一个颜色就可以，
-                  长度为按页面文本宽度自适应，也就是前置文本开头
-                  距离屏幕左边多远，那么分割线的尾部距离屏幕右边就多远。
-                  然后分割线和前置文本直接记得也留一点空隙。」
-
-              ✅ 做法：把文字和线放进同一个 flex 行里：
-
-                  [一级标题]  ────────────────────
-                  ↑ 文字不动   ↑ flex:1，自动撑满剩余宽度
-
-                 用 `flex: 1` 而不是算像素 —— 用户要的就是
-                 “自适应页面文本宽度”，flex 天然做到。
-
-              ⚠️ 左端对齐：文字在左，线接在右边；
-                 右端到内容区右边缘为止，正好是“同一倍留白”。
-              ⚠️ 间距用 `gap`，不写死 px —— 与全局间隔保持一致。
-              ⚠️ 只对 `h1` 生效：文章标题（title）是文档级不是章节级，
-                 二级/三级标题也不该分割章节。
-            */
-            if (labelKey === 'h1') {
-                head.classList.add('is-h1-head');
-
-                var txt = document.createElement('span');
-                txt.className = 'reader-label-text';
-                txt.textContent = t('reader.label.' + labelKey);
-                head.appendChild(txt);
-
-                var line = document.createElement('span');
-                line.className = 'reader-label-rule';
-                line.setAttribute('aria-hidden', 'true');
-                head.appendChild(line);
-            } else {
-                head.textContent = t('reader.label.' + labelKey);
-            }
-
-            frag.appendChild(head);
-        }
-
-        /* ② 内容段：区域内所有块，一块一个 `<p>` */
-        for (var i = 0; i < run.blocks.length; i++) {
-            var b = run.blocks[i];
-
-            /*
-              ══ ⚠️⚠️ 编号挂在「条目」上，不是「区域」上（v0.2.10）══
-
-              用户反馈：
-
-                「选中好几段标注为作者信息，作者信息区域从提示条来看分开了，
-                  但却没有编号，只有第一个有 A1，其他都没有」
-
-              ── 真因 ──
-
-              v0.1.93 为了让"一个作者区域"内的多行共用同一个编号，
-              把这里改成 `regionMarker = (i === 0) ? markTyped : null` ——
-              即**只有区域首块挂编号**。
-
-              但这条规则的前提是「一个区域 = 一个作者条目被拆成多块」。
-              而实际使用中，用户连续标注**好几段独立的作者信息**时
-              （姓名 / 单位 / 邮箱各占一段），这些块的签名都是 `author`，
-              于是被合并成**同一个 run** —— 结果只有第一段拿到 A1，
-              其余段落既没有编号、也不会递增到 A2/A3。
-
-              用户看到的"提示条分开了"是因为每块都有竖线
-              （下面那段 `attachBodyMarker(e2, null)` 补的），
-              但编号只挂了一个 —— 正是这个不对称造成的困惑。
-
-              ── ✅ 现在的判据 ──
-
-              看这**块本身**是不是一个完整的作者条目：
-
-                · `labelSplitsPerBlock('author')` 为 true 时（当前**不是**），
-                  每块独立成区，各挂编号；
-                · 否则每块仍是同一区域里的**一行**，共用首块编号 ——
-                  这正是 v0.1.93 要的行为（一个作者条目含姓名/单位多行）。
-
-              但用户遇到的"好几段标注为作者信息"在**数据上**与
-              "一个条目的多行"完全无法区分 —— 两者都是一个块带 author 标签。
-
-              ✅ 所以改用一条更符合直觉的规则：
-                 **当区域内只有一个块时**，它当然挂编号；
-                 **当区域内有多个块时**，每块都是一个独立条目，各挂编号。
-                 理由：PDF 提取出的块已经是**段落**粒度
-                 （`PdfText` 按坐标分行聚合），一个块就是一行/一段。
-                 多块 = 多条信息，不是一条信息的多行。
-
-              ⚠️ 真正的"一条信息多行"由 `makeAuthorLinesEl` 在**块内**处理
-                 （按已标注的词条拆分），不依赖跨块合并 ——
-                 所以按块编号不会切碎一条作者信息。
-            */
-            var multiInRun = run.blocks.length > 1;
-            var regionMarker = (multiInRun || i === 0) ? markTyped : null;
-            var el = makeContentEl(b, bodyIndex, refIndex, authorIndex, regionMarker);
-
-            /*
-              ⚠️ 非首块：**只补竖线，不补编号**。
-                 首块已经由 `markTyped` → `attachBodyMarker` 同时挂了
-                 编号和竖线，这里再挂会多出一条。
-                 `attachBodyMarker(el, null)` 就是"只挂竖线"的意思（见该函数）。
-
-              ⚠️⚠️ `makeContentEl` 可能返回 **Element**，也可能是
-                 **DocumentFragment**（作者路径的 `makeAuthorLinesEl` 返回 frag）。
-                 第一次写成 `el.nodeType === 1` 判断，结果作者块被整个跳过，
-                 第二段仍然没有竖线（实测 `hasRule: false`）。
-
-              ✅ 所以要把返回值**展开成元素数组**再逐个处理。
-                 Fragment 用 `children`（只取元素，跳过文本节点）。
-            */
-            if (i > 0 && el) {
-                var els = (el.nodeType === 1)
-                    ? [el]
-                    : Array.prototype.slice.call(el.children || []);
-                for (var ei = 0; ei < els.length; ei++) {
-                    var e2 = els[ei];
-                    if (e2 && !e2.querySelector('.reader-rule')) {
-                        attachBodyMarker(e2, null);
-                    }
-                }
-            }
-
-            /*
-              ⚠️ 区域内只有**第一块**带 `data-line` 吗？
-                 不 —— 每块都带自己的 `data-line`，
-                 目录跳转和 blockElOf 才能定位到正确的那一段。
-            */
-            frag.appendChild(el);
-        }
-    }
-
-    /**
-     * 造一个"已经处理过标注"的内容段（只要内容，不要标签段）。
-     *
-     * ══ ⚠️⚠️ 只输出**被标注的字符区间**（v0.1.55）══
-     *
-     * 用户反馈：
-     *   「老问题怎么又出现了？怎么按段不按选中文本来标注区域啊」
-     *
-     * 真因：v0.1.50 重写"区域合并"时，这个函数被简化成
-     *   `el.textContent = b.text` —— 整块原文直接输出，
-     *   完全忽略了 `spans[0].start/end`。
-     *
-     * 于是用户只选了一个词标注，整段都被渲染成标题样式
-     * （并且带上了标题的字号字重，视觉上非常明显）。
-     * 数据层其实一直是对的（按区间存），错在渲染。
-     *
-     * ✅ 现在：
-     *    · 区间覆盖整块 → 直接输出块文本（常见情况，无额外节点）
-     *    · 区间是块的一部分 → **只输出那一段**，并把区间前后的
-     *      未标注文字作为**独立的普通段落**输出
-     *
-     * ⚠️ 前后残片必须单独成段，不能塞回同一个 `<p>` ——
-     *    否则标题的字号会被应用到整段（又变回"整段变标题"）。
-     *
-     * @return {DocumentFragment|Element}
-     */
-    function makeContentEl(b, bodyIndex, refIndex, authorIndex, markTyped) {
-        /*
-          ⚠️ 文本一律从 `blockTextOf()` 取（v0.1.57）——
-             它按 `edits` → `docModel` 的顺序返回"这一块现在的文本"，
-             是唯一的事实来源。不要在这里再手写 `edits[b.line]` 分支。
-        */
-        var fullText = blockTextOf(b.line);
-
-        var spans = (typeof b.line === 'number') ? labels[b.line] : null;
-
-        /*
-          ══ ⚠️⚠️ 作者信息：一块可能有多条「按行」的子标签（v0.1.81）══
-
-          用户要求：
-            「子标签对应的是段内的行，不是整个段」
-            「如果要分段来确定作者名和作者机构的话，
-              同一个作者的信息就分开了」
-
-          ⚠️ 旧的渲染前提是"一块只有一条标注"（`spans.length === 1`）。
-             一旦同一块里的姓名行、单位行各有一条 author 标注，
-             这个前提就不成立 → 整块退化成普通正文段。
-
-          ✅ 所以作者信息单独走一条路径：
-             按换行拆成若干行，每行按覆盖它的那条标注渲染，
-             未覆盖的行按普通行渲染。
-             整个块的子标签编号（A1/A2…）只算**一次**，
-             因为它们在语义上属于同一个作者条目。
-        */
-        if (spans && spans.length > 0 && isAuthorLineSet(spans, b.line)) {
-            return makeAuthorLinesEl(b, spans, fullText, bodyIndex, authorIndex, markTyped);
-        }
-        var sp = (spans && spans.length === 1) ? spans[0] : null;
-        /*
-          ⚠️ 没有标注（或标注异常）→ 普通段落，整块输出。
-             这条路径也要走，否则无标签块会消失。
-        */
-        if (!sp || !sp.label) {
-            return makePlainPara(fullText, b);
-        }
-
-        /*
-          夹边界：编辑过的段落长度可能变了，旧标注的 end 可能越界。
-        */
-        var a = Math.max(0, Math.min(sp.start || 0, fullText.length));
-        var bb = Math.max(0, Math.min(sp.end || 0, fullText.length));
-
-        /* 空区间 → 无从标注，当普通段落处理 */
-        if (bb <= a) {
-            return makePlainPara(fullText, b);
-        }
-
-        var before = fullText.slice(0, a);
-        var body = fullText.slice(a, bb);
-        var after = fullText.slice(bb);
-
-        /*
-          ══ ⚠️⚠️ 引用标记保持**行内**（v0.1.71）══
-
-          用户要求：
-            「增加一个引用标签，比如我给类似「[12]」这种就可以加引用标签」
-
-          ⚠️ 引用标记是夹在正文句子中间的（"如文献 [12] 所示"），
-             绝不能像标题那样拆成独立段落 —— 那会把一句话劈成三段，
-             并且把行内 `[12]` 顶成一个空行。
-
-          ✅ 所以这里单独处理：
-             整块输出一个 `<p>`，被标注的那一段用 `<span>` 包起来，
-             保持行内流，再挂上 `data-cite` 供将来跳转用。
-
-          ⚠️ `data-line` 仍写在 `<p>` 上 ——
-             选中 `[12]` 时 `nodeOriginInBlock` 靠它算偏移，
-             与普通段落一致。
-        */
-        if (sp.label === 'cite') {
-            var citeP = document.createElement('p');
-            citeP.className = 'reader-para';
-            citeP.appendChild(document.createTextNode(before));
-
-            var citeEl = document.createElement('span');
-            citeEl.className = 'reader-cite';
-            citeEl.setAttribute('data-label', 'cite');
-            citeEl.textContent = body;
-            /*
-              ⚠️ 记下引用的目标文献行号。没有选定时不写这个属性，
-                 渲染时只是普通高亮文字。
-            */
-            if (typeof sp.ref === 'number') {
-                citeEl.setAttribute('data-cite', String(sp.ref));
-            }
-            citeP.appendChild(citeEl);
-
-            if (after) citeP.appendChild(document.createTextNode(after));
-
-            copyBlockAttrs(citeP, null, b);
-
-            /*
-              ⚠️ 带引用标记的段落**仍是正文段**，要编号 ——
-                 否则正文编号会在这里断档。
-            */
-            if (bodyIndex) {
-                bodyIndex.n++;
-                attachBodyMarker(citeP, bodyIndex.n);
-            }
-
-            return citeP;
-        }
-
-        /*
-          ══ ⚠️⚠️ 残片是**独立的普通正文段**（v0.1.56）══
-
-          用户要求：
-            「那就是如果同一段某一截被标注了，其他的就剩下作为文本
-              分成正文段就好了。」
-
-          ⚠️⚠️ 必须理解为什么残片也需要自己的 `data-line`：
-
-          编辑和标注都靠 `blockLinesInSelection()` → 找 `[data-line]` 元素，
-          再按 `blockElOf(line)` + `blockTextOf(line)` 取"整块原文"。
-
-          如果残片不带 `data-line`：
-            · 选中残片里的字 → `blockLinesInSelection()` 返回空 →
-              `selectionSpan()` 返回 null → 编辑表单打开但编辑区是空的。
-              这正是用户报的 bug：
-              「我选中 ashish 的时候，点击编辑，编辑区域却什么也没有」
-
-          ✅ 所以残片要像普通段落一样带 `data-line`。
-             但它的文本**不是**原始块全文，只是切出来的那一段 ——
-             所以要在 `edits`/`labels` 之外再维护一份"残片文本",
-             否则 `blockTextOf()` 会返回整块原文，区间又会错位。
-
-          ══ ✅ 现在：残片与标注段**共用同一个 `data-line`**（v0.1.57）══
-
-          因为文本的事实来源是 `blockTextOf(line)` = 这一块的**完整文本**，
-          与 DOM 被切成几段无关。所以：
-            · 三个 `<p>` 都写同一个 `data-line`；
-            · 用户选中残片里的字，偏移是相对**整块文本**算的；
-            · 编辑/标注直接作用在整块文本的区间上，永远对得上。
-        */
-
-        /* 整块被标注 → 不必拆节点。⚠️ 标注段**不是正文**，不计数。 */
-        if (!before && !after) {
-            var whole = document.createElement('p');
-            whole.className = 'reader-para is-labeled-body';
-            whole.setAttribute('data-label', sp.label);
-            copyBlockAttrs(whole, null, b);
-
-            /*
-              ══ ⚠️ 作者信息的项名要**先插入**（v0.1.74）══
-
-              ⚠️ 顺序反了的话，`textContent = body` 会先建好一个文本节点，
-                 后 `appendChild` 的项名就落在内容**后面**，
-                 而不是用户要求的"左边的项名"。
-                 所以这里先 append 项名，再 append 内容文本。
-            */
-            if (sp.label === 'author' && sp.field) {
-                whole.classList.add('is-author-body');
-
-                /*
-                  ⚠️ 姓名用正常颜色，其他作者项保持淡色（v0.1.79）——
-                     用户要求：「作者姓名不用淡色，用正常颜色，其他作者项不变。」
-                     判定逻辑放 CSS（`.is-author-name`），这里只管挂类。
-                */
-                if (sp.field === 'name') {
-                    whole.classList.add('is-author-name');
-                }
-
-                var fieldEl = document.createElement('span');
-                fieldEl.className = 'reader-author-field';
-                fieldEl.textContent = t('reader.field.' + sp.field);
-                whole.appendChild(fieldEl);
-
-                var valEl = document.createElement('span');
-                valEl.className = 'reader-author-value';
-                valEl.textContent = body;
-                whole.appendChild(valEl);
-            } else if (sp.label === 'author') {
-                /*
-                  ⚠️ 没有项名时**也要包一层** `.reader-author-value`（v0.1.75）——
-                     直接放文本节点的话，它是个匿名 flex 项，
-                     `flex: 1 1 auto` 的伸展规则对它不生效，
-                     于是内容不会贴右（用户报的"参差不齐"）。
-                     包成 span 后与有项名的情形走同一套布局。
-                */
-                whole.classList.add('is-author-body');
-
-                var valOnly = document.createElement('span');
-                valOnly.className = 'reader-author-value';
-                valOnly.textContent = body;
-                whole.appendChild(valOnly);
-            } else {
-                whole.textContent = body;
-            }
-
-            /*
-              ══ ⚠️⚠️ 文献 / 作者区域带前缀编号（v0.1.72）══
-
-              用户要求：
-                「为了区别正文段编号，参考文献区域段编号加个 R 前缀，
-                  然后作者加个 A 前缀，前缀后面是数字编号。」
-
-              ✅ 用同一个 `attachBodyMarker` ——
-                 编号样式、竖排、竖线、首行对齐全部复用，
-                 不另起一套视觉，只是编号字符串变成 `R1` / `A1`。
-
-              ⚠️ 它们**不是正文段**：不参与 `bodyIndex` 递增，
-                 否则正文编号会出现断档。
-                 前缀与计数器都由 `markTyped()` 统一处理。
-            */
-            if (markTyped) markTyped(whole, sp.label);
-
-            return whole;
-        }
-
-        var frag = document.createDocumentFragment();
-
-        /*
-          ⚠️ 残片是**正文段** → 要计数并挂编号（v0.1.57）。
-             用户要求：「不包括标注了不是正文的段，剩下的正文段都标」
-             所以：标注段不计数，前后残片计数。
-        */
-        if (before) {
-            var pBefore = makePlainPara(before, b);
-            if (bodyIndex) {
-                bodyIndex.n++;
-                attachBodyMarker(pBefore, bodyIndex.n);
-            }
-            frag.appendChild(pBefore);
-        }
-
-        var marked = document.createElement('p');
-        marked.className = 'reader-para is-labeled-body';
-        marked.setAttribute('data-label', sp.label);
-        marked.textContent = body;
-        copyBlockAttrs(marked, null, b);
-        frag.appendChild(marked);
-
-        if (after) {
-            var pAfter = makePlainPara(after, b);
-            if (bodyIndex) {
-                bodyIndex.n++;
-                attachBodyMarker(pAfter, bodyIndex.n);
-            }
-            frag.appendChild(pAfter);
-        }
-
-        return frag;
-    }
-
-    /** 造一个普通段落（不带标注） */
-    /**
-     * 算出块应该带的模板角色 class（v0.2.6）。空串 = 不需要加。
-     *
-     * ══ ⚠️⚠️ 为什么必须抽成函数 ══
-     *
-     * 渲染一个块有**三条**路径，各自造 `<p>`：
-     *
-     *   ① `makeBlockEl`       —— 无标签的普通块（renderFlat 的 run.sig 为空）
-     *   ② `makePlainPara`     —— 有标签但标注异常/空区间时的兜底
-     *   ③ `makeContentEl`     —— 有标签的正常路径
-     *
-     * 一开始只在 ① 里加了 role class，结果模板给 `title`/`author`/
-     * `abstract`/`heading` 这些**需要标签段**的角色时，它们全走 ③，
-     * 一个 class 都没加上 —— 表现为"数据上 role 对了，界面完全没变"。
-     *
-     * ✅ 所以统一在这里算，三个地方都调它。新增渲染路径时也必须调。
-     *
-     * ⚠️ `body` / `caption` / `formula` 返回空串：它们的外观就是普通段落，
-     *    加个 class 只是 DOM 噪音。（`caption` / `formula` 目前也按普通段落
-     *    渲染 —— 要区分外观请改 CSS，别在这里加语义分支。）
-     *
-     * @param {Object} b 块
-     * @return {string} 形如 `reader-role-heading2`，或空串
-     */
-    function roleClassOf(b) {
-        if (!b || !b.role) return '';
-        if (b.role === 'body' || b.role === 'caption' ||
-            b.role === 'formula' || b.role === 'drop') {
-            return '';
-        }
-        if (b.role === 'heading') {
-            var lv = b.roleLevel | 0;
-            if (lv < 1) lv = 1;
-            if (lv > 3) lv = 3;
-            return 'reader-role-heading' + lv;
-        }
-        return 'reader-role-' + b.role;
-    }
-
-    /**
-     * md 结构 → 语义 class（v0.2.21）。
-     *
-     * ══ ⚠️⚠️ 与 `roleClassOf` 的分工 ══
-     *
-     *   `roleClassOf`  = **模板**指定的角色（用户导入了排版模板）
-     *   本函数         = **md 结构**本身携带的类型（`#` / `- ` / `1. `）
-     *
-     * 两者来源不同，都要加。模板优先（它更具体），但 md 的类型
-     * 不能因为"没有模板"就消失 —— 那等于 md 只存不用。
-     *
-     * ══ ⚠️ 只加"语义标识"，不改字号 ══
-     *
-     * 用户 v0.1.39 裁决：「不允许有任何模板，我看到的应该是无等级的全部文本」。
-     * 那条说的是**视觉上不许有等级差异**（标题不该比正文大）。
-     * 所以这里给的 class 只用于：
-     *   · 列表块画出 `•` / `1.` 记号（这是 md 的内容，不是装饰）
-     *   · 标注、导出、目录识别需要知道"这是标题/作者/文献"
-     * **字号一律不变** —— CSS 里这些 class 不设 font-size。
-     *
-     * @param {Object} b 块（含 kind / level / listMarker）
-     * @return {string} 空格分隔的 class 名，可能为空串
-     */
-    function mdClassOf(b) {
-        if (!b) return '';
-        var out = [];
-
-        /* ① 列表记号：md 原生 `- ` / `1. ` —— 必须画出来，否则不是列表 */
-        if (b.listMarker) {
-            out.push(String(b.listMarker).indexOf('-') >= 0 ||
-                     String(b.listMarker).indexOf('*') >= 0
-                ? 'reader-md-bullet'
-                : 'reader-md-ordered');
-        }
-
-        /* ② md 里的标题层级（`#`..`####`）*/
-        if (b.kind === 'heading') {
-            var lv = Number(b.level);
-            if (isNaN(lv)) lv = 1;
-            /* level 0 = 文章标题（md 的一个 `#`）*/
-            if (lv === 0) out.push('reader-md-title');
-            else if (lv <= 1) out.push('reader-md-heading1');
-            else if (lv === 2) out.push('reader-md-heading2');
-            else out.push('reader-md-heading3');
-        }
-
-        return out.join(' ');
-    }
-
-    function makePlainPara(text, b) {
-        var p = document.createElement('p');
-        p.className = 'reader-para';
-        var rc = roleClassOf(b);
-        if (rc) p.classList.add(rc);
-        /* ⚠️ md 结构标识也要加（v0.2.21）—— 与 role 并存，见 mdClassOf */
-        var mc = mdClassOf(b);
-        if (mc) {
-            var mcs = mc.split(' ');
-            for (var mi = 0; mi < mcs.length; mi++) {
-                if (mcs[mi]) p.classList.add(mcs[mi]);
-            }
-        }
-        p.textContent = text;
-        if (b) {
-            if (b.page) p.setAttribute('data-page', String(b.page));
-            if (typeof b.line === 'number' && b.line >= 0) {
-                p.setAttribute('data-line', String(b.line));
-            }
-        }
-        return p;
-    }
-
-    /**
-     * 造一个块的 DOM 元素。
-     *
-     * ══ ⚠️⚠️ v0.1.39：**所有块一律是 `<p>`，没有等级** ══
-     *
-     * 用户原话：「不允许有任何模板……我看到的应该是无等级的全部文本才对」
-     *
-     * 所以这里不再看 `b.kind` / `b.level` / `b.textType`：
-     *   · 原生判成 heading 的块，**也渲染成普通段落**
-     *   · 不再产出 `<h2>/<h3>/<h4>`（也就没有字号差异）
-     *   · 公式块不再走等宽+底纹（那是"我们认出了这是公式"，
-     *     属于模板性判断）
-     *   · 不再加 `reader-text-<type>` 这类按类型命名的 class
-     *
-     * ⚠️ 但**保留 `data-page` 与 `data-line`** —— 它们是数据，
-     *    不是视觉模板：目录跳转靠 `data-line` 定位，
-     *    `data-page` 供将来"跳到原页"用。都不影响显示。
-     *
-     * ⚠️ **不要**在这个函数里加任何按内容分支的样式 ——
-     *    一旦这里出现 `if (kind === 'heading')` 之类的判断，
-     *    "模板"就又回来了。要改样式请在 CSS 里改 `.reader-para`。
-     *
-     * @param {Object} b 块 [{text, page, line}]
-     * @return {Element|null}
-     */
-    function makeBlockEl(b) {
-        if (!b || !b.text) return null;
-
-        var el = document.createElement('p');
-        el.className = 'reader-para';
-
-        /*
-          ══ 模板角色对应的视觉样式（v0.2.6）══
-
-          ⚠️ 统一走 `roleClassOf()` —— 渲染一个块有三条路径，
-             必须三处都加，否则"数据对了界面没变"。
-             详见 roleClassOf 的注释。
-        */
-        var rc = roleClassOf(b);
-        if (rc) el.classList.add(rc);
-
-        /*
-          ══ ⚠️⚠️ md 结构标识（v0.2.21）══
-
-          `#` → reader-md-title / heading1..3
-          `- ` → reader-md-bullet
-          `1. ` → reader-md-ordered
-
-          ⚠️ 这些 class **不改字号**（遵守 v0.1.39「无等级」裁决），
-             只让列表记号画得出来、让标注/导出知道块的语义类型。
-        */
-        var mc = mdClassOf(b);
-        if (mc) {
-            var mcs = mc.split(' ');
-            for (var mi = 0; mi < mcs.length; mi++) {
-                if (mcs[mi]) el.classList.add(mcs[mi]);
-            }
-            /*
-              ⚠️ 有序列表的序号（v0.2.21）。
-
-              md 里写的是绝对编号（`1.` `2.` `3.`…），CSS 的
-              `counter()` 会在每个新列表重新开始 —— 而文献往往
-              跨多个块，那样就会全变成 1。所以把**真实编号**
-              写进 `data-md-num`，CSS 用 `attr()` 读它。
-
-              ⚠️ `b.mdNum` 由 renderBlocks 预先算好（见那里）——
-                 这里只读取，不自己数，否则每条渲染路径都要重算一遍。
-            */
-            if (el.classList.contains('reader-md-ordered') &&
-                typeof b.mdNum === 'number') {
-                el.setAttribute('data-md-num', b.mdNum + '.');
-            }
-        }
-
-        /*
-          ══ 应用编辑结果（v0.1.45）══
-
-          用户要求：「一旦确认，编辑区域内编辑后的内容将代替原内容。
-                     而此举没有改变 pdf 源文件」
-
-          ⚠️ 编辑按 `line` 存放，这里按 `b.line` 查 ——
-             与标注用同一套键，所以编辑过的段落标注不会错位。
-          ⚠️ 用 `textContent` 而不是 innerHTML：编辑区里用户可能输入
-             `<` `>` `&`，用 innerHTML 会破坏结构。
-        */
-        var edited = null;
-        if (typeof b.line === 'number' && edits[b.line] != null) {
-            edited = edits[b.line];
-        }
-        el.textContent = (edited != null) ? edited : b.text;
-
-        /*
-          ══ 标注不在这里处理（v0.1.50）══
-
-          ⚠️⚠️ 这是 v0.1.48/49 犯的错：让 makeBlockEl **自己**决定
-             要不要加标签段。但它只看得到当前这一个块，看不到邻居，
-             所以跨块标注必然渲染成「一段一个前置文本」——
-             用户实测报的就是这个问题。
-
-          ✅ 现在标注的分组与标签段输出全部上移到 renderFlat
-             （见 labelSignatureOf / appendLabeledRun）。
-             本函数只负责**无标签**的普通段落。
-        */
-
-        if (b.page) el.setAttribute('data-page', String(b.page));
-        /*
-          ⚠️ `data-line` 是**目录跳转的锚点**（见 jumpTo）。
-             原生给的是块序号（`Block.line`），与目录条目的 `line`
-             是同一套编号 —— 所以这里必须写，否则点目录没反应。
-
-          ⚠️ line 可能为 0（第一个块），不能用 `if (b.line)` 判 ——
-             那会把第 0 块漏掉，而它恰好是论文题目。
-        */
-        if (typeof b.line === 'number' && b.line >= 0) {
-            el.setAttribute('data-line', String(b.line));
-        }
-        return el;
-    }
-
-    /**
-     * 造一个「带标注」的块：**标签段 + 内容段**（v0.1.48）。
-     *
-     * ══ 用户要求（原话）══
-     *
-     *   「我说的前置文本是新开一段，这段前面是前置文本，
-     *     这段的所有内容就是前置文本所包含的内容。
-     *     类似于先给个"文章标题"这样的字样，提示下面是文章标题。
-     *     然后下面单独成一段是选中的文章标题。」
-     *
-     * 效果（以"文章标题"标在 "Attention Is All You Need" 上为例）：
-     *
-     *   ┌──────────────────────────────┐
-     *   │ 文章标题                       │  ← 淡色小字，单独一段
-     *   │ Attention Is All You Need     │  ← 被标注的内容，单独一段
-     *   └──────────────────────────────┘
-     *
-     * ⚠️⚠️ v0.1.47 做的是**行内**混排（「文章标题 Attention Is…」挤在
-     *     同一行），用户否掉了：标签应该独占一行，作为下面内容的说明。
-     *
-     * ══ 实现 ══
-     *
-     * 返回一个 DocumentFragment，含：
-     *   ① `<p class="reader-label-head">标签名</p>`
-     *   ② 一个或多个 `<p class="reader-para">内容</p>`
-     *
-     * ⚠️ 如果有多个不连续的标注区间，会产出**多组** ①+②。
-     *    这是刻意的：每个标签管辖自己那一段内容，视觉上不会混淆。
-     *
-     * ⚠️ 未标注的部分仍按普通段落渲染，保持原样（v0.1.39 的"无等级"）。
-     */
-    function makeLabeledBlock(b, baseEl, spans, bodyIndex, refIndex, authorIndex, markTyped) {
-        var frag = document.createDocumentFragment();
-
-        /*
-          ⚠️ 文本从**块数据**取，不从传入的 DOM 元素取（v0.1.50）——
-             调用方（appendLabeledRun）传的是 `null`（它没有现成元素），
-             旧代码读 `baseEl.textContent` 会抛 TypeError。
-        */
-        var text = '';
-        if (typeof b.line === 'number' && edits[b.line] != null) {
-            text = edits[b.line];
-        } else {
-            text = b.text || '';
-        }
-
-        /*
-          规范化区间：排序 + 夹边界 + 丢掉空区间。
-          ⚠️ 必须复制一份再排序 —— 直接排序会改到存储里的数组。
-          ⚠️ 必须夹边界：段落被编辑过之后长度可能变了，
-             旧标注的 end 可能超出当前文本长度。
-        */
-        var list = [];
-        for (var i = 0; i < spans.length; i++) {
-            var sp = spans[i];
-            if (!sp || typeof sp.start !== 'number' ||
-                typeof sp.end !== 'number' || !sp.label) {
-                continue;
-            }
-            var a = Math.max(0, Math.min(sp.start, text.length));
-            var bb = Math.max(0, Math.min(sp.end, text.length));
-            if (bb <= a) continue;
-            list.push({ start: a, end: bb, label: sp.label });
-        }
-
-        if (!list.length) return null;
-
-        list.sort(function (p, q) { return p.start - q.start; });
-
-        var pos = 0;
-
-        for (var j = 0; j < list.length; j++) {
-            var item = list[j];
-
-            /*
-              ⚠️ 与前一个区间重叠时跳过重叠部分 ——
-                 否则同一段文字会渲染两次。
-            */
-            var s = Math.max(item.start, pos);
-            if (item.end <= s) continue;
-
-            /* ① 区间之前的**未标注**文字：普通段落，原样保留 */
-            if (s > pos) {
-                var plain = document.createElement('p');
-                plain.className = 'reader-para';
-                plain.textContent = text.slice(pos, s);
-                copyBlockAttrs(plain, null, b);
-                /*
-                  ⚠️ 残片是正文段 → 计数（v0.1.57）。
-                     标注段本身不计数（它不是正文）。
-                */
-                if (bodyIndex) {
-                    bodyIndex.n++;
-                    attachBodyMarker(plain, bodyIndex.n);
-                }
-                frag.appendChild(plain);
-            }
-
-            /* ② 标签段：独占一行，淡色小字 */
-            var head = document.createElement('p');
-            head.className = 'reader-label-head';
-            head.setAttribute('data-label', item.label);
-            head.textContent = t('reader.label.' + item.label);
-
-            /*
-              ⚠️ 标签段**不带** `data-line` —— 它不是正文块，
-                 带上会让目录跳转/块查找把它当成真正的段落，
-                 导致"跳转跳到标签上"、块数量统计错误。
-            */
-
-            frag.appendChild(head);
-
-            /* ③ 内容段：被标注的那几个字 */
-            var body = document.createElement('p');
-            body.className = 'reader-para is-labeled-body';
-            body.setAttribute('data-label', item.label);
-            body.textContent = text.slice(s, item.end);
-
-            /*
-              ⚠️ 每组都带 `data-line`（v0.1.48）——
-                 同一行被拆成多组时，如果只有第一组带，
-                 `blockElOf` 找不到后续组里的文字，用户在那上面
-                 编辑/标注时会取不到块。
-                 `blockElOf` 只返回第一个匹配，行为仍然是确定的。
-            */
-            copyBlockAttrs(body, baseEl, b);
-
-            frag.appendChild(body);
-            pos = item.end;
-        }
-
-        /* ④ 末尾剩余未标注的文字 */
-        if (pos < text.length) {
-            var tail = document.createElement('p');
-            tail.className = 'reader-para';
-            tail.textContent = text.slice(pos);
-            frag.appendChild(tail);
-        }
-
-        return frag;
-    }
 
     /**
      * 把 `data-page` / `data-line` 等数据属性设到新元素上。

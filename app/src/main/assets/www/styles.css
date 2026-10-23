@@ -1868,23 +1868,102 @@ body {
 }
 
 /* =====================================================================
-   md 结构标识（v0.2.21）
+   md 结构渲染（v0.2.22）
 
-   ══ ⚠️⚠️ 这些 class **不许改字号** ══
+   ══ ⚠️⚠️ 渲染**完全**按 md 格式 ══
 
-   用户 v0.1.39 裁决：
-     「不允许有任何模板，我导入一个新的 pdf 进来，
-       我看到的应该是无等级的全部文本才对」
+   用户裁决：
+     「我觉得完成了md作为基础数据储存结构之后，渲染就很简单了吧」
+     「直接清理，完全按照md格式来渲染」
 
-   那条裁决针对的是**视觉等级**（标题比正文大）。所以：
-     · `reader-md-title` / `heading1..3` —— **只用来标识**，
-       不加 font-size、不加 margin、不换字体。
-       标注、导出、目录识别需要知道块的语义，靠它们。
-     · `reader-md-bullet` / `reader-md-ordered` —— **必须**画记号，
-       因为 `- ` / `1. ` 是 md 的**内容**，不是装饰：
-       不画出来，用户就看不到"这是一条作者项/文献"，
-       等于 md 结构在界面上不存在。
+   ✅ md → DOM 是一一对应的，不再有模糊地带：
+
+       #     → <h1>          文章标题
+       ##    → <h2>          一级标题
+       ###   → <h3>          二级标题
+       ####  → <h4>          三级标题
+       - x   → <ul><li>      作者项
+       1. x  → <ol><li>      文献
+       (空行) → <p>          正文段
+
+   ══ ⚠️ 这里**必须**设字号了（v0.2.22 变更）══
+
+   v0.1.39 曾裁决「不允许有任何模板，我看到的应该是无等级的全部文本」。
+   那条的背景是：当时标题层级靠**推断**（位置启发式），
+   推错了就变成"莫名其妙的大小差异"，所以干脆全拉平。
+
+   现在层级来自 md 的 `#` 个数 —— 这是**用户标注的结果**，
+   不是推断。层级是数据，就该显示出来，否则用户标了 `##`
+   却在界面上完全看不出来，等于标注没生效。
+
+   ⚠️ 但幅度保持克制：`h1` 到 `h4` 之间差异不大，
+      不用浏览器默认那种夸张的 2em/1.5em。阅读场景下
+      层级要能分辨，但不能打断阅读节奏。
    ===================================================================== */
+
+/* 标题：统一基线 */
+.reader-heading {
+    font-weight: 700;
+    line-height: 1.35;
+    margin: 1.5em 0 0.6em;
+    letter-spacing: 0.01em;
+}
+
+.reader-h1 {
+    font-size: 1.5em;
+    margin-top: 0.4em;
+    margin-bottom: 0.9em;
+    letter-spacing: 0.005em;
+}
+
+.reader-h2 {
+    font-size: 1.22em;
+    padding-bottom: 0.3em;
+    /* 一级标题带一条细分隔线 —— 章节分界的视觉锚点 */
+    border-bottom: 1px solid var(--outline);
+}
+
+.reader-h3 {
+    font-size: 1.08em;
+}
+
+.reader-h4 {
+    font-size: 1em;
+    opacity: 0.92;
+}
+
+/* 列表容器：去掉浏览器默认的大缩进和外边距 */
+.reader-list {
+    margin: 0.5em 0 0.9em;
+    padding-left: 1.6em;
+}
+
+.reader-list-ul {
+    list-style: disc;
+}
+
+.reader-list-ol {
+    list-style: decimal;
+}
+
+/* 列表项 */
+.reader-li {
+    margin: 0.25em 0;
+    line-height: 1.55;
+    /* ⚠️ 列表项内的长文本要能换行，不能撑破容器 */
+    overflow-wrap: anywhere;
+}
+
+.reader-li-bullet::marker {
+    opacity: 0.55;
+}
+
+.reader-li-ordered::marker {
+    opacity: 0.6;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 以下为旧规则，保留以兼容残留引用 ---------- */
 
 /* 无序列表项（作者区）：行首一个圆点，正文缩进对齐 */
 .reader-md-bullet {

@@ -248,44 +248,31 @@
         /*
           ══ ⚠️⚠️ `level === 0` 是"文章标题"的**专用信号**（v0.2.21）══
 
-          用户裁决：
-            「标注为文章标题的，应为md的一级标题；文章中的Heading
-              分别对应md的二三四级标题。」
-
           title 标注由 reader.js 翻译成 `kind='heading', level=0`，
-          这里见到 0 就出 `#`，与位置无关 —— 用户标了文章标题，
-          它就该是 `#`，哪怕它不在全文第一块。
-
-          ⚠️ 不能再用 `isFirst` 兜底出 `#` 之后还让 level 参与判断：
-             旧代码 `if (isFirst) return '#'` 会让**首块里的章标题**
-             也被当成文章标题，而首块往往同时含标题和正文。
+          这里见到 0 就出 `#`，与位置无关。
         */
         if (lv === 0) return '#';
 
-        if (isFirst) {
-            /*
-              ══ ⚠️⚠️ 首块而且是标题 → 文章标题 `#`（v0.2.21 修）══
+        /*
+          ══ ⚠️⚠️ `level` 就是 `#` 的个数（v0.2.22 修正）══
 
-              用户裁决：
-                「标注为文章标题的，应为md的一级标题；文章中的Heading
-                  分别对应md的二三四级标题。」
+          `MdDoc.parse` 里 `level = hashes.length`，所以：
+              1 → `#`、2 → `##`、3 → `###`、4 → `####`
 
-              这里要处理的是**没有 title 标注、靠提取层判断**的情形：
-              PDF 的首块被识别成 heading（`level` 可能是 1），
-              按"章节标题"规则会算成 `##`，但它是**文章标题**，
-              必须是一个 `#`。
+          ⚠️ **不要**再用 `isFirst` 把它改成 `#` —— 那会把
+             "首块是 `##` 一级标题"这种情况错误地降级成文章标题，
+             导致**渲染是 `<h2>`、导出是 `#`** 的不一致。
 
-              ⚠️ 判据只用 `isFirst && kind === 'heading'`：
-                 · 首块不可能是章节标题（章节标题前面一定有文章标题）
-                 · 只有一块文档时，它是标题也是文章标题，`#` 正确
-              ⚠️ 这和下面 `level == null` 的分支不重复：
-                 那个是"提取层没给 level"，这个是"给了也照样要 `#`"。
-            */
-            return '#';
+          ✅ `isFirst` 现在只在**完全没有 level**（老数据）时才兜底。
+        */
+        if (lv >= 1 && lv <= 4) {
+            var s = '';
+            for (var i = 0; i < lv; i++) s += '#';
+            return s;
         }
-        if (lv <= 1) return '##';
-        if (lv === 2) return '###';
-        return '####';
+
+        /* 老数据：只有 isFirst 信息，按"首块=文章标题"兜底 */
+        return isFirst ? '#' : '##';
     }
 
     // ------------------------------------------------------------------
@@ -344,6 +331,36 @@
             var kind = b.kind || 'body';
             var isFirst = !seenBlock;
             seenBlock = true;
+
+            /*
+              ══ ⚠️⚠️ md 原有的列表记号：**原样输出**（v0.2.22）══
+
+              用户裁决：
+                「直接清理，完全按照md格式来渲染」
+
+              `listMarker` 是从 md 解析出来的**原文记号**（`- ` / `1. `）。
+              这份块存在，说明 md 里本来就是列表项 —— 必须原样写回，
+              不能重新判断"它是不是文献/作者"。
+
+              ⚠️ 之前只看 `kind === 'reference'`，而 `kind` 来源于
+                 用户标注。于是"从 md 读进来、用户没动过"的文献列表，
+                 再导出时全部退化成普通段落 —— **结构被破坏**。
+                 这是 md 作为数据结构最不该犯的错。
+
+              ⚠️ 无序列表（作者）走 `authorBuf` 聚合，因为它可能有
+                 子标签需要拼前缀；有序列表直接输出（序号由计数器给）。
+            */
+            var mdMarker = String(b.listMarker || '');
+            if (mdMarker) {
+                var isMdBullet = mdMarker.indexOf('-') >= 0 || mdMarker.indexOf('*') >= 0;
+                if (isMdBullet) {
+                    authorBuf.push({ text: text.replace(/\s*\n\s*/g, ' '), field: null });
+                    continue;
+                }
+                refCounter += 1;
+                out.push(refCounter + '. ' + text.replace(/\s*\n\s*/g, ' '));
+                continue;
+            }
 
             /* ⚠️ 非 author 块出现 → 上一段作者区结束，必须先刷出去 */
             if (kind !== 'author') flushAuthor();
