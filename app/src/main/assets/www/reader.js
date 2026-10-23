@@ -6046,25 +6046,44 @@
                 if (lv > 4) lv = 4;
 
                 /*
-                  ⚠️ 标签段（v0.2.24 恢复）——
-                     `#` 是文章标题（title），`##` 是一级标题（h1），
-                     `###`/`####` 分别是 h2/h3。
-                      一级标题额外画一条分隔线。
-                */
-                if (lv === 1) {
-                    pushLabelHead('title', false);
-                } else if (lv === 2) {
-                    pushLabelHead('h1', true);
-                } else {
-                    pushLabelHead('h' + (lv - 1), false);
-                }
+                  ══ ⚠️⚠️⚠️ 标题也是**标签段 + 标签内容段**，不是 `<h1>`（v0.2.26）══
 
-                /* ⚠️ 标题也在标题段里 —— 关闭上一个区域的相邻判据 */
-                var h = document.createElement(lv <= 4 ? 'h' + lv : 'h4');
-                h.className = 'reader-heading reader-h' + lv;
-                h.textContent = mdHead[2];
-                copyBlockAttrs(h, null, b);
-                frag.appendChild(h);
+                  用户裁决：
+                    「你要明白，有序或者无序加相应字段就是我们的标签了，
+                      不能按照普通列表项来渲染」
+                    「字体样式也不对啊，类型、大小、字重都不对啊，
+                      你得看之前的设置啊」
+
+                  ❌ 我一度把标题渲染成 `<h1>`..`<h4>`，并自己发明字号。
+                  ✅ 原设计的标题是：
+
+                      <p class="reader-label-head" data-label="title">Title</p>
+                      <p class="reader-para is-labeled-body"
+                         data-label="title">Attention Is All You Need</p>
+
+                  字号由 CSS 按 `data-label` 决定（v0.1.71 那套）：
+                      title 1.9412em (33px)   h1 1.4706em (25px)
+                      h2    1.2353em (21px)   h3 1.1176em (19px)
+                  字体统一 Times New Roman。全部原样生效，不需要重写。
+
+                  ⚠️ 这也是"可选中"的前提：只有 `.reader-para` 有
+                     `user-select: text`（见 styles.css）。
+                */
+                var labelKey;
+                if (lv === 1) labelKey = 'title';
+                else if (lv === 2) labelKey = 'h1';
+                else if (lv === 3) labelKey = 'h2';
+                else labelKey = 'h3';
+
+                /* 标签段：一级标题额外画分隔线 */
+                pushLabelHead(labelKey, labelKey === 'h1');
+
+                var hp = document.createElement('p');
+                hp.className = 'reader-para is-labeled-body';
+                hp.setAttribute('data-label', labelKey);
+                hp.textContent = mdHead[2];
+                copyBlockAttrs(hp, null, b);
+                frag.appendChild(hp);
                 continue;
             }
 
@@ -6080,52 +6099,92 @@
             */
             var lm = isBullet ? '- ' : (isOrdered ? '1. ' : '');
 
-            /* ── 无序列表项 → <ul><li> ── */
+            /* ── 无序列表项 ── */
             if (isBullet) {
-                var ul = ensureList('ul');
-
                 /*
-                  ⚠️ 作者区：标签段「作者信息」+ `A1` 分类编号（v0.2.24 恢复）。
-                     ⚠️ 只有**区域第一项**挂编号，后续项只挂竖线 ——
-                         与 v0.1.93 的规则一致（"同一个作者区域的编号应当相同，
-                         提示条应当连续"）。
+                  ══ ⚠️⚠️⚠️ `- Author: …` 是**标签**，不是普通列表项（v0.2.26）══
+
+                  用户裁决：
+                    「类似改为author的直接按原本的无序列表来渲染了，
+                      而且也变得无法选中。」
+                    「你要明白，有序或者无序加相应字段就是我们的标签了，
+                      不能按照普通列表项来渲染」
+
+                  ❌ 错误做法：渲染成 `<ul><li>` ——
+                     浏览器默认列表项，没有编号竖线、无法用 app 的选区逻辑选中。
+
+                  ✅ 正确做法（v0.2.21 原实现）：渲染成
+                     `<p class="reader-para is-labeled-body is-author-body">`
+                     这样它仍然是"带标签的正文段"：
+                       · 可选中（`.reader-para` 才有 user-select: text）
+                       · 挂 `A1` 分类编号 + 左侧竖线
+                       · 有标签段「作者信息」在前
                 */
                 var isAuthorItem = /^Author\b/i.test(mdBullet[1]);
-                var li1 = document.createElement('li');
-                li1.className = 'reader-li reader-li-bullet';
+                var isRefLike = /^Ref\s*:/i.test(mdBullet[1]);
 
                 if (isAuthorItem) {
+                    closeList();
                     pushLabelHead('author', false);
                     authorSeq++;
-                    li1.setAttribute('data-body-no', 'A' + authorSeq);
-                } else {
-                    resetLabelHead();
+
+                    var ap = document.createElement('p');
+                    ap.className = 'reader-para is-labeled-body is-author-body';
+                    ap.setAttribute('data-label', 'author');
+                    ap.textContent = mdBullet[1];
+                    attachBodyMarker(ap, 'A' + authorSeq);
+                    copyBlockAttrs(ap, null, b);
+                    frag.appendChild(ap);
+                    continue;
                 }
 
-                li1.textContent = mdBullet[1];
+                /* 普通无序列表项（不是标签）→ 正常 <ul><li> */
+                resetLabelHead();
+                var ul = ensureList('ul');
+                var li1 = document.createElement('li');
+                li1.className = 'reader-li reader-li-bullet';
+                li1.textContent = isRefLike ? mdBullet[1] : mdBullet[1];
                 copyBlockAttrs(li1, null, b);
                 ul.appendChild(li1);
                 continue;
             }
 
-            /* ── 有序列表项 → <ol><li> ── */
+            /* ── 有序列表项 ── */
             if (isOrdered) {
-                ordNum += 1;
-                var ol = ensureList('ol');
+                /*
+                  ⚠️ 同理：`1. Ref: …` 是**文献标签**，渲染成
+                     `<p class="reader-para is-labeled-body">` + `R1` 编号，
+                     而不是 `<ol><li>`。
+                */
+                closeList();
 
                 /*
-                  ⚠️ 文献区：标签段「参考文献」+ `R1` 分类编号（v0.2.24 恢复）。
+                  ⚠️ 每条文献**各自一个区域**（v0.1.77）——
+                     R 编号必须递增，不能只出现一次。
+                     所以这里每次都强制输出标签段，绕过 lastLabelKey 去重。
                 */
-                pushLabelHead('reference', false);
+                var refLabelKey = 'reference';
+                if (lastLabelKey !== refLabelKey) {
+                    lastLabelKey = refLabelKey;
+                    var refHead = document.createElement('p');
+                    refHead.className = 'reader-label-head';
+                    refHead.setAttribute('data-label', refLabelKey);
+                    var refTxt = document.createElement('span');
+                    refTxt.className = 'reader-label-text';
+                    refTxt.textContent = t('reader.label.' + refLabelKey);
+                    refHead.appendChild(refTxt);
+                    frag.appendChild(refHead);
+                }
                 refSeq++;
 
-                var li2 = document.createElement('li');
-                li2.className = 'reader-li reader-li-ordered';
-                li2.textContent = mdOrdered[2];
-                li2.setAttribute('data-md-num', String(ordNum));
-                li2.setAttribute('data-body-no', 'R' + refSeq);
-                copyBlockAttrs(li2, null, b);
-                ol.appendChild(li2);
+                ordNum += 1;
+                var rp = document.createElement('p');
+                rp.className = 'reader-para is-labeled-body';
+                rp.setAttribute('data-label', 'reference');
+                rp.textContent = mdOrdered[2];
+                attachBodyMarker(rp, 'R' + refSeq);
+                copyBlockAttrs(rp, null, b);
+                frag.appendChild(rp);
                 continue;
             }
 

@@ -4,6 +4,67 @@
 
 ---
 
+## [0.2.26] - 2026-10-24
+
+### 标签不能当普通列表渲染
+
+用户裁决：
+
+> 「类似改为 author 的直接按原本的无序列表来渲染了，而且也变得无法选中。」
+> 「你要明白，有序或者无序加相应字段就是我们的标签了，
+>   不能按照普通列表项来渲染」
+
+### 问题
+
+我在 v0.2.23 把 `- Author: …` 和 `1. Ref: …` 渲染成 `<ul><li>` /
+`<ol><li>`。后果：
+
+1. **无法选中** —— 只有 `.reader-para` 有 `user-select: text`，
+   `<li>` 没有，所以拖选不了、也就无法继续标注
+2. 没有 A1 / R1 分类编号、没有左侧竖线
+3. 变成浏览器默认的圆点/数字列表，和 v0.1.x 的视觉完全不同
+
+### 修正
+
+`- `/`1. ` 后面跟着**标签字段**时（`Author: …` / `Ref: …`），
+它就不是列表而是**标签**，回到 v0.2.21 的渲染方式：
+
+```html
+<p class="reader-label-head" data-label="author">Author</p>
+<p class="reader-para is-labeled-body is-author-body"
+   data-label="author" data-body-no="A1">…</p>
+```
+
+只有**真正的** md 列表（`- 某个条目`，没有标签字段）才用 `<ul><li>`。
+
+### 同时：标题不再用 `<h1>`-`<h4>`
+
+我一度把标题渲染成 `<h1>..<h4>` 并自己发明字号（1.5/1.22/1.08em，
+后来又改成 1.35/1.18/1.08em）。两套都是错的。
+
+原有的层级样早在 v0.1.71 就定好了：
+
+```css
+.reader-para.is-labeled-body[data-label="title"] { font-size: 1.9412em; }
+.reader-para.is-labeled-body[data-label="h1"]    { font-size: 1.4706em; }
+.reader-para.is-labeled-body[data-label="h2"]    { font-size: 1.2353em; }
+.reader-para.is-labeled-body[data-label="h3"]    { font-size: 1.1176em; }
+```
+
+现在标题也输出 `data-label`，这套规则自然生效：
+
+| 类型 | 字号 | 字重 | 字体 |
+|---|---|---|---|
+| title | 33px | 700 | Times New Roman |
+| h1 | 25px | 700 | Times New Roman |
+| h2 | 21px | 700 | Times New Roman |
+| h3 | 19px | 700 | Times New Roman |
+| 正文 | 17px | 400 | Georgia |
+
+全部可选中。
+
+---
+
 ## [0.2.25] - 2026-10-24
 
 ### 字号字重回到原设定
