@@ -245,23 +245,23 @@ object MdDoc {
                 listMarker = "- "
                 body = bm.groupValues[1].trim()
                 /*
-                  ══ ⚠️⚠️ 还原 `- Author Name: 文本` 的子标签（v0.2.22）══
+                  ══ ⚠️⚠️ 还原作者条目的前缀（v0.2.23）══
 
-                  写入方向（见 www/md.js 的 authorNested）：
-                    未划分子标签 → `- Google Brain`
-                    划了子标签   → `- Author Affiliation: Google Brain`
+                  写入方向（见 www/md.js 的 authorNested）有两种形态：
 
-                  ✅ 读回来时必须认出前缀，否则子标签信息只存在文本里，
-                     渲染层不知道"这一条是单位"，标注 UI 也显示不出当前值。
+                    · 没标子标签 → `- Author: ashish vaswani google brain`
+                    · 标了子标签 → `- Author Name: ashish vaswani`
 
-                  做法：匹配「`Author <字段名>: `」前缀，命中则
-                    · 把 `body` 改成冒号后的内容
-                    · 补一条覆盖整个 body 的 `author` 标注，`field` = 字段
+                  ✅ 读回来时：
+                    · `Author:`        → 剥掉前缀，**不加** field 标注
+                        （整段就是"作者信息"，没有细分）
+                    · `Author <字段>:` → 剥掉前缀，补一条 field 标注
 
+                  ⚠️ 顺序不能反：先试「带字段名的」，再试「纯 Author:」。
+                     否则 `- Author Name: x` 会被 `Author:` 规则
+                     匹配成「前缀 = 'Name'」，正文变成 `Name: x`。
                   ⚠️ 只认**已知**字段名，不认任意前缀 —— 否则作者名里
                      出现「Author: xxx」这种字样就会被误拆。
-                  ⚠️ 前缀里 `Author` 后必需有空格：`Author Name` / `Author Affiliation`
-                     / `Author Email` / `Author Contact`。中英文两套都认。
                 */
                 val fieldHit = AUTHOR_FIELD_PREFIX.matchEntire(body)
                 if (fieldHit != null) {
@@ -272,12 +272,32 @@ object MdDoc {
                         body = rest
                         marks.add(Mark(0, rest.length, "author", fieldKey))
                     }
+                } else {
+                    /* `- Author: 整段内容` → 剥掉前缀，不产生 field */
+                    val whole = AUTHOR_WHOLE_PREFIX.matchEntire(body)
+                    if (whole != null) {
+                        val rest = whole.groupValues[1].trim()
+                        if (rest.isNotEmpty()) {
+                            body = rest
+                            marks.add(Mark(0, rest.length, "author", null))
+                        }
+                    }
                 }
                 any = true
             } else if (om != null) {
                 kind = "reference"
                 listMarker = "1. "
                 body = om.groupValues[1].trim()
+                /*
+                  ⚠️ 文献前缀 `Ref: ` 剥掉（v0.2.23）——
+                     它是条目标记而不是内容，留在正文里会显示成
+                     `1. Ref: Ref: ...`（每导出一次多一个）。
+                */
+                val refWhole = REF_WHOLE_PREFIX.matchEntire(body)
+                if (refWhole != null) {
+                    val rest = refWhole.groupValues[1].trim()
+                    if (rest.isNotEmpty()) body = rest
+                }
                 any = true
             } else if (text.isNotEmpty()) {
                 any = true
@@ -349,6 +369,25 @@ object MdDoc {
      */
     private val AUTHOR_FIELD_PREFIX =
         Regex("^Author\\s+([A-Za-z]+)\\s*:\\s*(.+)$", RegexOption.IGNORE_CASE)
+
+    /**
+     * `- Author: <整段内容>` 的前缀（v0.2.23）。
+     *
+     * 作者区**没有**标注任何子标签时，整个作者区合成一条并带此前缀。
+     *
+     * ⚠️ 必须**在** `AUTHOR_FIELD_PREFIX 之后**匹配** ——
+     *    否则 `Author Name: x` 会被这条先命中（`Name` 当成内容的一部分）。
+     */
+    private val AUTHOR_WHOLE_PREFIX =
+        Regex("^Author\\s*:\\s*(.+)$", RegexOption.IGNORE_CASE)
+
+    /**
+     * `1. Ref: <文献内容>` 的前缀（v0.2.23）。
+     *
+     * ⚠️ 只剥 `Ref:`，不剥编号 —— 编号是 md 的有序列表记号。
+     */
+    private val REF_WHOLE_PREFIX =
+        Regex("^Ref\\s*:\\s*(.+)$", RegexOption.IGNORE_CASE)
 
     /**
      * 字段名 → `author` 标注的 `field` 键。

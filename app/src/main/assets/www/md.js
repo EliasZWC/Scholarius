@@ -130,43 +130,55 @@
         var lines = [];
 
         /*
-          ══ ⚠️⚠️ 每一项都是**平级**的 `- `，不再嵌套（v0.2.22 用户裁决）══
+          ══ ⚠️⚠️ 两种情况（v0.2.23 用户裁决）══
 
           用户原话：
-            「按我的要求，没有划分的时候应该是
-                - ashish vaswani
-                - google brain
-             这个时候如果标注了姓名，则应该是
-                - Author Name: ashish vaswani
-                - Author Affiliation: Google Brain
-             这样子。」
+            「作者区域应该是 - Author: ashish vaswani google brain...，
+              而一旦标注子标签，就应该是 - Author Name 啥的了。」
 
-          ✅ 所以：
-            · 未划分子标签 → `- 文本`
-            · 划了子标签   → `- Author Name: 文本`
+          ① **没标注任何子标签** → 整个作者区合成**一条**：
+                 - Author: ashish vaswani google brain avaswani@google.com
 
-          ⚠️ 旧的**嵌套**写法（父项 `- 姓名` 下面缩进 `  - 单位：…`）已废弃。
-             理由：嵌套在 md 里表达的是"这个子项属于上一条"，
-             而作者姓名/单位/邮箱本质是**并列的条目**（各占一行），
-             不是从属关系。用户要的也是并列。
+          ② **标注了子标签** → 每个子标签一条：
+                 - Author Name: ashish vaswani
+                 - Author Affiliation: google brain
 
-          ⚠️ 前缀统一是 `Author`，后面跟 field 的显示名 ——
-             不能只写 `Name:`，那样在全文中会和"文献里的 Name"混淆。
-             前缀由调用方通过 `labelFn` 给出（i18n 里已是「作者姓名」等）。
+          ⚠️ 之前的实现是"每个输入项一条 `- 文本`"，
+             导致没标子标签时变成 `- Ashish Vaswani` / `- Google Brain`
+             两个**平级条目** —— 用户要的是合成一条并带 `Author:` 前缀。
+          ⚠️ 判断依据：这一组 items 里**有没有任何 field 非空**。
+             全空 → 情况①；有任何一个 → 情况②。
         */
-        for (var i = 0; i < items.length; i++) {
-            var it = items[i];
-            var text = pad(it.text);
+        var hasField = false;
+        for (var q = 0; q < items.length; q++) {
+            if (items[q] && items[q].field) { hasField = true; break; }
+        }
+
+        if (!hasField) {
+            /* ① 整组合成一条，前缀 `Author:` */
+            var parts = [];
+            for (var i = 0; i < items.length; i++) {
+                var t0 = pad(items[i] && items[i].text);
+                if (t0) parts.push(t0);
+            }
+            if (parts.length) {
+                lines.push('- ' + labelFn('__whole') + ': ' + parts.join(' '));
+            }
+            return lines;
+        }
+
+        /* ② 逐子标签一条 */
+        for (var j = 0; j < items.length; j++) {
+            var it = items[j];
+            var text = pad(it && it.text);
             if (!text) continue;
             if (!it.field) {
-                /* 没有子标签 → 纯文本条目 */
-                lines.push('- ' + text);
-            } else {
                 /*
-                  ⚠️ 分隔符用**冒号 + 空格**，与用户给的示例一致
-                     （`- Author Name: ashish vaswani`）。
-                  ⚠️ 不用全角冒号 —— 用户示例里是半角。
+                  ⚠️ 有子标签的组里出现无标签行 → 它属于"没归类的部分"，
+                     用同一个 Author 前缀输出，不要丢。
                 */
+                lines.push('- ' + labelFn('__whole') + ': ' + text);
+            } else {
                 lines.push('- ' + labelFn(it.field) + ': ' + text);
             }
         }
@@ -243,31 +255,34 @@
         }
         if (kind !== 'heading') return '';
         var lv = Number(level);
-        if (isNaN(lv)) lv = 0;
+        if (isNaN(lv)) lv = -1;
 
         /*
-          ══ ⚠️⚠️ `level === 0` 是"文章标题"的**专用信号**（v0.2.21）══
+          ══ ⚠️⚠️ 层级映射：`#` 数量 = level + 1（v0.2.23 统一）══
 
-          title 标注由 reader.js 翻译成 `kind='heading', level=0`，
-          这里见到 0 就出 `#`，与位置无关。
+          用户裁决：
+            「标注为文章标题的，应为md的一级标题；文章中的Heading
+              分别对应md的二三四级标题。」
+
+              title (level 0) → `#`     文章标题
+              h1    (level 1) → `##`
+              h2    (level 2) → `###`
+              h3    (level 3) → `####`
+
+          ⚠️ 渲染侧用的是 `<h1>`..`<h4>` 标签（+1 之后），
+             两边必须一致，否则"屏幕上 h2、文件里 #"。
+
+          ⚠️ 老数据（`MdDoc.parse` 出来的）`level` 已经是
+             **`#` 的个数**（1..4），那正好落在同一个区间里 ——
+             但要区分"来自 md 的 1"和"标注 h1 的 1"，两者都是 `##`，
+             所以不需要区分：md 里 `#` 个 = 1 的就是文章标题，
+             而标注 title 也映射到 level 0 → 同样出 `#`。
         */
-        if (lv === 0) return '#';
-
-        /*
-          ══ ⚠️⚠️ `level` 就是 `#` 的个数（v0.2.22 修正）══
-
-          `MdDoc.parse` 里 `level = hashes.length`，所以：
-              1 → `#`、2 → `##`、3 → `###`、4 → `####`
-
-          ⚠️ **不要**再用 `isFirst` 把它改成 `#` —— 那会把
-             "首块是 `##` 一级标题"这种情况错误地降级成文章标题，
-             导致**渲染是 `<h2>`、导出是 `#`** 的不一致。
-
-          ✅ `isFirst` 现在只在**完全没有 level**（老数据）时才兜底。
-        */
-        if (lv >= 1 && lv <= 4) {
+        if (lv >= 0 && lv <= 4) {
+            var count = lv + 1;
+            if (count > 4) count = 4;
             var s = '';
-            for (var i = 0; i < lv; i++) s += '#';
+            for (var i = 0; i < count; i++) s += '#';
             return s;
         }
 
@@ -296,6 +311,20 @@
         var listKinds = o.listKinds || {};
         if (typeof o.fieldLabel !== 'function') {
             o.fieldLabel = function (f) { return String(f || ''); };
+        }
+        /*
+          ══ ⚠️⚠️ 两个"伪字段"：`__whole` 与 `__ref`（v0.2.23）══
+
+          它们不是真正的 author 子标签，而是**条目前缀**：
+            `__whole` → `Author`    （作者区整段一条时用）
+            `__ref`   → `Ref`       （文献条目前缀）
+
+          走同一个 `fieldLabel` 通道，这样 i18n 侧只需在
+          `reader.field.__whole` / `reader.field.__ref` 各加一条文案，
+          不必给 `toMarkdown` 新增参数。
+        */
+        function labelFnRef() {
+            return o.fieldLabel('__ref');
         }
         var out = [];
         var seenBlock = false;
@@ -354,11 +383,63 @@
             if (mdMarker) {
                 var isMdBullet = mdMarker.indexOf('-') >= 0 || mdMarker.indexOf('*') >= 0;
                 if (isMdBullet) {
-                    authorBuf.push({ text: text.replace(/\s*\n\s*/g, ' '), field: null });
+                    /*
+                      ⚠️ md 里的 `- Author: xxx` / `- Author Name: xxx` 已经
+                         带了前缀，读进来时 `MdDoc.parse` 已把前缀剥掉、
+                         还原成 field 标注。这里再 push 无 field 的原文本，
+                         会**丢掉**前缀信息。
+                         ✅ 所以：如果这一项本来就带 `Author` 前缀，
+                            原样写回（不重新拼）。
+                    */
+                    var rawBullet = String(b.text || '');
+                    if (/^Author\b/i.test(rawBullet)) {
+                        flushAuthor();
+                        out.push('- ' + rawBullet.replace(/\s*\n\s*/g, ' '));
+                        continue;
+                    }
+                    /*
+                      ⚠️ **优先用 `authorItems`**（v0.2.23）——
+                         它带着 field 信息（用户标注的子标签）。
+                         直接 push `{text, field:null}` 会丢掉子标签，
+                         导致 `- Author Name: ...` 退化成 `- Author: ...`。
+                    */
+                    if (b.kind === 'author' && b.authorItems && b.authorItems.length) {
+                        for (var aq2 = 0; aq2 < b.authorItems.length; aq2++) {
+                            authorBuf.push(b.authorItems[aq2]);
+                        }
+                    } else if (b.kind === 'author') {
+                        /*
+                          ⚠️ 只有**确实是作者块**才加 `Author:` 前缀（v0.2.23）。
+                             普通的 md 无序列表（用户自己写的 `- 某个条目`）
+                             不应该被当成作者区。
+                        */
+                        authorBuf.push({ text: text.replace(/\s*\n\s*/g, ' '), field: null });
+                    } else {
+                        /* 普通无序列表项：原样输出 */
+                        flushAuthor();
+                        out.push('- ' + text.replace(/\s*\n\s*/g, ' '));
+                    }
                     continue;
                 }
+                /*
+                  ══ ⚠️ 文献：`1. Ref: 内容`（v0.2.23 用户裁决）══
+
+                  用户原话：
+                    「文献的项改为 1. Ref: 然后跟着文献引用。」
+
+                  ⚠️ 已经有 `Ref:` 前缀的不再重复加 ——
+                     否则每导出一次就多一个 `Ref: Ref: ...`。
+                  ⚠️ **先把作者缓冲区刷出去**（v0.2.23）——
+                     否则顺序会错：作者延迟到遇到非 author 才输出，
+                     而文献是立即输出的，结果文献跑到作者前面。
+                */
+                flushAuthor();
                 refCounter += 1;
-                out.push(refCounter + '. ' + text.replace(/\s*\n\s*/g, ' '));
+                var refText = text.replace(/\s*\n\s*/g, ' ');
+                if (!/^Ref\s*:/i.test(refText)) {
+                    refText = labelFnRef() + ': ' + refText;
+                }
+                out.push(refCounter + '. ' + refText);
                 continue;
             }
 
@@ -369,6 +450,41 @@
             var pref = headingPrefix(kind, b.level, isFirst);
             if (pref) {
                 out.push(pref + ' ' + text.replace(/\s*\n\s*/g, ' ').replace(/^\s+|\s+$/g, ''));
+                continue;
+            }
+
+            /*
+              ── ② 用户标注成 author / reference（**没有** md 记号）──
+
+              ⚠️ 这段只在 `listMarker` 为空时才会走到 ——
+                 有 md 记号的情况已经在上面处理并 `continue` 了。
+                 所以这里处理的都是"用户在 app 里新标注的类型"。
+
+              ⚠️ 顺序很重要：必须在 `listKinds` 分支**之前**判断，
+                 否则有 reference 标注的块会既走标注分支、
+                 又被下面的 REF_START_RE 切一次（实测产生 `2. .`）。
+            */
+            if (kind === 'reference') {
+                refCounter += 1;
+                var refTxt = text.replace(/\s*\n\s*/g, ' ');
+                if (!/^Ref\s*:/i.test(refTxt)) refTxt = labelFnRef() + ': ' + refTxt;
+                out.push(refCounter + '. ' + refTxt);
+                continue;
+            }
+            if (kind === 'author') {
+                /*
+                  ⚠️ author 走缓冲区，与相邻 author 块合并 ——
+                     用户把连续几块都标成作者时，它们是一个作者区，
+                     应该合成 `- Author: 全文` 一条。
+                */
+                var authorText = text.replace(/\s*\n\s*/g, ' ');
+                if (b.authorItems && b.authorItems.length) {
+                    for (var aq = 0; aq < b.authorItems.length; aq++) {
+                        authorBuf.push(b.authorItems[aq]);
+                    }
+                } else {
+                    authorBuf.push({ text: authorText, field: null });
+                }
                 continue;
             }
 
@@ -478,7 +594,33 @@
              漏掉这一步会让文末的作者块整个消失（静默丢内容）。
         */
         flushAuthor();
-        return joinBlocks(out);
+        /*
+          ══ ⚠️ 丢弃空条目（v0.2.23）══
+
+          实测：`splitBlockByMarks` 在标注边界与块边界不完全重合时
+          会切出一个**只含空白**的片段。它被 `toMarkdown` 的空文本
+          判断过滤掉了，但 `listKinds` 分支里 `groupEntries` 仍可能
+          产出空条目 —— 结果 md 里出现 `2. Ref: .`。
+
+          ✅ 在这里统一兜底：去掉"只有列表记号、没有正文"的行。
+
+          ⚠️ 判据要**容忍前缀**：`- Author: ` 后面没内容、`1. Ref: `
+             后面没内容，都算空条目。
+        */
+        var cleaned = [];
+        for (var ci = 0; ci < out.length; ci++) {
+            var line = out[ci];
+            if (line == null) continue;
+            var probe = String(line)
+                .replace(/^[-*+]\s+/, '')
+                .replace(/^\d+[.)]\s+/, '')
+                .replace(/^Author(\s+[A-Za-z]+)?\s*:\s*/i, '')
+                .replace(/^Ref\s*:\s*/i, '')
+                .trim();
+            if (probe === '') continue;
+            cleaned.push(line);
+        }
+        return joinBlocks(cleaned);
     }
 
     /** 一个不可再分的行是不是列表项（`- x` / `1. x` / 缩进的子项） */

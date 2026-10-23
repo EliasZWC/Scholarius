@@ -328,6 +328,14 @@
             'reader.field.affiliation': 'Author Affiliation',
             'reader.field.email': 'Author Email',
             'reader.field.contact': 'Author Contact',
+            /*
+              ⚠️ `__whole` / `__ref` 是**条目前缀**，不是真正的子标签（v0.2.23）：
+                 `__whole` → `- Author: 整段作者信息`
+                 `__ref`   → `1. Ref: 文献内容`
+                 它们会**原样写进 md**，改名就会改变存储格式。
+            */
+            'reader.field.__whole': 'Author',
+            'reader.field.__ref': 'Ref',
 
             // 阅读设置：字体
             'reader.font': 'Font',
@@ -710,6 +718,9 @@
             'reader.field.affiliation': '作者单位',
             'reader.field.email': '作者邮箱',
             'reader.field.contact': '作者联系方式',
+            /* ⚠️ 与英文保持一致（会写进 md，不要本地化成中文）*/
+            'reader.field.__whole': 'Author',
+            'reader.field.__ref': 'Ref',
 
             // 阅读设置：字体
             'reader.font': '字体',

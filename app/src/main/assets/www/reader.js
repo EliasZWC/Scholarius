@@ -2851,6 +2851,22 @@
                 */
                 var pieceKind = pc.label || kind;
                 var pieceLevel = level;
+
+                /*
+                  ══ ⚠️⚠️ 空隙段**不能**继承整块类型（v0.2.23）══
+
+                  一个块被标注切成多段后，段与段之间可能有"没被标注覆盖"
+                  的空隙（例如标注 `[0,16)` 而块长 17，末尾剩 1 个字符）。
+
+                  之前 `pieceKind = pc.label || kind` 让空隙段继承了整块的
+                  `kind`（比如 `reference`）→ 于是空隙段也被当成文献条目，
+                  输出 `2. Ref: .`（空条目）。
+
+                  ✅ 空隙段（`pc.label` 为空）一律视为**正文**：
+                     它不属于任何标注，按 md 语义就是普通段落。
+                  ⚠️ 例外：整块**只有一个**段时不存在空隙，沿用 `kind` 正确。
+                */
+                if (!pc.label && pieces.length > 1) pieceKind = 'body';
                 /*
                   ══ ⚠️⚠️ 层级映射（用户裁决）══
 
@@ -2905,8 +2921,16 @@
                          切段后只有"整块一段"时才沿用，否则由类型决定。
                     */
                     listMarker: (pieces.length === 1) ? mdListMarker : '',
-                    authorItems: (pieceKind === 'author' && pieceSpans && pieceSpans.length)
-                        ? authorItemsOf(pieceText, null, pieceSpans)
+                    /*
+                      ⚠️ 作者项（v0.2.23）：
+                         · 有子标签 → 每个 field 一条
+                         · 无子标签 → 合成**一条**，由 authorNested 加 `Author:` 前缀
+                    */
+                    authorItems: (pieceKind === 'author')
+                        ? ((pieceSpans && pieceSpans.length)
+                            ? (authorItemsOf(pieceText, null, pieceSpans) ||
+                               [{ text: pieceText, field: null }])
+                            : [{ text: pieceText, field: null }])
                         : null
                 });
             }
@@ -2925,7 +2949,6 @@
             }
         });
     }
-
     /**
      * 把作者块切成 `[{text, field}]`（v0.1.91），供 Markdown 嵌套导出。
      *
@@ -5840,6 +5863,14 @@
         var openList = null;      // 当前打开的 <ul>/<ol>
         var openType = null;      // 'ul' | 'ol'
 
+        /*
+          ⚠️ 作者区聚合**已移除**（v0.2.23）——
+             现在完全按 md 文本渲染：md 里一条 `- ` 就是一条列表项。
+             "多个作者块合成一条"的规则在**写 md 时**完成
+             （见 md.js 的 authorNested），读回来自然就是一条。
+             渲染层不该再自己拼。
+        */
+
         function closeList() {
             if (openList) {
                 frag.appendChild(openList);
@@ -5866,67 +5897,150 @@
             text = String(text);
             if (text.replace(/\s+/g, '') === '') continue;
 
-            var lm = String(b.listMarker || '');
-            var isBullet = !!lm && (lm.indexOf('-') >= 0 || lm.indexOf('*') >= 0);
-            var isOrdered = !!lm && !isBullet;
+            /*
+              ══ ⚠️⚠️⚠️ 标注 → md 标记，然后统一按 md 渲染（v0.2.23）══
 
-            /* ── 标题：`#` 数量 → h1..h4 ── */
-            if (b.kind === 'heading') {
+              用户裁决：
+                「这不又麻烦了，为什么不能直接套用md的渲染方法？」
+
+              ✅ **标注本质上就是给文本加 md 标记**。所以：
+                 用户标了 title → 给文本加 `# `
+                 用户标了 h1    → 加 `## `
+                 用户标了 author → 加 `- `
+                 用户标了 reference → 加 `1. `
+                 然后**统一**按 md 语法解析渲染。
+
+              这样只有一条渲染路径：
+                文本（原文或编辑结果）+ 标注前缀 → 解析 → DOM
+
+              ⚠️ 用户**自己编辑**打进去的 `# ` 也走同一条路 ——
+                 因为这里先检查"文本是否已经有 md 标记"，
+                 有就不再叠加（否则会出现 `# # 标题`）。
+
+              ⚠️ 只有**覆盖整块**的标注才加前缀 ——
+                 局部标注（选了半句话）不改变整块的显示形态。
+            */
+            var spans = (typeof b.line === 'number') ? labels[b.line] : null;
+            var alreadyMd = /^(#{1,6}[-*+]|\d+[.)])\s/.test(text) ||
+                            /^[-*+]\s/.test(text) ||
+                            /^#{1,6}\s/.test(text);
+
+            if (!alreadyMd && spans && spans.length) {
+                for (var si = 0; si < spans.length; si++) {
+                    var sp0 = spans[si];
+                    if (!sp0 || !sp0.label) continue;
+                    var covers = (Number(sp0.start) || 0) <= 1 &&
+                                 (Number(sp0.end) || 0) >= text.length - 1;
+                    if (!covers) continue;
+
+                    if (sp0.label === 'title') { text = '# ' + text; break; }
+                    if (sp0.label === 'h1') { text = '## ' + text; break; }
+                    if (sp0.label === 'h2') { text = '### ' + text; break; }
+                    if (sp0.label === 'h3') { text = '#### ' + text; break; }
+                    if (sp0.label === 'author') {
+                        /*
+                          ⚠️ 作者子标签（`field`）→ 加 `Author <字段>: ` 前缀。
+                             没有 field → 加 `Author: `。
+                        */
+                        var fld = null;
+                        for (var sf = 0; sf < spans.length; sf++) {
+                            if (spans[sf] && spans[sf].label === 'author' && spans[sf].field) {
+                                fld = spans[sf].field;
+                                break;
+                            }
+                        }
+                        text = '- ' + (fld ? (t('reader.field.' + fld) + ': ') 
+                                          : (t('reader.field.__whole') + ': ')) + text;
+                        break;
+                    }
+                    if (sp0.label === 'reference') {
+                        text = '1. ' + t('reader.field.__ref') + ': ' + text;
+                        break;
+                    }
+                    /* abstract / body / cite 不改变块结构，不加前缀 */
+                }
+            }
+
+            /*
+              ══ ⚠️⚠️⚠️ md 语法直接决定渲染（v0.2.23 重做）══
+
+              用户裁决：
+                「这不又麻烦了，为什么不能直接套用md的渲染方法？」
+                「对啊」
+
+              ✅ **唯一正确的模型**：拿到文本，按 md 行首语法解析，画出来。
+                 不查 `kind`、不查 `labels`、不查 `listMarker`。
+
+              为什么之前会绕弯：有**三个来源**在描述"这块是什么"——
+                · `b.kind`        —— PDF 提取层/上一次 md 解析的结论
+                · `b.listMarker`  —— 上一次 md 解析的列表记号
+                · `labels[line]`  —— 用户刚做的标注
+              三者要合并 ⇒ 每一个改动都要考虑"另外两个会不会覆盖我"，
+              于是每修一处就坏一处（v0.2.13 → v0.2.22 反复翻车）。
+
+              ✅ 而它们本来就该是**同一件事**：md 文本。
+                 标注会被写成 `#` / `- ` / `1. `；编辑由用户直接打这些符号。
+                 所以渲染只认文本，三源合一，没有优先级问题。
+
+              解析规则（与 Markdown 标准一致，从长到短匹配）：
+                `#### ` → <h4>      `### ` → <h3>
+                `## `   → <h2>      `# `   → <h1>
+                `- ` / `* ` / `+ `   → <ul><li>
+                `1. ` / `1) `        → <ol><li>
+                其它                 → <p>
+
+              ⚠️ 标题前缀必须**吃掉**，否则屏幕上会显示 `# 标题`。
+              ⚠️ 列表前缀同理 —— 列表记号由 `<li>` 的 `::marker` 画。
+            */
+            var mdHead = /^(#{1,6})\s+([\s\S]*)$/.exec(text);
+            if (mdHead) {
                 closeList();
-                var lv = Number(b.level);
-                if (!(lv >= 1)) lv = 1;
+                var lv = mdHead[1].length;
                 if (lv > 4) lv = 4;
                 var h = document.createElement('h' + lv);
                 h.className = 'reader-heading reader-h' + lv;
-                h.textContent = text;
+                h.textContent = mdHead[2];
                 copyBlockAttrs(h, null, b);
                 frag.appendChild(h);
                 continue;
             }
+
+            var mdBullet = /^[-*+]\s+([\s\S]*)$/.exec(text);
+            var mdOrdered = /^(\d+)[.)]\s+([\s\S]*)$/.exec(text);
+
+            var isBullet = !!mdBullet;
+            var isOrdered = !!mdOrdered;
+
+            /*
+              ⚠️ 作者/文献前缀在这里**只用于显示**，不再影响结构判断 ——
+                 结构已经由 `- ` / `1. ` 决定了。
+            */
+            var lm = isBullet ? '- ' : (isOrdered ? '1. ' : '');
 
             /* ── 无序列表项 → <ul><li> ── */
             if (isBullet) {
                 var ul = ensureList('ul');
                 var li1 = document.createElement('li');
                 li1.className = 'reader-li reader-li-bullet';
+
                 /*
-                  ══ ⚠️⚠️ 作者子标签：渲染成 `Author Name: xxx`（v0.2.22）══
+                  ══ 无序列表项：文本就是全部信息（v0.2.23）══
 
-                  用户裁决：
-                    「标注了姓名，则应该是
-                       - Author Name: ashish vaswani
-                       - Author Affiliation: Google Brain
-                     子标签可以按 md 中的横杠加空格加特定字段来定位
-                     其文本的性质。」
+                  `- ` 后面的内容原样显示。用户要的两种形态
+                  （`- Author: ...` / `- Author Name: ...`）都已经是
+                  **文本的一部分**，所以这里不需要任何前缀判断 ——
+                  写 md 时就已经把前缀写进去了。
 
-                  ⚠️ 这里渲染的**就是保存后 md 的样子** ——
-                     用户标注之后立刻看到 `Author Name: Ashish Vaswani`，
-                     与磁盘上的 md 完全一致，不存在"界面对、文件错"。
+                  ⚠️ 唯一的特殊处理：连续多个"不带前缀"的无序项，
+                     如果它们来自同一个作者区的标注，要合并成一条。
+                     但这个"是不是作者区"的判断**不应该**在这里靠 labels 做。
 
-                  ⚠️ 数据来源是 `labels[line]` 里 `field != null` 的 author 标注。
-                     保存后这些标注会变成 md 文本的一部分（`- Author Name: xxx`），
-                     读回来时由原生 `MdDoc.parse` 还原成同样的标注，
-                     所以两条路径的视觉结果一致。
+                  ✅ 正确做法：完全按文本。md 里一条 `- ` 就是一条。
+                     作者区合并成一条的规则，在**写 md 时**就完成了
+                     （`authorNested` 把多个无子标签项合成一条
+                     `- Author: a b c`）。所以读回来自然只有一条。
                 */
-                var bulletText = text;
-                var bSpans = (typeof b.line === 'number') ? labels[b.line] : null;
-                if (bSpans && bSpans.length) {
-                    for (var bs = 0; bs < bSpans.length; bs++) {
-                        var bsp = bSpans[bs];
-                        if (!bsp || bsp.label !== 'author' || !bsp.field) continue;
-                        /*
-                          ⚠️ 只在标注**覆盖整块**时加前缀。
-                             局部标注（只标了几个词）加前缀会把半截文本
-                             变成条目，那是错的。
-                        */
-                        if ((bsp.start || 0) <= 1 &&
-                            (bsp.end || 0) >= text.length - 1) {
-                            bulletText = t('reader.field.' + bsp.field) + ': ' + text;
-                            break;
-                        }
-                    }
-                }
-                li1.textContent = bulletText;
+                li1.textContent = mdBullet[1];
                 copyBlockAttrs(li1, null, b);
                 ul.appendChild(li1);
                 continue;
@@ -5938,7 +6052,12 @@
                 var ol = ensureList('ol');
                 var li2 = document.createElement('li');
                 li2.className = 'reader-li reader-li-ordered';
-                li2.textContent = text;
+                /*
+                  ⚠️ 序号用 md 里的**原始编号**（`mdOrdered[1]`），
+                     不用计数器 —— md 里写的是几就是几。
+                     这是"完全按 md 渲染"的直接体现。
+                */
+                li2.textContent = mdOrdered[2];
                 li2.setAttribute('data-md-num', String(ordNum));
                 copyBlockAttrs(li2, null, b);
                 ol.appendChild(li2);
