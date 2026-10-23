@@ -7188,6 +7188,27 @@
                 if (parts.length < 2) return null;
 
                 /*
+                  ══ ⚠️⚠️ patch 只能覆盖**参与拼接的那些块**（v0.2.33）══
+
+                  `run` 可能包含空白块（`text` 全是空格），它们被
+                  `partBlocks` 跳过了。而 patch 一旦写成
+                  `{ start: run[0], count: run.length }`，
+                  替换范围就**包含了那些被跳过的块** ——
+
+                    它们既不在 `joined` 里（所以文本丢了），
+                    又被 splice 掉（所以块也没了）。
+
+                  结果就是用户看到的「大量缺失内容」。
+
+                  ✅ 替换范围取 `partBlocks` 的首尾：
+                     从第一个参与块到最后一个参与块。
+                     中间如果有空块被跨过，它本来就没有内容，
+                     被合并掉是合理的 —— 但首尾之外的块**绝不能动**。
+                */
+                var patchStart = partBlocks[0];
+                var patchCount = partBlocks[partBlocks.length - 1] - patchStart + 1;
+
+                /*
                   ══ ⚠️⚠️ 建立「模型输入文本 → 原文」的映射（v0.2.32）══
 
                   用户反馈：
@@ -7343,6 +7364,36 @@
                         var s1 = sentsWithOff[rg.to];
                         if (!s0 || !s1) continue;
                         /*
+                          ══ ⚠️⚠️ 区间必须**单调前进**（v0.2.33）══
+
+                          用户反馈：
+
+                            「模型切分后反而出现了大量缺失内容和重复内容」
+
+                          模型返回的 `from` / `to` 是**它自己数出来的句子下标**。
+                          一旦它给的下标错位（比如把同一句算进两段，
+                          或者顺序颠倒），按这些下标切片就会出现：
+
+                            · `to` 小于上一段的终点 → 切出**重复文本**
+                            · 跳过若干句         → 切出**缺失文本**
+
+                          旧代码只检查 `s0`/`s1` 存在，完全不校验顺序 ——
+                          模型错一次，整段就废。
+
+                          ✅ 强校验：本段的起点必须 **>= 上一段的终点**。
+                             不满足就说明模型给的下标不可信 →
+                             这一区段**整体放弃**（返回 null，保留原块）。
+                             宁可"没切"，也不能"切坏"。
+                        */
+                        if (rg.from < 0 || rg.to >= sentsWithOff.length) continue;
+                        if (rg.to < rg.from) continue;
+                        if (s0.start < prevEnd) {
+                            trace('reader:seg', 'non-monotonic range at ' +
+                                  p + ' (' + s0.start + ' < ' + prevEnd +
+                                  '), discarding run');
+                            return null;
+                        }
+                        /*
                           ⚠️ 切片起点：**接着上一段的终点**，不是本句起点。
                              句间空白（换行、多个空格）要归给前一段，
                              否则这些空白会被丢掉，合起来就不等于原文了。
@@ -7372,9 +7423,42 @@
                     }
                     if (!rebuilt.length) return null;
 
+                    /*
+                      ══ ⚠️⚠️ 最终完整性校验：拼回去必须等于原文（v0.2.33）══
+
+                      这是**唯一可信的验收**。前面所有的区间校验都是
+                      "按道理应该对"，而这里直接验证结果：
+
+                          重建后的所有段落拼起来 === joined ?
+
+                      不等就说明切片过程中有遗漏或重复 ——
+                      不管什么原因，这一区段**整体放弃**，保留原块。
+
+                      ⚠️ 用户明确要求"切分不能改内容"。
+                         那么"切分失败"必须退化成"没切"，
+                         绝不能退化成"内容错乱"。
+                         宁可少一个功能，不能多一个数据损坏。
+                    */
+                    var recon = '';
+                    for (var rc = 0; rc < rebuilt.length; rc++) {
+                        recon += rebuilt[rc].text;
+                    }
+                    if (recon !== joined) {
+                        trace('reader:seg', 'integrity check FAILED for run at ' +
+                              patchStart + ': rebuilt ' + recon.length +
+                              ' chars vs joined ' + joined.length +
+                              ' — keeping original blocks');
+                        return null;
+                    }
+
+                    /*
+                      ⚠️ 行号必须从**参与拼接的块**里取（`partBlocks`），
+                         不是 `run` —— `run` 里可能有被跳过的空块，
+                         它们的行号不会出现在重建后的段落上。
+                    */
                     var allLines = [];
-                    for (var q = 0; q < run.length; q++) {
-                        allLines.push(blocks[run[q]].line);
+                    for (var q = 0; q < partBlocks.length; q++) {
+                        allLines.push(blocks[partBlocks[q]].line);
                     }
                     if (!allLines.length) return null;
 
@@ -7389,7 +7473,7 @@
                         var lo = Math.floor(usedChars / totalChars * allLines.length);
                         usedChars += rebuilt[p2].text.length;
                         if (lo > allLines.length - 1) lo = allLines.length - 1;
-                        var src = blocks[run[lo]];
+                        var src = blocks[partBlocks[lo]];
                         rebuilt[p2].line = allLines[lo];
                         rebuilt[p2].page = src ? src.page : null;
                         rebuilt[p2].kind = 'paragraph';
@@ -7398,7 +7482,11 @@
                         delete rebuilt[p2].firstSent;
                     }
 
-                    patches.push({ start: run[0], count: run.length, items: rebuilt });
+                    patches.push({
+                        start: patchStart,
+                        count: patchCount,
+                        items: rebuilt
+                    });
                     return null;
                 }, function (err) {
                     /* 这个区段失败 → 保留原块，继续处理后面的区段 */
