@@ -523,6 +523,7 @@ class MainActivity : AppCompatActivity() {
                 onApplyTemplate = { docId, templateId ->
                     thread { applyTemplateTo(docId, templateId) }
                 },
+                onPickTemplateFile = { runOnUiThread { pickTemplateFile() } },
                 onTrace = { message -> Log.i(TAG, "[web] $message") },
             ),
             JS_BRIDGE_NAME,
@@ -1432,6 +1433,142 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 弹系统文件选择器，让用户选一个模板 `.json`（v0.2.7）。
+     *
+     * ⚠️ 用 `ACTION_OPEN_DOCUMENT` 而不是 `GET_CONTENT`：
+     *    前者给的是**长期可读**的 URI，且由系统文件选择器统一外观；
+     *    对一个"读一次就存进自己目录"的场景，两者都够用，
+     *    但 OPEN_DOCUMENT 在 Android 11+ 上行为更一致。
+     *
+     * ⚠️ `type` 用 `application/json`，但**不能依赖它** ——
+     *    很多文件管理器对自定义来源的 .json 报 `application/octet-stream`，
+     *    这样会选不中。所以额外接受通配类型兜底。
+     *    真正的判据是**内容**（见 readTemplateFrom）。
+     */
+    private fun pickTemplateFile() {
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                /*
+                  ⚠️ 同时声明 json 与 octet-stream：有的系统选择器
+                     会按 EXTRA_MIME_TYPES 过滤，只写 json 会让
+                     部分来源的 .json 变成不可选。
+                */
+                putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    arrayOf("application/json", "text/plain",
+                            "application/octet-stream")
+                )
+            }
+            startActivityForResult(intent, REQ_IMPORT_TEMPLATE)
+        } catch (t: Throwable) {
+            Log.w(TAG, "[template] 无法打开文件选择器", t)
+            pushTemplateResult("invalid", "cannot open picker")
+        }
+    }
+
+    /**
+     * 读取并校验用户选中的模板文件。**后台线程调用**。
+     *
+     * ══ ⚠️⚠️ 三层校验，缺一不可 ══
+     *
+     * ① **大小**：超过 2 MB 直接拒 —— 防止用户误选了 PDF，
+     *    也防止超大文件把主线程卡住。
+     * ② **是模板**：`TemplateStore.parse` 校验 schema / sha256 格式 /
+     *    blocks 结构。任何一项不合格都拒绝，不做"尽力而为"。
+     * ③ **匹配本文献**：sha256 必须等于当前文献 PDF 的哈希。
+     *
+     * 第三层最重要：模板里只有块序号，套到别的 PDF 上必然错位，
+     * 而且**不会报错**（只是排版莫名其妙变了）。宁可明确拒绝。
+     *
+     * @return Pair(status, payload)。status ∈ ok / mismatch / invalid
+     */
+    private fun readTemplateFrom(uri: android.net.Uri): Pair<String, String> {
+        val text = try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                /* ⚠️ 先读前 2MB+1 判断大小，避免把超大文件全读进内存 */
+                val buf = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(64 * 1024)
+                var total = 0
+                while (true) {
+                    val n = input.read(chunk)
+                    if (n <= 0) break
+                    total += n
+                    if (total > 2 * 1024 * 1024) {
+                        return Pair("invalid", "file too large")
+                    }
+                    buf.write(chunk, 0, n)
+                }
+                buf.toString("UTF-8")
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "[template] 读取文件失败", t)
+            null
+        } ?: return Pair("invalid", "cannot read file")
+
+        /*
+          ⚠️ 快速判别"这是不是 JSON"：只看首个非空白字符。
+             比先解析再报错便宜得多，也能把"用户选了张图片"这种情况
+             与"JSON 格式错误"在日志上分开。
+        */
+        val head = text.trimStart()
+        if (head.isEmpty() || head[0] != '{') {
+            return Pair("invalid", "not a json object")
+        }
+
+        val tpl = TemplateStore.parse(text)
+            ?: return Pair("invalid", "schema/format invalid")
+
+        /* ③ 校验绑定关系 */
+        val docId = currentReaderDocId
+        if (docId.isNullOrBlank()) {
+            /*
+              ⚠️ 没有正在阅读的文献时**不做** sha 校验，
+                 直接返回模板让网页自己决定。
+                 这种情况出现在"用户还没打开任何文献就点了按钮"——
+                 实际上按钮在阅读页里，正常不会发生，但不该崩。
+            */
+            return Pair("ok", TemplateStore.toJson(tpl).toString())
+        }
+        val meta = LibraryStore.readMeta(this, docId)
+        val docSha = meta?.sha256.orEmpty()
+        if (docSha.isBlank()) {
+            /* 老数据没算过哈希 → 无法判断，放行（宁可让用户试） */
+            Log.w(TAG, "[template] 文献无 sha256，跳过匹配校验：$docId")
+            return Pair("ok", TemplateStore.toJson(tpl).toString())
+        }
+        if (!tpl.matches(docSha)) {
+            Log.w(TAG, "[template] sha 不匹配：tpl=${tpl.pdfSha256.take(8)} " +
+                "doc=${docSha.take(8)}")
+            return Pair("mismatch",
+                "tpl=${tpl.pdfSha256.take(8)} doc=${docSha.take(8)}")
+        }
+
+        return Pair("ok", TemplateStore.toJson(tpl).toString())
+    }
+
+    /** 把导入结果推给网页（主线程调用） */
+    private fun pushTemplateResult(status: String, payload: String) {
+        runOnUiThread {
+            evaluateInWeb(
+                "window.ScholariusReader && window.ScholariusReader.onTemplateImported(" +
+                    "${org.json.JSONObject.quote(status)}, " +
+                    "${org.json.JSONObject.quote(payload)});"
+            )
+        }
+    }
+
+    /**
+     * 当前正在阅读的文献 id（v0.2.7）。
+     *
+     * ⚠️ 单独存一份而不是从网页读回来：导入模板的结果处理在
+     *    `onActivityResult` 里，那时没有参数能拿到 docId。
+     *    ⚠️ 必须在 `requestDocText` 里更新，在阅读页关闭时清空。
+     */
+    private var currentReaderDocId: String? = null
+
+    /**
      * 把模板导出成文件。
      *
      * ⚠️ 与 `exportDocs` 用**同一套 SAF 机制**，但内容是模板 JSON。
@@ -1775,6 +1912,12 @@ class MainActivity : AppCompatActivity() {
      */
     private fun requestDocText(id: String) {
         debugLog("[reader] loading text for $id")
+        /*
+          ⚠️ 记下"当前正在读哪篇"（v0.2.7）。
+             导入模板时要用它查 sha256 —— 那个校验发生在
+             `onActivityResult`，拿不到 docId 参数。
+        */
+        currentReaderDocId = id
 
         thread {
             /*
@@ -2399,6 +2542,25 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        /*
+          ⚠️ 导入模板（v0.2.7）。
+             用户取消时**也要**回调网页 —— 否则那个按钮会一直处于
+             禁用状态（见 mountTplBtn 里只 disable 不解禁），
+             用户会以为 App 卡死了。
+        */
+        if (requestCode == REQ_IMPORT_TEMPLATE) {
+            if (uri == null) {
+                pushTemplateResult("cancelled", "")
+                return
+            }
+            thread {
+                val (status, payload) = readTemplateFrom(uri)
+                Log.i(TAG, "[template] import $status $payload")
+                pushTemplateResult(status, payload)
+            }
+            return
+        }
+
         if (requestCode != REQ_EXPORT_MD) return
 
         if (uri == null) {
@@ -2451,6 +2613,8 @@ class MainActivity : AppCompatActivity() {
         const val REQ_EXPORT_MD = 4097
         /** 导出排版模板（v0.2.5，单次，不走队列） */
         const val REQ_EXPORT_TEMPLATE = 4098
+        /** 导入排版模板（v0.2.7，单次） */
+        const val REQ_IMPORT_TEMPLATE = 4099
 
         /** 网页一直没通知启动动画结束时的兜底时长（网页那边约 2.2s） */
         const val SPLASH_TIMEOUT_MS = 4000L

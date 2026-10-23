@@ -74,6 +74,13 @@ class WebAppBridge(
     private val onExportTemplate: (String) -> Unit,
     /** 套用模板到某篇文献（templateId 为空串 = 取消套用，回通用规则） */
     private val onApplyTemplate: (String, String) -> Unit,
+    /**
+     * 让用户选一个模板文件导入（v0.2.7）。
+     *
+     * ⚠️ 异步：要走 SAF 文件选择器。结果由原生调网页的
+     *    `ScholariusReader.onTemplateImported(status, payload)` 推回。
+     */
+    private val onPickTemplateFile: () -> Unit,
     // --- 临时诊断（v0.0.6，定位完删）---
     private val onTrace: (String) -> Unit,
 ) {
@@ -223,6 +230,16 @@ class WebAppBridge(
     @JavascriptInterface
     fun applyTemplate(docId: String, templateId: String) {
         onApplyTemplate(docId, templateId)
+    }
+
+    /**
+     * 弹文件选择器导入模板（v0.2.7）。
+     *
+     * ⚠️ 立即返回，结果异步推回 `ScholariusReader.onTemplateImported`。
+     */
+    @JavascriptInterface
+    fun pickTemplateFile() {
+        onPickTemplateFile()
     }
 
     /**

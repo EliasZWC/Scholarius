@@ -102,6 +102,13 @@
             'detail.template': 'Layout Template',
             'detail.templateNone': 'None (use default)',
             'detail.templateEmpty': 'No template matches this PDF yet.',
+            // ⚠️ v0.2.7：模板与切分互斥，切分会丢弃当前模板
+            'reader.resegmentDropsTemplate': 'Re-splitting will remove the layout template "{name}". You can pick it again in Details afterwards.',
+            // ⚠️ v0.2.7：顶栏导入模板
+            'reader.importTemplate': 'Import layout template',
+            'reader.importTemplateDone': 'Template applied',
+            'reader.importTemplateFailed': 'Could not read this template file.',
+            'reader.importTemplateMismatch': 'This template was made for a different PDF.',
 
             // 通用字段
             'vault.field.title': 'Title',
@@ -484,6 +491,13 @@
             'detail.template': '排版模板',
             'detail.templateNone': '不使用模板',
             'detail.templateEmpty': '还没有适配这份 PDF 的模板。',
+            // ⚠️ v0.2.7：模板与切分互斥，切分会丢弃当前模板
+            'reader.resegmentDropsTemplate': '重新切分会移除排版模板「{name}」。之后可在详情页重新选择。',
+            // ⚠️ v0.2.7：顶栏导入模板
+            'reader.importTemplate': '导入排版模板',
+            'reader.importTemplateDone': '已套用模板',
+            'reader.importTemplateFailed': '无法读取该模板文件。',
+            'reader.importTemplateMismatch': '这个模板是为另一份 PDF 做的。',
 
             // 通用字段
             'vault.field.title': '标题',

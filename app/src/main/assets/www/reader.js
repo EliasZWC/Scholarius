@@ -121,6 +121,8 @@
     var detailBtn = null;
     /** 语义切分按钮（v0.1.98）—— 模型的唯一入口 */
     var segBtn = null;
+    /** 顶栏「导入排版模板」按钮（v0.2.7） */
+    var tplBtn = null;
     var bottomEl = null;
     var tocBtn = null;
     var settingsBtn = null;
@@ -872,6 +874,7 @@
         backBtn = document.getElementById('reader-back');
         detailBtn = document.getElementById('reader-detail');
         segBtn = document.getElementById('reader-seg');
+        tplBtn = document.getElementById('reader-tpl');
         bottomEl = document.getElementById('reader-bottom');
         tocBtn = document.getElementById('reader-toc-btn');
         settingsBtn = document.getElementById('reader-settings-btn');
@@ -958,6 +961,65 @@
         }
 
         mountSegBtn();
+        mountTplBtn();
+    }
+
+    /**
+     * 顶栏「导入排版模板」按钮（v0.2.7）。
+     *
+     * ══ 用户要求（原话）══
+     *
+     *   「顶部栏再增加一个导入模板的功能，也就是导入模板之后
+     *     自动按照模板渲染整个阅读视图」
+     *
+     * ✅ 流程：
+     *     选文件 → 原生读 JSON 并校验 → 推回网页 → 立即套用并重绘。
+     *     全程不需要用户再点任何东西。
+     *
+     * ══ ⚠️⚠️ 为什么必须校验 sha256 ══
+     *
+     * 模板里只有**块序号**，它是相对某一份具体 PDF 的。拿错模板套上去，
+     * 序号全部错位 —— 而且不会报错，只会"排版莫名其妙变了"。
+     *
+     * 所以：**sha 不匹配就明确拒绝**，并告诉用户原因。
+     * 静默套用比拒绝糟得多。
+     *
+     * ⚠️ 这条限制是用户明确认可的：
+     *       「只需要pdf相同就可以了……只需要对应相应的pdf就可以了」
+     */
+    function mountTplBtn() {
+        if (!tplBtn) return;
+        if (global.ScholariusUI) {
+            tplBtn.innerHTML = global.ScholariusUI.icon('template');
+        }
+        tplBtn.addEventListener('click', function () {
+            if (tplBtn.disabled) return;
+            var bridge = global.ScholariusNative;
+            if (!bridge || typeof bridge.pickTemplateFile !== 'function') {
+                toastSafe(t('reader.importTemplateFailed'));
+                return;
+            }
+            /*
+              ⚠️ 只禁用、不显示"进行中"：选文件是系统界面，
+                 用户注意力在系统文件选择器上，这里换个图标反而闪。
+              ⚠️ 必须保证一定解禁 —— 用户取消选择时原生也会回调，
+                 见 onActivityResult 里的 REQ_IMPORT_TEMPLATE 分支。
+            */
+            tplBtn.disabled = true;
+            try {
+                bridge.pickTemplateFile();
+            } catch (e) {
+                tplBtn.disabled = false;
+                toastSafe(t('reader.importTemplateFailed'));
+            }
+        });
+    }
+
+    /** 安全地弹一条 toast（UI 模块可能不存在） */
+    function toastSafe(msg) {
+        if (global.ScholariusUI && global.ScholariusUI.toast) {
+            global.ScholariusUI.toast(msg);
+        }
     }
 
     /**
@@ -1019,13 +1081,49 @@
 
             ui.confirmSheet({
                 title: t('reader.resegmentConfirmTitle'),
-                message: t('reader.resegmentConfirmBody'),
+                message: resegmentConfirmMessage(),
                 confirmLabel: t('reader.resegmentConfirmOk'),
                 cancelLabel: t('action.cancel'),
                 danger: true,
                 onConfirm: runResegment
             });
         });
+
+        /**
+         * 拼出切分确认框的正文（v0.2.7）。
+         *
+         * ══ ⚠️⚠️ 模板与切分互斥，必须说清楚 ══
+         *
+         * 用户指出：
+         *
+         *   「这样的时候重新切分的提示应该是覆盖现有模板或者说是
+         *     删除目前模板对吧？」
+         *
+         * 对。两者都重建块的序列，而且**必须**以原始提取块为基础：
+         *
+         *   · 模板按「第 N 块」定位，切分后块数从 120 变成 7，
+         *     模板里 0~119 的序号全部失效；
+         *   · 切分按字符比例合并文本，模板给的角色也会被丢掉。
+         *
+         * 也就是说它们不可能叠加，只能二选一。
+         *
+         * ✅ 没套模板时保持原文案（不吓唬用户）。
+         * ✅ 套了模板时**点名**是哪个模板 —— 用户才知道丢了什么。
+         *
+         * 用户选择了方案 A：切分即弃用模板。
+         * 切分成功后会把 `templateId` 清空（见 resegmentCurrent）。
+         */
+        function resegmentConfirmMessage() {
+            var base = t('reader.resegmentConfirmBody');
+            if (!templateCache) return base;
+            /*
+              ⚠️ 用模板名而不是 id —— id 是 `tpl-a3f59c21` 这种，
+                 用户认不出来。
+            */
+            var name = templateCache.name || templateCache.id || '';
+            return base + '\n\n' + t('reader.resegmentDropsTemplate')
+                .split('{name}').join(name);
+        }
 
         /**
          * 真正执行切分。
@@ -7455,6 +7553,39 @@
                     edits = {};
                     labels = {};
                 }
+                /*
+                  ══ ⚠️⚠️ 切分即弃用模板（v0.2.7）══
+
+                  方案 A（用户裁决）：模板与切分**互斥**，只能二选一。
+
+                  理由：模板按「第 N 块」定位，切分后块数与序号全变
+                        （120 → 7 时，模板里 0~119 的引用无一有效）。
+                        保留 templateId 只会让用户困惑：
+                        「我明明套着模板，怎么没效果」。
+
+                  ⚠️ 三处都要清，少一处就会留下"幽灵绑定"：
+                      ① 内存里的 templateCache（影响本次渲染）；
+                      ② native 的 meta.json（影响下次打开）；
+                      ③ localStorage 存档里的 role（影响块数据本身）。
+
+                  ③ 特别容易被忘：role 是跟在块上的，切分重建块时
+                     本来就不会带 role，但**存档恢复路径**可能把旧的
+                     role 带回来（如果存档里还留着）。
+                     所以切分后重写存档时，role 自然是空的 —— 见下面
+                     saveDocBlocks() 的调用时机在 continueWith 之后。
+                */
+                var droppedTpl = null;
+                if (templateCache) {
+                    droppedTpl = templateCache.name || templateCache.id;
+                    templateCache = null;
+                    trace('reader:tpl', 'dropped by resegment: ' + droppedTpl);
+                    try {
+                        var nb = global.ScholariusNative;
+                        if (nb && nb.applyTemplate) {
+                            nb.applyTemplate(docId, '');
+                        }
+                    } catch (e) { /* 清绑定失败不阻断切分 */ }
+                }
                 trace('reader:seg', 'applying: ' + source.length +
                       ' -> ' + out.length + ' blocks');
                 /*
@@ -9573,6 +9704,70 @@ function tocTitleFrom(text) {
                 : 'cleared');
         },
         /**
+         * 原生导入模板后的回调（v0.2.7）。
+         *
+         * ══ 用户要求 ══
+         *
+         *   「导入模板之后自动按照模板渲染整个阅读视图」
+         *
+         * ✅ 所以这里**导入即应用**，不需要用户再点一次。
+         *
+         * @param {string} status 'ok' | 'mismatch' | 'invalid' | 'cancelled'
+         * @param {string} payload 成功时是模板 JSON；失败时是错误说明
+         */
+        onTemplateImported: function (status, payload) {
+            /* ⚠️ 无论结果如何都要解禁按钮 —— 否则一次失败后按钮永久失效 */
+            if (tplBtn) tplBtn.disabled = false;
+
+            if (status === 'cancelled') {
+                trace('reader:tpl', 'import cancelled');
+                return false;
+            }
+            if (status !== 'ok') {
+                /*
+                  ⚠️ `mismatch` 必须给**专门的文案**：用户最可能的困惑是
+                     "我明明有这个模板，为什么不让用"。
+                     直接说"模板对应的是另一份 PDF"才能解释清楚。
+                */
+                var msg = (status === 'mismatch')
+                    ? t('reader.importTemplateMismatch')
+                    : t('reader.importTemplateFailed');
+                trace('reader:tpl', 'import failed: ' + status + ' ' + payload);
+                toastSafe(msg);
+                return false;
+            }
+
+            var tpl = null;
+            try {
+                tpl = (typeof payload === 'string') ? JSON.parse(payload) : payload;
+            } catch (e) {
+                trace('reader:tpl', 'import parse failed: ' + (e && e.message));
+                toastSafe(t('reader.importTemplateFailed'));
+                return false;
+            }
+            if (!tpl || !tpl.blocks) {
+                toastSafe(t('reader.importTemplateFailed'));
+                return false;
+            }
+
+            /*
+              ⚠️ 先落库再套用：用户导入了模板，说明他想留着它。
+                 只套用不保存的话，下次打开这篇文献模板就没了 ——
+                 而这恰恰是他刚做的事。
+            */
+            try {
+                var bridge = global.ScholariusNative;
+                if (bridge && bridge.saveTemplate && currentDoc && currentDoc.id) {
+                    bridge.applyTemplate(String(currentDoc.id), String(tpl.id || ''));
+                }
+            } catch (e) { /* 保存失败也要应用，不该白导 */ }
+
+            var ok = this.applyTemplateNow(tpl);
+            toastSafe(ok ? t('reader.importTemplateDone')
+                         : t('reader.importTemplateFailed'));
+            return ok;
+        },
+        /**
          * 直接应用模板并重绘（v0.2.6，供详情页「套用」按钮与测试用）。
          *
          * ⚠️ 与 `setTemplate` 的区别：这个会**立刻重排当前文档**，
@@ -9587,6 +9782,34 @@ function tocTitleFrom(text) {
                  所以这里先还原成 `lastBlocks`，再套。
             */
             var base = lastBlocks || docModel.blocks;
+
+            /*
+              ══ ⚠️⚠️ 套模板会覆盖已有的切分结果（v0.2.7）══
+
+              模板与切分互斥（用户裁决方案 A）。这里以 `lastBlocks`
+              （原始提取块）为基准重算，等于**丢弃**之前的切分结果 ——
+              这正是预期行为，但也意味着 `edits` / `labels` 会失效：
+              它们以行号为键，而现在的行号来自原始块，与切分后的对不上。
+
+              ⚠️ 不清的话，会出现「改过的文字跑到别的段落上」——
+                 这是最难查的一类 bug（文字还在，位置错了）。
+                 宁可丢掉，也不能错位。
+
+              ⚠️ 只在**真的套上模板**时清。取消模板（tpl 为 null）
+                 不该清用户的编辑 —— 那时块序列回到原始块，
+                 行号反而与 edits 对得上。
+            */
+            if (templateCache) {
+                var hadEdits = Object.keys(edits).length;
+                var hadLabels = Object.keys(labels).length;
+                if (hadEdits || hadLabels) {
+                    trace('reader:tpl', 'discard edits/labels on apply: ' +
+                          hadEdits + ' edits, ' + hadLabels + ' label blocks');
+                    edits = {};
+                    labels = {};
+                }
+            }
+
             var out = applyTemplate(base, templateCache);
             docModel.blocks = out.blocks;
             var ratio = 0;

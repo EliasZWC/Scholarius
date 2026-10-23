@@ -856,6 +856,29 @@
             -->
             <div class="reader-actions">
                 <!--
+                  导入排版模板（v0.2.7）。
+
+                  用户要求：
+                    「顶部栏再增加一个导入模板的功能，也就是导入模板之后
+                      自动按照模板渲染整个阅读视图」
+
+                  ✅ 行为：选一个 .json 模板 → 校验 sha256 是否匹配本文献 →
+                     匹配则立即套用并重绘；不匹配则明确告知，不静默失败。
+
+                  ⚠️ 为什么放在「切分」**左边**：
+                     切分和详情是用户已确认的两个功能位，新功能插在它们前面，
+                     现有按钮的相对位置不变 —— 用户的肌肉记忆不被打断。
+
+                  ⚠️ 与切分互斥（方案 A）：切分会丢弃模板，模板也会覆盖切分。
+                     见 reader.js 里 resegmentCurrent / applyTemplateNow 的说明。
+
+                  ⚠️ 图标由 JS 用 ScholariusUI.icon('template') 填。
+                -->
+                <button class="icon-button reader-tpl-btn" type="button"
+                    id="reader-tpl"
+                    aria-label="Import layout template"
+                    data-i18n-aria-label="reader.importTemplate"></button>
+                <!--
                   语义切分按钮（v0.1.98）。
 
                   用户裁决：「点击图标后才触发整篇文章文本的重新切分」

@@ -1314,7 +1314,8 @@ body {
 
 /* ⚠️ 组内按钮不再需要任何 margin 技巧 —— 容器已经负责定位 */
 .reader-seg-btn,
-.reader-detail-btn {
+.reader-detail-btn,
+.reader-tpl-btn {
     flex: 0 0 auto;
     margin-left: 0;
 }
