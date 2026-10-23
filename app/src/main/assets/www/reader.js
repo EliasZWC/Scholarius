@@ -405,7 +405,7 @@
      *
      * ⚠️ `undefined` 与 `''` 的区别很重要：
      *    · 表里**没有**的 role  →  `undefined` → 回退去看用户标注；
-     *    · 映射到 `''` 的 role   ���  空签名      → 走无标签的正文路径。
+     *    · 映射到 `''` 的 role   →  空签名      → 走无标签的正文路径。
      *    若都用 `''`，那"模板没管这个块"就会被误判成"模板说它是正文"，
      *    用户在模板之外的标注会全部失效。
      *
@@ -4167,43 +4167,56 @@
             btn.appendChild(nameEl);
 
             if (labelHasSub(key)) {
+                /*
+                  ══ ⚠️⚠️ 选中的子标签值显示在**左边**（v0.2.12）══
+
+                  用户要求（原话）：
+
+                    「既然子标签作为值，选中的子标签值则应该显示在选项左边，
+                      而不是隐藏」
+
+                  ── 之前错在哪 ──
+
+                  v0.2.11 把「当前子标签」拼在箭头**按钮的文本**里
+                  （`subBtn.textContent = '单位 ›'`）。问题：
+                    · 它读起来像"一个叫『单位›』的按钮"，而不是"这个标签的值"；
+                    · 值随箭头贴在行尾，与左侧的标签名隔得很远，
+                      用户要横跨整行才能确认"这条设的是单位"；
+                    · 箭头按钮变宽 → 右侧点击区不稳定。
+
+                  ── ✅ 现在 ──
+
+                  三个独立元素，从左到右：
+
+                      [作者信息]        [单位]        [›]
+                       ↑ 标签名          ↑ 当前值      ↑ 下拉按钮
+
+                  值用**胶囊**样式贴在名字右边（不是行尾），
+                  一眼就是"这个标签带了个值"。
+                  值为空时整个胶囊不渲染 —— 不留空壳。
+
+                  ⚠️ 值胶囊 `pointer-events: none`：
+                     点它应当等同于点标签本体（选中标签），
+                     而不是打开下拉。要开下拉请点箭头。
+                */
+                if (key === labelDraft && fieldDraft) {
+                    var valEl = document.createElement('span');
+                    valEl.className = 'sel-label-value';
+                    valEl.textContent = t('reader.field.' + fieldDraft);
+                    btn.appendChild(valEl);
+                }
+
                 var subBtn = document.createElement('button');
                 subBtn.type = 'button';
                 subBtn.className = 'sel-label-sub-toggle';
                 subBtn.setAttribute('aria-label', t('reader.fieldPick'));
                 subBtn.setAttribute('aria-haspopup', 'menu');
-                /*
-                  ══ ⚠️⚠️ 子标签改成「下拉操作」，不再是「折叠展开区」（v0.2.11）══
-
-                  用户要求（原话）：
-
-                    「子标签作为选项的值，下拉选择子标签，点击非下拉按钮则
-                      相当于点击标签。这样选中的直接就是标签等级，
-                      而子标签不作为折叠选项，而是下拉操作选项菜单出现」
-
-                  ── 旧行为的问题 ──
-
-                  旧设计是把子标签区**展开在这一行下面**（`subOpen`），于是：
-                    · 列表被撑长，展开时其他标签被挤下去；
-                    · 用户容易以为"展开"等于"选中了作者信息"，
-                      实际标签还没选上；
-                    · 展开区里的选项和主列表选项长得一样，层级混乱。
-
-                  ── ✅ 新行为 ──
-
-                    · 点**标签本体** → 选中该标签（子标签保持原值）；
-                    · 点右侧**箭头** → 弹出一个独立的选项面板选子标签。
-
-                  这样"选中级别"与"设置子标签"是两件独立的事，
-                  点哪里做什么一目了然。
-
-                  ⚠️ 箭头上的文字显示当前子标签（如「单位」），
-                     让用户不用打开就知道设了什么。
-                */
                 subBtn.setAttribute('aria-expanded', 'false');
-                var subLabel = (key === labelDraft && fieldDraft)
-                    ? t('reader.field.' + fieldDraft) : '';
-                subBtn.textContent = subLabel ? subLabel + ' ›' : '›';
+                /*
+                  ⚠️ 箭头**只放符号**，不再拼值（值已由上面的胶囊显示）。
+                     拼在一起会让按钮宽度随值变化，点击区不稳定。
+                */
+                subBtn.textContent = '›';
 
                 /*
                   ⚠️ 必须 `stopPropagation` —— 否则点箭头会同时触发

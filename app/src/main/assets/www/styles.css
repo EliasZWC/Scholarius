@@ -2819,23 +2819,64 @@ body {
 }
 
 /*
-  ⚠️ 选项本身变成 flex 行，让文字和右侧图标分开：
-     `justify-content: space-between` 把图标推到最右边。
+  ⚠️ 选项本身是 flex 行，从左到右三块：
+     [标签名] [当前子标签值] [箭头]
+
+  ══ ⚠️ 不能用 `justify-content: space-between`（v0.2.12）══
+
+  旧写法靠 `space-between` 把箭头推到最右。加了"值胶囊"之后，
+  `space-between` 会把**三个**元素均匀分散 —— 于是值胶囊飘到行中间，
+  离标签名很远，看起来像独立的第三列，而不是"这个标签的值"。
+
+  ✅ 改成：标签名 `flex: 0 0 auto`（不伸展）、值胶囊紧跟着它、
+     箭头 `margin-left: auto` 独占右侧空隙。
+     这样"标签 + 值"是一个整体靠左，箭头稳定靠右。
 */
 .sel-label-item {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 8px;
 }
 
-/* 标签名：允许省略号，避免长标签把图标挤出去 */
+/* 标签名：不伸展，紧贴左侧（值胶囊会跟在它后面） */
 .sel-label-name {
-    flex: 1 1 auto;
-    min-width: 0;
+    flex: 0 0 auto;
+    max-width: 45%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/*
+  当前子标签值的胶囊（v0.2.12）。
+
+  用户要求：
+    「既然子标签作为值，选中的子标签值则应该显示在选项左边，而不是隐藏」
+
+  ⚠️ 为什么用胶囊而不是纯文字：
+     它要和标签名区分开 —— 一个是"类别"，一个是"值"。
+     胶囊的底色让它读成"附着在标签上的标记"，而不是又一个标签。
+
+  ⚠️ `pointer-events: none`：
+     点它应当等同于点标签本体（选中标签），不该被它拦住。
+     要打开下拉请点右边的箭头。
+
+  ⚠️ 用 `--ui-active-bg` 而不是 `--primary`：
+     绿色在全站只表示"确认操作"，用作装饰色会让用户以为可以点。
+*/
+.sel-label-value {
+    flex: 0 0 auto;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--ui-active-bg);
+    color: var(--on-surface-variant);
+    font-size: 12px;
+    line-height: 1.6;
+    pointer-events: none;
 }
 
 /*
@@ -2858,10 +2899,20 @@ body {
      他要的是**箭头方向直接告诉你现在是什么状态**。
 */
 .sel-label-sub-toggle {
+    /*
+      ══ ⚠️⚠️ 用 margin 简写，`margin-left: auto` 必须写在里面（v0.2.12）══
+
+      踩过一次：先写 `margin-left: auto`，紧接着写 `margin: -4px -6px -4px 0`
+      —— 简写会把 left 覆盖回 0，箭头就贴到值胶囊右边去了，
+      而不是靠到行尾。
+
+      ✅ `-4px -6px -4px auto`：上右下照旧，left 留 auto 吃掉剩余空间。
+         这样"标签 + 值"靠左、箭头稳定靠右。
+    */
+    margin: -4px -6px -4px auto;
     flex: 0 0 auto;
     width: 28px;
     height: 28px;
-    margin: -4px -6px -4px 0;
     padding: 0;
     border: none;
     border-radius: 8px;
@@ -2872,14 +2923,17 @@ body {
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     /*
-      ⚠️ 默认（收起）= 指向上，展开 = 指向下。
-         见上面那段用户要求的说明。
-    */
-    transform: rotate(-90deg);
-    transition: transform 0.15s ease;
-}
+      ══ ⚠️ 箭头方向（v0.2.12）══
 
-.sel-label-sub-toggle.is-open {
+      旧含义：`rotate(-90deg)` = 指上，表示"点它能展开下面的内容"。
+
+      现在它弹的是**独立的下拉面板**，不再有"展开/收起"两种状态，
+      所以固定指向**下**（`rotate(90deg)`）—— 这是"点这里会弹出菜单"
+      的通用符号。
+
+      ⚠️ 不能保留 `-90deg`：指上会让人以为"点它是收起"，
+         而实际上点它只会弹出一个面板。
+    */
     transform: rotate(90deg);
 }
 

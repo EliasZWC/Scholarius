@@ -4,6 +4,114 @@
 
 ---
 
+## [0.2.12] - 2026-10-23
+
+### ① ⚠️ 严重：i18n.js 语法错误导致全站文案变成 key
+
+用户反馈：
+
+> 「操作条方法直接裸露了，显示为 reader.selectEdit 这样的字样。
+>   同样，进入标签选项表单也就是例如 reader.label.author 这样的裸露方法名」
+
+#### 真因
+
+`i18n.js` 里多了一个逗号：
+
+```js
+'semantic.needModel': '...',,
+```
+
+**整个文件语法错误 → 完全不执行 → `window.ScholariusI18n` 是 undefined →
+`t()` 的兜底逻辑返回 key 本身**。
+
+于是界面上出现 `reader.selectEdit` / `reader.label.author` / `reader.fieldPick`
+这类原始 key。看起来像"某个别的地方没翻译"，实际是**整套 i18n 没加载**。
+
+⚠️ 这是我上一版改文案时手误造成的（v0.2.11 的编辑操作）。
+⚠️ 为什么版本检查没拦住：`npx eslint` **不报语法错误**（它解析失败时
+只输出空结果），只有 `node --check` 会明确报 `SyntaxError`。
+**以后改完任何 JS 都必须跑一遍 `node --check`。**
+
+#### 顺带：箭头点了没反应
+
+同一个根因。`openSubPicker` 里的 `t('reader.fieldPick')` 返回 key 不影响
+打开，但 `pickSheet` 依赖的按钮文案/选项全部是 key 字符串 ——
+面板能弹出来但看起来是空/乱码，用户就以为"没反应"。
+
+#### 顺带：文件编码损坏
+
+`reader.js` 第 408 行有 3 个 U+FFFD 替换字符（`���`），是我之前编辑时
+写坏的。已修复，并检查了四个主要 JS/CSS 文件均为 0。
+
+### ② 导入模板图标换成 `description`
+
+用户指定：
+
+> 「导入模板的图标不对，用这个：@drawable/description_24」
+
+换成 Material Symbols `description`（一张纸 + 两条横线）。
+
+前两版都被否掉的原因：
+- `file_upload` —— 全是"上传到云端"的意味；
+- `dashboard_customize` —— 偏"调整仪表盘布局"。
+
+⚠️ 960 体系，已登记 `ICON_VIEWBOX`（`tools/check_icon_viewbox.py` 通过）。
+真机验证 `viewBox = 0 -960 960 960`。
+
+### ③ 子标签值显示在选项左边
+
+用户要求：
+
+> 「既然子标签作为值，选中的子标签值则应该显示在选项左边，而不是隐藏」
+
+#### 之前错在哪
+
+v0.2.11 把当前子标签**拼在箭头按钮的文本里**（`subBtn.textContent = '单位 ›'`）：
+- 读起来像"一个叫『单位›』的按钮"，而不是"这个标签的值"；
+- 值贴在行尾，与左侧标签名隔开一整行，要横跨才能确认；
+- 箭头按钮宽度随值变化，点击区不稳定。
+
+#### ✅ 现在：三个独立元素
+
+```
+[作者信息]      [单位]      [›]
+ ↑ 标签名        ↑ 值胶囊    ↑ 下拉按钮
+```
+
+- 值用**胶囊**样式贴在名字右边（`pointer-events: none`，点它等于点标签）；
+- 箭头只放符号，宽度固定 28px，点击区稳定；
+- 值为空时胶囊不渲染，不留空壳。
+
+⚠️ `justify-content: space-between` 必须去掉 —— 三个元素时它会把
+值胶囊均匀分散到行中间，看起来像独立的一列。
+改用"名字 `flex: 0 0 auto` + 箭头 `margin-left: auto`"。
+
+⚠️ 箭头方向从 `rotate(-90deg)`（指上，表示"展开下面内容"）改成
+`rotate(90deg)`（指下）。它现在弹的是独立面板，没有"展开/收起"两态，
+指上会让人以为"点它是收起"。
+
+### ④ 标签名简化
+
+用户要求：
+
+> 「另外不叫 Article Title 和 Author Info 了，直接叫 Title 和 Author」
+
+| key | 改前 | 改后 |
+|---|---|---|
+| `reader.label.title` | Article Title / 文章标题 | **Title / 标题** |
+| `reader.label.author` | Author Info / 作者信息 | **Author / 作者** |
+
+真机验证：
+
+```
+ScholariusI18n = object
+reader.label.author = 作者
+reader.label.title  = 标题
+reader.selectEdit   = 编辑
+```
+
+---
+
 ## [0.2.11] - 2026-10-23
 
 ### ① 语义模型改名
