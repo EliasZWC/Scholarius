@@ -5892,9 +5892,15 @@
         var refSeq = 0;
         var lastLabelKey = null;   // 上一个区域的标签（相邻同类只输出一次头）
 
-        function pushLabelHead(labelKey, isH1) {
+        function pushLabelHead(labelKey, isH1, force) {
             if (!labelKey) return;
-            if (lastLabelKey === labelKey) return;
+            /*
+              ⚠️ `force` = 每个区域都输出一次标签段（v0.2.28）。
+                 作者区用它 —— 用户要求「每一个作者区域前面都增加一个
+                 author 的前置文本」。而标题/文献仍按"相邻同类只输出一次"
+                 （否则连续 20 个一级标题会重复 20 次「Heading 1」）。
+            */
+            if (!force && lastLabelKey === labelKey) return;
             lastLabelKey = labelKey;
             var head = document.createElement('p');
             head.className = 'reader-label-head';
@@ -6125,7 +6131,12 @@
 
                 if (isAuthorItem) {
                     closeList();
-                    pushLabelHead('author', false);
+                    /*
+                      ⚠️ 每个作者区域都输出一次「Author」前置文本（v0.2.28）——
+                         用户要求：「每一个作者区域前面都增加一个 author 的前置文本」。
+                         所以这里传 `force = true`，跳过相邻去重。
+                    */
+                    pushLabelHead('author', false, true);
                     authorSeq++;
 
                     /*

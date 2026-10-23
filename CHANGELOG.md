@@ -4,6 +4,33 @@
 
 ---
 
+## [0.2.28] - 2026-10-24
+
+### 每个作者区域都带 Author 前置文本
+
+用户要求：
+
+> 「我希望每一个作者区域前面都增加一个 author 的前置文本」
+
+之前 `pushLabelHead` 会做相邻去重（同类标签只输出一次），
+所以连续多个作者项只看到第一个 `Author`。
+
+现在 `pushLabelHead` 增加 `force` 参数，作者区传 `force = true`：
+
+```
+Author
+A1  Ashish Vaswani
+Author
+A2  Author Name      Noam Shazeer
+Author
+A3  Author Affiliation  Google Brain
+```
+
+⚠️ 标题/文献仍保持相邻去重 —— 否则连续 20 个一级标题
+会重复 20 次「Heading 1」。
+
+---
+
 ## [0.2.27] - 2026-10-24
 
 ### 作者项：判別字段不显示 + 左右两欄
