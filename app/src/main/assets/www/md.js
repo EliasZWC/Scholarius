@@ -128,30 +128,49 @@
      */
     function authorNested(items, labelFn) {
         var lines = [];
-        var children = [];
 
+        /*
+          ══ ⚠️⚠️ 每一项都是**平级**的 `- `，不再嵌套（v0.2.22 用户裁决）══
+
+          用户原话：
+            「按我的要求，没有划分的时候应该是
+                - ashish vaswani
+                - google brain
+             这个时候如果标注了姓名，则应该是
+                - Author Name: ashish vaswani
+                - Author Affiliation: Google Brain
+             这样子。」
+
+          ✅ 所以：
+            · 未划分子标签 → `- 文本`
+            · 划了子标签   → `- Author Name: 文本`
+
+          ⚠️ 旧的**嵌套**写法（父项 `- 姓名` 下面缩进 `  - 单位：…`）已废弃。
+             理由：嵌套在 md 里表达的是"这个子项属于上一条"，
+             而作者姓名/单位/邮箱本质是**并列的条目**（各占一行），
+             不是从属关系。用户要的也是并列。
+
+          ⚠️ 前缀统一是 `Author`，后面跟 field 的显示名 ——
+             不能只写 `Name:`，那样在全文中会和"文献里的 Name"混淆。
+             前缀由调用方通过 `labelFn` 给出（i18n 里已是「作者姓名」等）。
+        */
         for (var i = 0; i < items.length; i++) {
             var it = items[i];
             var text = pad(it.text);
             if (!text) continue;
-            if (!it.field || it.field === 'name') {
-                /*
-                  ⚠️ 遇到新的"无标签行"/姓名字段 → 它自己是一个父项。
-                     ⚠️ 先把上一组的子项挂上去，否则子项会跑到下一个父项下面。
-                */
-                flushChildren();
+            if (!it.field) {
+                /* 没有子标签 → 纯文本条目 */
                 lines.push('- ' + text);
             } else {
-                children.push('  - ' + labelFn(it.field) + '：' + text);
+                /*
+                  ⚠️ 分隔符用**冒号 + 空格**，与用户给的示例一致
+                     （`- Author Name: ashish vaswani`）。
+                  ⚠️ 不用全角冒号 —— 用户示例里是半角。
+                */
+                lines.push('- ' + labelFn(it.field) + ': ' + text);
             }
         }
-        flushChildren();
         return lines;
-
-        function flushChildren() {
-            for (var k = 0; k < children.length; k++) lines.push(children[k]);
-            children = [];
-        }
     }
 
     /**
@@ -204,19 +223,66 @@
      *
      * @param kind     块类型（提取层给的 `heading` / `paragraph` …，
      *                 或用户标注覆盖后的类型）
-     * @param level    层级（1 / 2 / 3；提取层最多给到 2）
+     * @param level    层级（0=文章标题 / 1 / 2 / 3；提取层最多给到 2）
      * @param isFirst  是不是全文第一个块
      * @return 前缀字符串，空串表示"不是标题"
      */
     function headingPrefix(kind, level, isFirst) {
+        /*
+          ⚠️ `h1` / `h2` / `h3` 也算标题（v0.2.21）——
+             用户标注层用 h1/h2/h3 作为标签名，reader.js 会把
+             kind 规范成 heading，但兜底逻辑也要认，
+             否则直接传 h1 时前缀为空、标题退化成正文。
+        */
+        if (kind === 'h1' || kind === 'h2' || kind === 'h3') {
+            var hv = kind === 'h1' ? 1 : (kind === 'h2' ? 2 : 3);
+            if (level != null) hv = Number(level) || hv;
+            if (hv <= 1) return '##';
+            if (hv === 2) return '###';
+            return '####';
+        }
         if (kind !== 'heading') return '';
-        var lv = Number(level) || 0;
+        var lv = Number(level);
+        if (isNaN(lv)) lv = 0;
 
         /*
-          ⚠️ 文章标题的唯一判据是"全文第一块 + 是标题"。
-             不能用 `level === 1` 单独判 —— 正文里的章标题也是 1。
+          ══ ⚠️⚠️ `level === 0` 是"文章标题"的**专用信号**（v0.2.21）══
+
+          用户裁决：
+            「标注为文章标题的，应为md的一级标题；文章中的Heading
+              分别对应md的二三四级标题。」
+
+          title 标注由 reader.js 翻译成 `kind='heading', level=0`，
+          这里见到 0 就出 `#`，与位置无关 —— 用户标了文章标题，
+          它就该是 `#`，哪怕它不在全文第一块。
+
+          ⚠️ 不能再用 `isFirst` 兜底出 `#` 之后还让 level 参与判断：
+             旧代码 `if (isFirst) return '#'` 会让**首块里的章标题**
+             也被当成文章标题，而首块往往同时含标题和正文。
         */
-        if (isFirst) return '#';
+        if (lv === 0) return '#';
+
+        if (isFirst) {
+            /*
+              ══ ⚠️⚠️ 首块而且是标题 → 文章标题 `#`（v0.2.21 修）══
+
+              用户裁决：
+                「标注为文章标题的，应为md的一级标题；文章中的Heading
+                  分别对应md的二三四级标题。」
+
+              这里要处理的是**没有 title 标注、靠提取层判断**的情形：
+              PDF 的首块被识别成 heading（`level` 可能是 1），
+              按"章节标题"规则会算成 `##`，但它是**文章标题**，
+              必须是一个 `#`。
+
+              ⚠️ 判据只用 `isFirst && kind === 'heading'`：
+                 · 首块不可能是章节标题（章节标题前面一定有文章标题）
+                 · 只有一块文档时，它是标题也是文章标题，`#` 正确
+              ⚠️ 这和下面 `level == null` 的分支不重复：
+                 那个是"提取层没给 level"，这个是"给了也照样要 `#`"。
+            */
+            return '#';
+        }
         if (lv <= 1) return '##';
         if (lv === 2) return '###';
         return '####';

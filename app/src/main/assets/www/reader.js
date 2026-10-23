@@ -2563,6 +2563,159 @@
      *    仍按提取层类型处理 —— 因为"这一整块是什么"不能用一小段决定，
      *    那些子标签的语义在 Markdown 里也有别的方式表达（作者项、引用）。
      */
+    /**
+     * 把一个块按**标注区间**切成若干段（v0.2.21）。
+     *
+     * ══ ⚠️⚠️ 为什么必须切 ══
+     *
+     * PDF 提取经常把几种内容挤进同一个块，论文首块最典型：
+     *
+     *     Attention Is All You Need Ashish Vaswani∗ … Google Brain …
+     *     … Abstract The dominant sequence transduction models …
+     *
+     * 用户在 app 里已经把「Attention Is All You Need」标成 title、
+     * 把作者名/单位/邮箱标成 author 子标签、把摘要标成 abstract。
+     * 但序列化时若按"整块一条类型"处理，这些标注**一个都用不上**，
+     * 整块变成普通段落 —— md 里既没有 `#` 也没有 `- `，
+     * 数据等于没保存。
+     *
+     * ✅ 所以按标注边界切段：每段自己一种类型。
+     *    没有标注覆盖的部分（标注之间的空隙）保持整块类型。
+     *
+     * ══ 切分规则 ══
+     *
+     *   ① 只切**块级**标注（title / heading / h1-3 / author / abstract /
+     *      reference / body）—— 行内标注（cite、author 子标签的 field）
+     *      跟着它所在的段走，不单独成段。
+     *   ② 相邻且同 label 的区间合并成一段（用户分几次选同一处时）。
+     *   ③ 空隙（未标注部分）如果只有空白 → 丢弃；否则成一段正文。
+     *
+     * @param text   整块文本
+     * @param spans  该块的标注数组（可为 null）
+     * @return {Array<{text:string, start:number, label:string|null, marks:Array}>}
+     */
+    var BLOCK_LABELS = {
+        title: true, heading: true, h1: true, h2: true, h3: true,
+        author: true, abstract: true, reference: true, body: true
+    };
+
+    function splitBlockByMarks(text, spans) {
+        var src = String(text == null ? '' : text);
+        if (!spans || !spans.length) {
+            return [{ text: src, start: 0, label: null, marks: [] }];
+        }
+
+        /*
+          ⚠️ 只取**块级**标注来定段。子标签（author + field）不算段边界 ——
+             它们描述的是"段内某几个词是什么"，不是"这里换了一种内容"。
+        */
+        var bounds = [];
+        for (var i = 0; i < spans.length; i++) {
+            var sp = spans[i];
+            if (!sp || !sp.label) continue;
+            if (!BLOCK_LABELS[sp.label]) continue;
+            /*
+              ══ ⚠️⚠️ `author + field` 也算段边界（v0.2.22 修）══
+
+              旧逻辑把它排除（"子标签不算段边界"），本意是：
+              子标签描述段内某几个词，不改变这一段的内容类型。
+
+              但**整块只有子标签**时（用户只给某一块标了「作者单位」，
+              没单独标「作者」），排除之后就一个边界都没有 →
+              这一块被当成正文 → 子标签彻底丢失（md 里只剩 `- Google Brain`）。
+
+              ✅ 修正：仍然**优先**用无 field 的 author 做边界；
+                 但如果这一块里只有带 field 的 author，就用它们做边界。
+                 判据放在两个循环里：先扫无 field，扫不到再用有 field 的。
+            */
+            if (sp.label === 'author' && sp.field) continue;
+            var s = Math.max(0, Math.min(Number(sp.start) || 0, src.length));
+            var e = Math.max(0, Math.min(Number(sp.end) || 0, src.length));
+            if (e <= s) continue;
+            bounds.push({ start: s, end: e, label: sp.label });
+        }
+        /*
+          ⚠️ 没有任何**无 field** 的块级标注时，退回"只有子标签的 author" ——
+             只要这块被标了任何一个 author 子标签，它整体就是作者项。
+        */
+        if (!bounds.length) {
+            for (var f2 = 0; f2 < spans.length; f2++) {
+                var sf = spans[f2];
+                if (!sf || sf.label !== 'author' || !sf.field) continue;
+                var fs = Math.max(0, Math.min(Number(sf.start) || 0, src.length));
+                var fe = Math.max(0, Math.min(Number(sf.end) || 0, src.length));
+                if (fe <= fs) continue;
+                bounds.push({ start: fs, end: fe, label: 'author' });
+            }
+            /*
+              ⚠️ 多个子标签区间之间可能有空隙（子标签只覆盖了部分词），
+                 这里把**整个块**当作一个 author 段 —— 否则空隙会变成
+                 独立的"正文段"，把同一作者的姓名/单位拆开。
+            */
+            if (bounds.length) {
+                bounds = [{ start: 0, end: src.length, label: 'author' }];
+            }
+        }
+        if (!bounds.length) {
+            return [{ text: src, start: 0, label: null, marks: [] }];
+        }
+        bounds.sort(function (a, b) { return a.start - b.start || b.end - a.end; });
+
+        /* ② 相邻同 label 合并（含首尾相接的重叠） */
+        var merged = [];
+        for (var m = 0; m < bounds.length; m++) {
+            var cur = bounds[m];
+            var last = merged[merged.length - 1];
+            if (last && last.label === cur.label && cur.start <= last.end) {
+                if (cur.end > last.end) last.end = cur.end;
+            } else {
+                merged.push({ start: cur.start, end: cur.end, label: cur.label });
+            }
+        }
+
+        /* ③ 补空隙 + 生成段 */
+        var pieces = [];
+        var cursor = 0;
+        for (var k = 0; k < merged.length; k++) {
+            var seg = merged[k];
+            if (seg.start > cursor) {
+                pieces.push({
+                    text: src.slice(cursor, seg.start),
+                    start: cursor,
+                    label: null,
+                    marks: []
+                });
+            }
+            pieces.push({
+                text: src.slice(seg.start, seg.end),
+                start: seg.start,
+                label: seg.label,
+                marks: []
+            });
+            cursor = Math.max(cursor, seg.end);
+        }
+        if (cursor < src.length) {
+            pieces.push({ text: src.slice(cursor), start: cursor, label: null, marks: [] });
+        }
+
+        /* 把每条标注（含子标签）挂到它所属的段上 */
+        for (var q = 0; q < spans.length; q++) {
+            var mark = spans[q];
+            if (!mark || !mark.label) continue;
+            var ms = Number(mark.start) || 0;
+            for (var p = 0; p < pieces.length; p++) {
+                var pc = pieces[p];
+                var pcEnd = pc.start + pc.text.length;
+                if (ms >= pc.start && ms < pcEnd) {
+                    pc.marks.push(mark);
+                    break;
+                }
+            }
+        }
+
+        return pieces;
+    }
+
     function markdownOfDoc() {
         var md = global.ScholariusMarkdown;
         if (!md) return '';
@@ -2646,19 +2799,95 @@
                 }
             }
 
-            out.push({
-                kind: kind,
-                level: level,
-                text: text,
-                lines: b.lines,
+            /*
+              ══ ⚠️⚠️ 一个提取块可以**被切成多个 md 块**（v0.2.21）══
+
+              用户裁决：
+                「标注为文章标题的，应为md的一级标题；文章中的Heading
+                  分别对应md的二三四级标题。文献对应有序列表，
+                  作者对应无序列表。正文段则也应该在md中为自然段。」
+
+              **根本问题**：之前一个块只输出一个 md 块，类型由
+              "覆盖整块的那条标注"决定。但 PDF 提取常把多种内容
+              挤进一个块 —— 例如论文首块：
+
+                  标题 / 作者 / 单位 / 邮箱 / Abstract / 摘要正文
+
+              整块标不上任何单一类型 → 退回 `paragraph` →
+              `#`、`- `、`1. ` 一个都写不出来，标注全部静默丢失。
+
+              ✅ 现在按**标注区间**把块切开：每个区间一段，
+                 各段独立决定类型。没有标注覆盖的部分为正文。
+
+              ⚠️ 切分只用**已有标注的边界**，不做任何"猜边界"算法 ——
+                 那正是历史上反复出错的地方。
+            */
+            var pieces = splitBlockByMarks(text, spans);
+            for (var pi = 0; pi < pieces.length; pi++) {
+                var pc = pieces[pi];
+                var pieceText = pc.text;
+                if (!pieceText.replace(/\s+/g, '')) continue;
+
                 /*
-                  ⚠️ 作者块的子标签（v0.1.91）—— 只有 author 才需要。
-                     见 authorItemsOf() 的说明。
+                  ⚠️ 段自己带的标签优先；没有标签的段
+                     （标注之间的空隙）沿用整块的类型 —— 这样
+                     未标注的正文块行为与改动前完全一致。
                 */
-                authorItems: (kind === 'author' && spans)
-                    ? authorItemsOf(text, b.lines, spans)
-                    : null
-            });
+                var pieceKind = pc.label || kind;
+                var pieceLevel = level;
+                /*
+                  ══ ⚠️⚠️ 层级映射（用户裁决）══
+
+                    「标注为文章标题的，应为md的一级标题；文章中的Heading
+                      分别对应md的二三四级标题。」
+
+                    title → `#`
+                    h1    → `##`
+                    h2    → `###`
+                    h3    → `####`
+
+                  ⚠️ 关键是 **title 必须同时把 kind 设成 heading、
+                     并且 level 设成 0** —— case 1：
+                     旧代码只改 kind 不改 level，而 level 是提取层的
+                     （普通段落 = 0）→ headingPrefix 算出 `####` 或空。
+                  ⚠️ `title` 用 level = 0 是一个**专用信号**，
+                     headingPrefix 见到它就返回 `#`，与"是不是首块"无关 ——
+                     用户标了文章标题，那它就该是 `#`，哪怕不在第一位。
+                */
+                if (pc.label === 'title') { pieceKind = 'heading'; pieceLevel = 0; }
+                else if (pc.label === 'h1') { pieceKind = 'heading'; pieceLevel = 1; }
+                else if (pc.label === 'h2') { pieceKind = 'heading'; pieceLevel = 2; }
+                else if (pc.label === 'h3') { pieceKind = 'heading'; pieceLevel = 3; }
+
+                /*
+                  ⚠️ 作者段的子标签：区间要**相对这一段**重新算，
+                     否则 authorItemsOf 收到的 start/end 是整块的坐标，
+                     全都会越界。
+                */
+                var pieceSpans = null;
+                if (pieceKind === 'author') {
+                    pieceSpans = [];
+                    for (var pj = 0; pj < (pc.marks || []).length; pj++) {
+                        var pm = pc.marks[pj];
+                        pieceSpans.push({
+                            start: pm.start - pc.start,
+                            end: pm.end - pc.start,
+                            label: pm.label,
+                            field: pm.field
+                        });
+                    }
+                }
+
+                out.push({
+                    kind: pieceKind,
+                    level: pieceLevel,
+                    text: pieceText,
+                    lines: (pieces.length === 1) ? b.lines : null,
+                    authorItems: (pieceKind === 'author' && pieceSpans && pieceSpans.length)
+                        ? authorItemsOf(pieceText, null, pieceSpans)
+                        : null
+                });
+            }
         }
 
         /*
@@ -6039,6 +6268,30 @@
      */
     function renderBlocks(blocks) {
         if (!blocks || !blocks.length) return;
+        /*
+          ══ ⚠️⚠️ 预计算有序列表的真实序号（v0.2.21）══
+
+          md 里文献是有序列表，编号是绝对的（`1.` `2.` …）。
+          渲染时不能靠 CSS 计数器 —— 一条文献往往跨多个块，
+          计数器会在每块重新开始，全变成 1。
+
+          ✅ 在这里**一遍扫过**算出每条有序项的编号，
+             挂到块的 `mdNum` 上，`makeBlockEl` 直接读。
+             只有 `reader-md-ordered` 的块递增。
+
+          ⚠️ 序号从 1 开始，连续；遇到非有序块**不重置** ——
+             文献区分成多段（正文夹注释）时编号仍应连续。
+        */
+        var num = 0;
+        for (var i = 0; i < blocks.length; i++) {
+            var b = blocks[i];
+            if (!b) continue;
+            var lm = String(b.listMarker || '');
+            if (lm && lm.indexOf('-') < 0 && lm.indexOf('*') < 0) {
+                num += 1;
+                b.mdNum = num;
+            }
+        }
         renderFlat(blocks);
     }
 
@@ -6976,11 +7229,68 @@
         return 'reader-role-' + b.role;
     }
 
+    /**
+     * md 结构 → 语义 class（v0.2.21）。
+     *
+     * ══ ⚠️⚠️ 与 `roleClassOf` 的分工 ══
+     *
+     *   `roleClassOf`  = **模板**指定的角色（用户导入了排版模板）
+     *   本函数         = **md 结构**本身携带的类型（`#` / `- ` / `1. `）
+     *
+     * 两者来源不同，都要加。模板优先（它更具体），但 md 的类型
+     * 不能因为"没有模板"就消失 —— 那等于 md 只存不用。
+     *
+     * ══ ⚠️ 只加"语义标识"，不改字号 ══
+     *
+     * 用户 v0.1.39 裁决：「不允许有任何模板，我看到的应该是无等级的全部文本」。
+     * 那条说的是**视觉上不许有等级差异**（标题不该比正文大）。
+     * 所以这里给的 class 只用于：
+     *   · 列表块画出 `•` / `1.` 记号（这是 md 的内容，不是装饰）
+     *   · 标注、导出、目录识别需要知道"这是标题/作者/文献"
+     * **字号一律不变** —— CSS 里这些 class 不设 font-size。
+     *
+     * @param {Object} b 块（含 kind / level / listMarker）
+     * @return {string} 空格分隔的 class 名，可能为空串
+     */
+    function mdClassOf(b) {
+        if (!b) return '';
+        var out = [];
+
+        /* ① 列表记号：md 原生 `- ` / `1. ` —— 必须画出来，否则不是列表 */
+        if (b.listMarker) {
+            out.push(String(b.listMarker).indexOf('-') >= 0 ||
+                     String(b.listMarker).indexOf('*') >= 0
+                ? 'reader-md-bullet'
+                : 'reader-md-ordered');
+        }
+
+        /* ② md 里的标题层级（`#`..`####`）*/
+        if (b.kind === 'heading') {
+            var lv = Number(b.level);
+            if (isNaN(lv)) lv = 1;
+            /* level 0 = 文章标题（md 的一个 `#`）*/
+            if (lv === 0) out.push('reader-md-title');
+            else if (lv <= 1) out.push('reader-md-heading1');
+            else if (lv === 2) out.push('reader-md-heading2');
+            else out.push('reader-md-heading3');
+        }
+
+        return out.join(' ');
+    }
+
     function makePlainPara(text, b) {
         var p = document.createElement('p');
         p.className = 'reader-para';
         var rc = roleClassOf(b);
         if (rc) p.classList.add(rc);
+        /* ⚠️ md 结构标识也要加（v0.2.21）—— 与 role 并存，见 mdClassOf */
+        var mc = mdClassOf(b);
+        if (mc) {
+            var mcs = mc.split(' ');
+            for (var mi = 0; mi < mcs.length; mi++) {
+                if (mcs[mi]) p.classList.add(mcs[mi]);
+            }
+        }
         p.textContent = text;
         if (b) {
             if (b.page) p.setAttribute('data-page', String(b.page));
@@ -7031,6 +7341,39 @@
         */
         var rc = roleClassOf(b);
         if (rc) el.classList.add(rc);
+
+        /*
+          ══ ⚠️⚠️ md 结构标识（v0.2.21）══
+
+          `#` → reader-md-title / heading1..3
+          `- ` → reader-md-bullet
+          `1. ` → reader-md-ordered
+
+          ⚠️ 这些 class **不改字号**（遵守 v0.1.39「无等级」裁决），
+             只让列表记号画得出来、让标注/导出知道块的语义类型。
+        */
+        var mc = mdClassOf(b);
+        if (mc) {
+            var mcs = mc.split(' ');
+            for (var mi = 0; mi < mcs.length; mi++) {
+                if (mcs[mi]) el.classList.add(mcs[mi]);
+            }
+            /*
+              ⚠️ 有序列表的序号（v0.2.21）。
+
+              md 里写的是绝对编号（`1.` `2.` `3.`…），CSS 的
+              `counter()` 会在每个新列表重新开始 —— 而文献往往
+              跨多个块，那样就会全变成 1。所以把**真实编号**
+              写进 `data-md-num`，CSS 用 `attr()` 读它。
+
+              ⚠️ `b.mdNum` 由 renderBlocks 预先算好（见那里）——
+                 这里只读取，不自己数，否则每条渲染路径都要重算一遍。
+            */
+            if (el.classList.contains('reader-md-ordered') &&
+                typeof b.mdNum === 'number') {
+                el.setAttribute('data-md-num', b.mdNum + '.');
+            }
+        }
 
         /*
           ══ 应用编辑结果（v0.1.45）══
@@ -8579,6 +8922,16 @@
                     kind: b.kind || '',
                     level: b.level,
                     lines: b.lines,
+                    /*
+                      ══ ⚠️⚠️ `listMarker`：md 里的 `- ` / `1. ` 记号（v0.2.21）══
+
+                      之前这里没存它 —— 于是 md 解析出"这是列表项"，
+                      传到这里就丢了，渲染和回写都看不见。
+                      这正是"md 结构没被用上"的一处具体落点。
+
+                      取值："" = 不是列表项；"- " = 无序；"1. " = 有序。
+                    */
+                    listMarker: b.listMarker || '',
                     /*
                       ══ 排版模板给的角色（v0.2.6）══
 
@@ -10542,6 +10895,7 @@ function tocTitleFrom(text) {
                 return {
                     line: b.line, page: b.page, text: b.text || '',
                     kind: b.kind || '', level: b.level, lines: b.lines,
+                    listMarker: b.listMarker || '',
                     role: b.role || '', roleLevel: b.roleLevel
                 };
             });

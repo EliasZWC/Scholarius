@@ -317,10 +317,17 @@
             'reader.citeEmpty': 'No references yet. Label some paragraphs as References first.',
             'reader.fieldPick': 'Author Field',
             'reader.fieldNone': 'Not Set',
-            'reader.field.name': 'Name',
-            'reader.field.affiliation': 'Affiliation',
-            'reader.field.email': 'Email',
-            'reader.field.contact': 'Contact',
+            /*
+              ⚠️ 子标签统一加 `Author` 前缀（v0.2.22 用户裁决）：
+                 「子标签中不用Name或者Affiliation啥的了，统一加前缀Author」
+
+                 这两个键会**原样写进 md**（`- Author Name: ashish vaswani`），
+                 所以要改就得两边一起改，否则存盘内容会变。
+            */
+            'reader.field.name': 'Author Name',
+            'reader.field.affiliation': 'Author Affiliation',
+            'reader.field.email': 'Author Email',
+            'reader.field.contact': 'Author Contact',
 
             // 阅读设置：字体
             'reader.font': 'Font',
@@ -698,10 +705,11 @@
             'reader.citeEmpty': '还没有文献。先把几段标注为「参考文献」。',
             'reader.fieldPick': '作者项',
             'reader.fieldNone': '不设置',
-            'reader.field.name': '姓名',
-            'reader.field.affiliation': '单位',
-            'reader.field.email': '邮箱',
-            'reader.field.contact': '联系方式',
+            /* ⚠️ 与英文一致，统一 `作者` 前缀（v0.2.22）——会写进 md */
+            'reader.field.name': '作者姓名',
+            'reader.field.affiliation': '作者单位',
+            'reader.field.email': '作者邮箱',
+            'reader.field.contact': '作者联系方式',
 
             // 阅读设置：字体
             'reader.font': '字体',

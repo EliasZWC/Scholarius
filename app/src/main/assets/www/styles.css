@@ -1867,6 +1867,65 @@ body {
     opacity: 0.9;
 }
 
+/* =====================================================================
+   md 结构标识（v0.2.21）
+
+   ══ ⚠️⚠️ 这些 class **不许改字号** ══
+
+   用户 v0.1.39 裁决：
+     「不允许有任何模板，我导入一个新的 pdf 进来，
+       我看到的应该是无等级的全部文本才对」
+
+   那条裁决针对的是**视觉等级**（标题比正文大）。所以：
+     · `reader-md-title` / `heading1..3` —— **只用来标识**，
+       不加 font-size、不加 margin、不换字体。
+       标注、导出、目录识别需要知道块的语义，靠它们。
+     · `reader-md-bullet` / `reader-md-ordered` —— **必须**画记号，
+       因为 `- ` / `1. ` 是 md 的**内容**，不是装饰：
+       不画出来，用户就看不到"这是一条作者项/文献"，
+       等于 md 结构在界面上不存在。
+   ===================================================================== */
+
+/* 无序列表项（作者区）：行首一个圆点，正文缩进对齐 */
+.reader-md-bullet {
+    position: relative;
+    padding-left: 1.15em;
+}
+
+.reader-md-bullet::before {
+    content: '•';
+    position: absolute;
+    left: 0.28em;
+    /*
+      ⚠️ 用 `opacity` 而不是浅色 —— 深色主题下浅灰会看不清，
+         而降低不透明度在两种主题下都合适。
+    */
+    opacity: 0.55;
+}
+
+/*
+  有序列表项（文献区）
+
+  ⚠️ 序号由 `data-md-num` 提供（写入时算好的真实编号）。
+     不用 CSS 计数器：文献常跨多个块，计数器会重新开始，
+     而 md 里写的就是绝对编号（`1.` `2.` `3.`…），要一致。
+*/
+.reader-md-ordered {
+    position: relative;
+    padding-left: 1.9em;
+    text-indent: -1.9em;
+}
+
+.reader-md-ordered::before {
+    content: attr(data-md-num);
+    display: inline-block;
+    min-width: 1.55em;
+    text-indent: 0;
+    opacity: 0.6;
+    font-variant-numeric: tabular-nums;
+}
+
+
 /*
   ══ 一级标题：前置文本 + 章节分隔线（v0.1.71）══
 

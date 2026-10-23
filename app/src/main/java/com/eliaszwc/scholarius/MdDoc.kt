@@ -244,6 +244,35 @@ object MdDoc {
                 kind = "author"
                 listMarker = "- "
                 body = bm.groupValues[1].trim()
+                /*
+                  ══ ⚠️⚠️ 还原 `- Author Name: 文本` 的子标签（v0.2.22）══
+
+                  写入方向（见 www/md.js 的 authorNested）：
+                    未划分子标签 → `- Google Brain`
+                    划了子标签   → `- Author Affiliation: Google Brain`
+
+                  ✅ 读回来时必须认出前缀，否则子标签信息只存在文本里，
+                     渲染层不知道"这一条是单位"，标注 UI 也显示不出当前值。
+
+                  做法：匹配「`Author <字段名>: `」前缀，命中则
+                    · 把 `body` 改成冒号后的内容
+                    · 补一条覆盖整个 body 的 `author` 标注，`field` = 字段
+
+                  ⚠️ 只认**已知**字段名，不认任意前缀 —— 否则作者名里
+                     出现「Author: xxx」这种字样就会被误拆。
+                  ⚠️ 前缀里 `Author` 后必需有空格：`Author Name` / `Author Affiliation`
+                     / `Author Email` / `Author Contact`。中英文两套都认。
+                */
+                val fieldHit = AUTHOR_FIELD_PREFIX.matchEntire(body)
+                if (fieldHit != null) {
+                    val fieldText = fieldHit.groupValues[1]
+                    val rest = fieldHit.groupValues[2].trim()
+                    val fieldKey = AUTHOR_FIELD_BY_LABEL[fieldText.lowercase()]
+                    if (fieldKey != null && rest.isNotEmpty()) {
+                        body = rest
+                        marks.add(Mark(0, rest.length, "author", fieldKey))
+                    }
+                }
                 any = true
             } else if (om != null) {
                 kind = "reference"
@@ -311,6 +340,34 @@ object MdDoc {
         }
         return Parsed(blocks, any)
     }
+
+    /**
+     * `- Author <字段名>: <文本>` 的前缀（v0.2.22）。
+     *
+     * ⚠️ 第 1 组是字段名，第 2 组是正文。
+     * ⚠️ 冒号后有空格（与写入侧一致），避免把 `Author Name:` 本身当内容。
+     */
+    private val AUTHOR_FIELD_PREFIX =
+        Regex("^Author\\s+([A-Za-z]+)\\s*:\\s*(.+)$", RegexOption.IGNORE_CASE)
+
+    /**
+     * 字段名 → `author` 标注的 `field` 键。
+     *
+     * ⚠️ 键必须与 www/i18n.js 的 `reader.field.<键>` **一一对应**，
+     *    也要与 reader.js 的 AUTHOR_FIELDS 一致。
+     * ⚠️ 中英文都收：md 可能是任意一种语言写出来的，
+     *    读回来都要认（用户可能换过界面语言）。
+     */
+    private val AUTHOR_FIELD_BY_LABEL: Map<String, String> = mapOf(
+        "name" to "name",
+        "affiliation" to "affiliation",
+        "email" to "email",
+        "contact" to "contact",
+        "姓名" to "name",
+        "单位" to "affiliation",
+        "邮箱" to "email",
+        "联系方式" to "contact"
+    )
 
     /**
      * 从一块文本里剥掉注释，并把可识别的标注收集出来。
