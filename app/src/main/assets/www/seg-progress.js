@@ -108,9 +108,37 @@
         barEl.querySelector('.seg-bar-fill').style.width = '0%';
         pctEl.textContent = '0%';
         textEl.textContent = t('seg.loading');
-
-        barEl.classList.add('is-open');
         barEl.dataset.total = String(total || 0);
+
+        /*
+          ══ ⚠️⚠️ 显示前必须**断开过渡**（v0.2.0，实测出的坑）══
+
+          现象：点了切分按钮，进度条**根本不出现** —— 实测
+          `getComputedStyle(bar).opacity` 在 2 帧之后仍然是 `0`，
+          而 `is-open` class 明明已经加上。
+
+          真因：这是**第二次**使用进度条时的典型症状。
+            上次结束时 `hide()` 移除了 `is-open`，过渡把 opacity
+            从 1 渐变到 0（240ms）。如果用户在这 240ms 内又点了切分
+            （或者上一次的过渡还没跑完），`start()` 立刻加回
+            `is-open`。浏览器会把"移除 → 添加"这两个 class 变化
+            **合并到同一帧**，等于"没有变化"，于是不启动新过渡，
+            opacity 就卡在中间值或 0。
+
+          ✅ 修法（标准做法）：先把 `transition` 置 none、移除 class，
+             强制读一次 `offsetHeight` 触发重排（让浏览器**确认**
+             样式已经回到初始态），再恢复 transition、加回 class。
+             这样新过渡一定从头开始。
+
+          ⚠️ 不能只写 `barEl.offsetHeight;` 而不改 transition ——
+             重排会算，但过渡仍然是"同一个未完成的过程"，不会重启。
+        */
+        barEl.style.transition = 'none';
+        barEl.classList.remove('is-open');
+        /* 强制重排：读 offsetHeight 会让浏览器把上面的样式状态落实 */
+        void barEl.offsetHeight;
+        barEl.style.transition = '';
+        barEl.classList.add('is-open');
     }
 
     /** 进度：`done`/`total` 都是句子数 */

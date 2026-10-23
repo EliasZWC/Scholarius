@@ -274,26 +274,52 @@
         */
         segLog('ensureModel: start');
 
-        loadPromise = waitRuntime(15000).then(function (lib) {
-            segLog('runtime ready, version=' + lib.env.version);
-            segLog('localModelPath=' + lib.env.localModelPath);
-            segLog('wasmPaths=' + lib.env.backends.onnx.wasm.wasmPaths);
+        loadPromise = waitRuntime(15000)
+            .then(function (lib) {
+                /*
+                  ══ ⚠️⚠️ 先让出一帧，再开始编译（v0.2.0）══
 
-            return lib.pipeline('feature-extraction', MODEL_ID, {
-                dtype: 'q8',
-                progress_callback: function (p) {
-                    segLog('progress ' + JSON.stringify(p).slice(0, 160));
-                }
-            }).then(function (pipe) {
-                segLog('pipeline ready');
-                extractor = pipe;
-                state = 'ready';
-                return pipe;
-            });
-        }).catch(function (e) {
-            state = 'failed';
-            lastError = String((e && e.message) || e);
-            segLog('FAILED: ' + lastError);
+                  用户反馈：「加载模型直接 app 卡住了」。
+
+                  实测（模拟器，比真机强）：加载期间主线程最大停顿 **460ms**。
+                  真机上 wasm 编译更慢，几秒的卡死完全可能。
+
+                  真因：`onnxruntime` 创建 session 时，WASM 编译是
+                  **同步**占着主线程的（`numThreads = 1`，没有 worker）。
+                  期间 WebView 无法重绘、无法响应触摸 → 用户看到"卡住"。
+
+                  ⚠️ 不能真的把编译搬到 worker：WebView 没有跨源隔离标头，
+                     `SharedArrayBuffer` 不可用，多线程 ort 会直接报错
+                     （见下面 numThreads 的说明）。所以只能"让用户看见"。
+
+                  ✅ 做法：编译前先 yield 两帧 ——
+                     ① 让调用方刚设的进度条（"正在加载模型…"）先画出来；
+                     ② 让浏览器处理完积压的输入事件（用户点的"切分"按钮）。
+                     这样"卡"变成"有明确提示的等待"，而不是无响应。
+
+                  ⚠️ 用 `requestAnimationFrame` 两次而不是一次：
+                     一次 rAF 只保证"下一帧之前"，样式可能还没应用；
+                     两次能确保那一帧已经**绘制完成**。
+                */
+                return nextFrame().then(nextFrame).then(function () {
+                    segLog('yielded, starting pipeline');
+
+                    return lib.pipeline('feature-extraction', MODEL_ID, {
+                        dtype: 'q8',
+                        progress_callback: function (p) {
+                            segLog('progress ' + JSON.stringify(p).slice(0, 160));
+                        }
+                    });
+                }).then(function (pipe) {
+                    segLog('pipeline ready');
+                    extractor = pipe;
+                    state = 'ready';
+                    return pipe;
+                });
+            }).catch(function (e) {
+                state = 'failed';
+                lastError = String((e && e.message) || e);
+                segLog('FAILED: ' + lastError);
             /*
               ══ ⚠️⚠️ 失败后必须清掉 loadPromise（v0.1.96）══
 
@@ -318,9 +344,30 @@
         return loadPromise;
     }
 
+    /**
+     * 等下一帧绘制完成（v0.2.0）。
+     *
+     * ⚠️ 用于在长时间同步任务（wasm 编译）之前**让出主线程**，
+     *    保证进度提示已经画到屏幕上、用户点击也已被处理。
+     *
+     * ⚠️ 没有 requestAnimationFrame 时退回 setTimeout(0)：
+     *    功能不能因为环境差异而挂住（老 WebView / 测试环境）。
+     */
+    function nextFrame() {
+        return new Promise(function (resolve) {
+            if (typeof global.requestAnimationFrame === 'function') {
+                global.requestAnimationFrame(function () {
+                    /* ⚠️ rAF 回调在"重绘前"执行，再套一层宏任务才是"重绘后" */
+                    global.setTimeout(resolve, 0);
+                });
+            } else {
+                global.setTimeout(resolve, 16);
+            }
+        });
+    }
+
     /** 打一条诊断日志（走 window.trace，最终进 logcat） */
-    function segLog(msg) {
-        try {
+    function segLog(msg) {        try {
             if (global.trace) global.trace('SEG: ' + msg);
             else if (global.console) console.log('SEG: ' + msg);
         } catch (e) { /* 日志失败不影响主流程 */ }
@@ -542,6 +589,15 @@
         splitSentences: splitSentences,
         segment: segment,
         ensureModel: ensureModel,
+        /**
+         * 让出主线程直到下一帧绘制完成（v0.2.0）。
+         *
+         * ⚠️ 对外暴露是必需的：调用方（reader.js）要在**自己的**
+         *    提示设好之后、进模型之前让出。放在内部就不够 ——
+         *    内部的 yield 发生在 `pipeline()` 之前，但那时调用方
+         *    已经同步跑了一串代码，提示可能仍未被绘制。
+         */
+        nextFrame: nextFrame,
         cosine: cosine,
         threshold: DEFAULT_THRESHOLD,
         getState: function () {

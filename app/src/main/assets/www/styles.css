@@ -1259,9 +1259,25 @@ body {
      推右的职责交还给详情按钮 —— 只写一条，不要两边都写，
      否则剩余空间被两份平分，按钮之间会出现一大段空白。
 */
+/*
+  ══ ⚠️⚠️ 顶栏按钮顺序（v0.2.0 用户明确要求）══
+
+  用户原话：
+    「不是在顶部栏左边，是在详情图标左边，
+      意思是功能按钮都在左边，但最左边是详情」
+
+  所以顺序是：**返回 | 详情 | 切分 | …（将来更多功能）**
+  全部靠左，不往右排。
+
+  ⚠️ 之前用 `margin-left: auto` 把详情顶到最右 —— 那是旧设计
+     （当时详情是"次要操作"，放右边）。现在详情是功能区的
+     第一个，必须靠左，所以 auto 去掉。
+
+  ⚠️ 不要为了"排在左边"改成 `margin-left: 0` —— 那只是默认值，
+     写了反而让人以为有特殊逻辑。直接不写更清楚。
+*/
 .reader-detail-btn {
     flex: 0 0 auto;
-    margin-left: auto;
 }
 
 /*
@@ -6837,8 +6853,15 @@ body {
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.16);
     transform: translateY(-140%);
     opacity: 0;
-    transition: transform 240ms cubic-bezier(0.2, 0, 0, 1),
-                opacity 240ms cubic-bezier(0.2, 0, 0, 1);
+    /*
+      ⚠️ 140ms 而不是 240ms（v0.2.0）：
+         这个条的作用是"加载期间告诉用户在动"。
+         240ms 的入场动画叠在 460ms 的加载卡顿上，
+         用户几乎看不到它 —— 等它淡入完，卡顿都已经结束了。
+         140ms 够形成"出现了"的观感，又不拖泥带水。
+    */
+    transition: transform 140ms cubic-bezier(0.2, 0, 0, 1),
+                opacity 140ms cubic-bezier(0.2, 0, 0, 1);
     pointer-events: none;
 }
 

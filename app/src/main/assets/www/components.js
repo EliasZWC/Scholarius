@@ -727,25 +727,36 @@
                         icon() 内部按 ICON_VIEWBOX 表取正确的视口。
                 */
                 if (opt.icon && typeof icon === 'function') {
-                    var mark = document.createElement('span');
-                    mark.className = 'sheet-picker-icon';
-                    mark.setAttribute('aria-hidden', 'true');
-                    mark.innerHTML = icon(opt.icon);
-                    main.appendChild(mark);
+                    var iconMark = document.createElement('span');
+                    iconMark.className = 'sheet-picker-icon';
+                    iconMark.setAttribute('aria-hidden', 'true');
+                    iconMark.innerHTML = icon(opt.icon);
+                    main.appendChild(iconMark);
                 }
 
                 main.appendChild(label);
                 btn.appendChild(main);
 
-                // 选中标记
-                var mark = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-                mark.setAttribute('class', 'sheet-picker-check');
-                mark.setAttribute('viewBox', '0 0 24 24');
-                mark.setAttribute('aria-hidden', 'true');
+                /*
+                  ⚠️ 变量名必须与上面那个区分（v0.2.0）。
+
+                  原来两处都叫 `var mark` —— 在同一个函数作用域里
+                  等于**重复声明**，后者覆盖前者。
+                  这里恰好是先用的那个已经用完，所以没出故障；
+                  但只要有人把下面这段挪到上面，`mark.innerHTML`
+                  就会静默清掉图标。
+
+                  ESLint 的 `no-redeclare` 抓到了它。这类"暂时无害"
+                  的隐患比真 bug 更值得清 —— 它会在未来的重构里爆发。
+                */
+                var checkMark = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                checkMark.setAttribute('class', 'sheet-picker-check');
+                checkMark.setAttribute('viewBox', '0 0 24 24');
+                checkMark.setAttribute('aria-hidden', 'true');
                 var p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
                 p.setAttribute('d', 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z');
-                mark.appendChild(p);
-                btn.appendChild(mark);
+                checkMark.appendChild(p);
+                btn.appendChild(checkMark);
 
                 btn.addEventListener('click', function () {
                     /*
@@ -1205,6 +1216,22 @@
              （该图标没有独立填充变体，outline 与 fill 逐字相同）
         */
         add: 'M440-440H200v-80h240v-240h80v240h240v80H520v240h-80v-240Z',
+
+        /*
+          resegment：语义重新分段（v0.2.0）
+
+          用户裁决：「切分不要用这个图标」—— 原来用的是 `annoBody`
+          （三条等长横线），那是"正文段"的标注图标，语义是
+          **标出这一段是正文**，不是"重新切分"。
+
+          ✅ 换成 Material 的 `format_line_spacing`：
+             左侧一根竖线 + 右侧三组"短横线对"，正是
+             「把长文本切成若干段」的视觉表达。
+
+          ⚠️ 逐字取自官方：tools/fetch_icon.py format_line_spacing
+             （该图标没有独立填充变体，outline 与 fill 逐字相同）
+        */
+        resegment: 'M6 7h2.5L5 3.5 1.5 7H4v10H1.5L5 20.5 8.5 17H6V7zm4-2v2h12V5H10zm0 14h12v-2H10v2zm0-6h12v-2H10v2z',
 
     };
 

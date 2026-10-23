@@ -902,8 +902,21 @@
      */
     function mountSegBtn() {
         if (!segBtn) return;
+        /*
+          ⚠️ 图标用 `resegment`（format_line_spacing），不是 `annoBody`（v0.2.0）。
+
+          用户裁决：「切分不要用这个图标」。
+
+          `annoBody` 是三条**等长**横线 —— 语义是"这一段是正文"，
+          用于标注菜单里给段落打标签。
+          拿来当"重新切分"的按钮图标，是在借用别人的语义，
+          看起来像"正文视图"而不是"切一刀"。
+
+          ✅ `format_line_spacing`：左侧一根竖轴 + 右侧一组组短横线，
+             表达"把整块文本切成若干段"，与按钮的实际行为一致。
+        */
         if (global.ScholariusUI) {
-            segBtn.innerHTML = global.ScholariusUI.icon('annoBody');
+            segBtn.innerHTML = global.ScholariusUI.icon('resegment');
         }
         segBtn.addEventListener('click', function () {
             /*
@@ -6959,11 +6972,48 @@
             : lastBlocks;
 
         var prog = window.ScholariusSegProgress;
-        if (prog) prog.start(source.length);
+        if (prog) {
+            /*
+              ══ ⚠️⚠️ 提示必须**先画出来**再开始加载（v0.2.0）══
+
+              用户反馈：「加载模型直接 app 卡住了」。
+
+              真因：首次点切分要加载 17MB 模型 + 编译 11MB wasm，
+              期间主线程被同步占住（实测模拟器 460ms，真机更久）。
+              如果提示和加载在同一个事件里，提示**根本没机会显示** ——
+              浏览器要等 JS 让出控制权才重绘，那时已经卡完了。
+
+              ✅ 所以：先设提示 → 让出两帧让它真正画到屏幕上 →
+                 再开始加载。用户看到的是"有明确提示的等待"，
+                 而不是"点了没反应，然后突然卡住"。
+
+              ⚠️ 这里 start() 传 0 句：加载阶段还不知道总数，
+                 进度条显示"正在加载模型…"并空转。
+                 真正的句子级进度在 semanticReflow 里才开始报。
+            */
+            prog.start(0);
+        }
 
         trace('reader:seg', 'manual resegment of ' + source.length + ' blocks');
 
-        return withTimeout(semanticReflow(source), source, 120000)
+        /*
+          ⚠️ 让出一帧再进模型 —— 理由同上。用 Promise 串起来，
+             保证顺序确定（不依赖 setTimeout 的时序猜测）。
+
+          ⚠️ 没有 nextFrame（老版本 semantic-seg.js）时退回 setTimeout，
+             不能让"提示没画出来"变成"切分不做"。
+        */
+        var yieldFrame = (window.ScholariusSeg && window.ScholariusSeg.nextFrame)
+            ? window.ScholariusSeg.nextFrame
+            : function () {
+                return new Promise(function (r) { global.setTimeout(r, 32); });
+            };
+
+        return yieldFrame()
+            .then(yieldFrame)
+            .then(function () {
+                return withTimeout(semanticReflow(source), source, 120000);
+            })
             .then(function (out) {
                 if (!currentDoc || currentDoc.id !== docId) {
                     trace('reader:seg', 'doc changed during resegment');
