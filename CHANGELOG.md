@@ -4,6 +4,88 @@
 
 ---
 
+## [0.2.19] - 2026-10-23
+
+> 上一版我宣称修好了两个 bug，实际上一个都没修好。
+> 根因是**我的验证跑在旧版本上**（模拟器装的是 0.2.17），
+> 以及**用测试数据而不是真实论文**。
+
+### ⚠️ 我的验证为什么失效
+
+```text
+adb shell dumpsys package ...
+  versionName=0.2.17-debug      ← 装的是 0.2.17，不是 0.2.18！
+```
+
+我用 `__testRender` 手造块数据测的换行，而**真实论文的数据形状完全不同**：
+
+```text
+我造的测试块：text + lines: ['第一行', '第二行']   ← 有行信息
+真实论文块：  text(1398 字符) + lines: []          ← 没有行信息
+```
+
+所以真实场景根本走不到我修的那条路径。
+
+**教训（已记入 constraints）：**
+- 改完 assets 必须 `clean` 后重建，并**确认 `versionName` 是本次的**；
+- 排版类问题**必须先导入真实论文**看真实块结构，不能用手造数据。
+
+### ① 换行 bug（真正的修法）
+
+真实论文的作者块是：
+
+```text
+text  = "Attention Is All You Need Ashish Vaswani∗ Noam Shazeer∗ …"
+lines = []          ← PDF 把标题+作者+单位压成一整块
+```
+
+旧实现按词条切分，把这一整块劈成三段：
+
+```text
+行1  ""      "Attention Is All You Need Ashish "
+行2  Name    "Vaswani"                          ← 词条独占一行
+行3  ""      "∗ Noam Shazeer∗ Niki Parmar∗ …"
+```
+
+不管怎么调“并/不并”的判据都修不好 —— 因为**切分本身**就是错的。
+没有行信息时，任何切分都是凭空发明排版。
+
+#### ✅ 用户裁决的做法
+
+> 「整块当作一行：左边 Name，右边整段原文」
+
+无行信息 → **不切分**，整块作为一行输出：
+- 左列 = 第一个词条的项名；
+- 右列 = **完整原文**（一字不改、不断行）。
+
+真机验证（真实 NIPS 2017 论文，真实触摸操作）：
+
+```text
+nRows    = 1
+左列      = Name
+右列长度  = 1398   （与源文本 1398 完全相等）
+首          = "Attention Is All You Need Ashish Vaswani∗ Noam Shazeer∗ Niki"
+尾          = "f the training costs of the best models from the literature."
+```
+
+### ② 阴影一闪（真因是面板投影，不是行背景）
+
+先排除了行的嫌疑：16ms 采样 45 帧，
+所有行的 `background / box-shadow / opacity` **全程无变化**。
+
+真因是下拉面板自己的 `box-shadow: 0 6px 20px` ——
+向下偏移 6、模糊 20，投影会**伸到面板下方约 26px**，
+正好落在下面的标签行上。收起瞬间投影跟着消失 → 那行“亮了一下”。
+
+✅ 改成 `0 2px 8px`：投影几乎不伸出去，但仍看得出浮起。
+
+验证：`box-shadow = rgba(0,0,0,0.16) 0px 2px 8px`。
+
+⚠️ v0.2.18 加的 `.sel-label-list:has(.sel-sub-dropdown) .sel-label-item:active`
+仍然保留 —— 它解决的是另一个真实问题（按下反馈残留），只是不是这次的成因。
+
+---
+
 ## [0.2.18] - 2026-10-23
 
 ### ① ⚠️ 编辑作者信息时冒出 Importing 表单

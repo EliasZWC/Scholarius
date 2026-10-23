@@ -5085,6 +5085,60 @@
             return el ? el.querySelector('.reader-author-value') : null;
         }
 
+        /*
+          ══ ⚠️⚠️ 没有行信息 → **整块输出成一行**（v0.2.19）══
+
+          用户裁决（原话）：
+
+            「整块当作一行：左边 Name，右边整段原文」
+
+          ── 为什么必须走这条路 ──
+
+          真实论文（NIPS 2017 模板）实测：作者块是
+
+              text  = "Attention Is All You Need Ashish Vaswani∗ Noam Shazeer∗ …"
+              lines = []          ← **空**，PDF 把这些压成了一整块
+
+          这块里同时有标题、作者、单位、邮箱，共 1398 字符，
+          **没有任何行边界信息**。
+
+          旧实现（按词条切）会把这一整块劈成三段：
+
+              行1  ""      "Attention Is All You Need Ashish "
+              行2  Name    "Vaswani"                          ← 词条独占一行
+              行3  ""      "∗ Noam Shazeer∗ Niki Parmar∗ …"
+
+          —— 原文被强行切断，这就是用户反复报的「换行 bug」。
+          不管怎么调"并/不并"的判据都修不好，因为**切分本身**就是错的：
+          没有行信息时，任何切分都是凭空发明排版。
+
+          ── ✅ 正确做法 ──
+
+          无行信息 → **不切分**，整块作为一行输出：
+            · 左列 = 第一个词条的项名（用户要"左边 Name"）；
+            · 右列 = **完整原文**（一字不改、不断行）。
+
+          多个词条时左列只显示第一个的项名 —— 因为整块只有一行，
+          放不下多个左标签。这是无行信息时的**必然取舍**：
+          与其把原文切碎，不如少显示几个标签名。
+
+          ⚠️ 值里**不做任何高亮/切分**：右列就是 `flatText` 原样。
+             用户要的是"整段原文"，不是"标出来的片段"。
+        */
+        if (!lineBoundaries || lineBoundaries.length < 1) {
+            var firstField = null;
+            for (var fm = 0; fm < marks.length; fm++) {
+                if (marks[fm].field) { firstField = marks[fm].field; break; }
+            }
+            boxEl.appendChild(makeAuthorLine(
+                firstField, flatText, firstField === 'name'));
+            /* 整块一个编号，加在这一整个 `<p>` 上 */
+            if (markTyped) markTyped(p, 'author');
+            p.appendChild(boxEl);
+            frag.appendChild(p);
+            return frag;
+        }
+
         for (var m = 0; m < marks.length; m++) {
             var mk = marks[m];
             /* 跳过与上一条重叠的部分（取先出现的），避免文字重复 */
