@@ -999,19 +999,69 @@
                 toastSafe(t('reader.importTemplateFailed'));
                 return;
             }
+
             /*
-              ⚠️ 只禁用、不显示"进行中"：选文件是系统界面，
-                 用户注意力在系统文件选择器上，这里换个图标反而闪。
-              ⚠️ 必须保证一定解禁 —— 用户取消选择时原生也会回调，
-                 见 onActivityResult 里的 REQ_IMPORT_TEMPLATE 分支。
+              ══ ⚠️⚠️ 导入前必须确认（v0.2.13）══
+
+              用户要求（原话）：
+
+                「同时点击模板导入按钮也应该有个提示表单，
+                  因为肯定会覆盖现有的模板」
+
+              对。导入是**直接套用**的（见文件头注释：选文件 → 校验 →
+              立即套用并重绘），套上之后：
+
+                · 现有的块序列被模板重排/合并/拆分/丢弃；
+                · 原有的手工标注按行号挂，行没了标注也就没了。
+
+              而且**没有撤销**。所以不能一点就直接弹系统文件选择器。
+
+              ⚠️ 文案要随"当前有没有模板"分开写：
+                 已经套着模板时，被覆盖的是**那份模板**；
+                 从没套过模板时，被覆盖的是**原有切分/标注**。
+                 同一句话套两种情形会有一半是错的。
+              ⚠️ 确认按钮用危险色 —— 这是破坏性且不可撤销的操作。
+              ⚠️ 取消就是真的不动（连文件选择器都不弹）：
+                 用户点完确认才走系统界面。
             */
-            tplBtn.disabled = true;
-            try {
-                bridge.pickTemplateFile();
-            } catch (e) {
-                tplBtn.disabled = false;
-                toastSafe(t('reader.importTemplateFailed'));
+            var startPick = function () {
+                /*
+                  ⚠️ 只禁用、不显示"进行中"：选文件是系统界面，
+                     用户注意力在系统文件选择器上，这里换个图标反而闪。
+                  ⚠️ 必须保证一定解禁 —— 用户取消选择时原生也会回调，
+                     见 onActivityResult 里的 REQ_IMPORT_TEMPLATE 分支。
+                */
+                tplBtn.disabled = true;
+                try {
+                    bridge.pickTemplateFile();
+                } catch (e) {
+                    tplBtn.disabled = false;
+                    toastSafe(t('reader.importTemplateFailed'));
+                }
+            };
+
+            var ui = global.ScholariusUI;
+            if (!ui || typeof ui.confirmSheet !== 'function') {
+                /* 没有 UI 模块（极端情况）→ 直接执行，不让功能卡死 */
+                startPick();
+                return;
             }
+
+            /*
+              ⚠️ 判据用 `templateCache`，与渲染链路保持一致 ——
+                 `getTemplateId()` 是调试对象上的方法，不在这个作用域里。
+            */
+            var hasTpl = !!templateCache;
+            ui.confirmSheet({
+                title: t(hasTpl ? 'reader.importTemplateConfirmTitleHas'
+                                : 'reader.importTemplateConfirmTitle'),
+                message: t(hasTpl ? 'reader.importTemplateConfirmMsgHas'
+                                  : 'reader.importTemplateConfirmMsg'),
+                confirmLabel: t('reader.importTemplateConfirmOk'),
+                cancelLabel: t('action.cancel'),
+                danger: true,
+                onConfirm: startPick
+            });
         });
     }
 
@@ -3966,6 +4016,16 @@
     /** 选中的作者项键（null = 不设置） */
     var fieldDraft = null;
 
+    /**
+     * 当前展开着子标签下拉的标签 key（null = 没有）。v0.2.13
+     *
+     * ⚠️ 同时只允许一个 —— 展开"作者"的下拉时，
+     *    其他标签的下拉必须收起，否则几个面板会重叠。
+     * ⚠️ 这是**行内下拉**的开关，不是"另一个表单"。
+     *    用户两次明确要求走下拉、不要在表单之上再叠表单。
+     */
+    var subOpenKey = null;
+
     /*
       ⚠️ 原来的 `subOpen`（子标签展开区是否展开）已在 v0.2.11 删除。
 
@@ -4046,7 +4106,12 @@
           ⚠️ 子标签不再有"展开区"（v0.2.11）——
              改成点箭头弹下拉菜单，所以这里不需要重置任何展开状态。
              打开表单时箭头显示当前值（或空），就足够了。
+
+          ⚠️ 但下拉的展开状态要清掉（v0.2.13）——
+             上次可能停在展开着某个下拉的状态，
+             重开表单时不应该还开着一个面板。
         */
+        subOpenKey = null;
 
         renderLabelOptions();
 
@@ -4210,8 +4275,10 @@
                 subBtn.type = 'button';
                 subBtn.className = 'sel-label-sub-toggle';
                 subBtn.setAttribute('aria-label', t('reader.fieldPick'));
-                subBtn.setAttribute('aria-haspopup', 'menu');
-                subBtn.setAttribute('aria-expanded', 'false');
+                subBtn.setAttribute('aria-haspopup', 'listbox');
+                subBtn.setAttribute('aria-expanded',
+                    subOpenKey === key ? 'true' : 'false');
+                if (subOpenKey === key) subBtn.classList.add('is-open');
                 /*
                   ⚠️ 箭头**只放符号**，不再拼值（值已由上面的胶囊显示）。
                      拼在一起会让按钮宽度随值变化，点击区不稳定。
@@ -4226,16 +4293,19 @@
                     ev.stopPropagation();
                     ev.preventDefault();
                     /*
-                      ⚠️ 先选中该标签再弹下拉 ——
-                         否则用户选了"单位"却发现标签还是上一个，
-                         会有"白设了"的感觉。
+                      ⚠️ 先选中该标签再开下拉 ——
+                         否则用户选了"单位"却发现标签还是上一个。
+                      ⚠️ 只切换 `subOpenKey`，**不重渲染整表** ——
+                         重渲染会让点击事件在旧节点上派发到一半就失效。
+                         但为了显示"选中态"又必须刷新，所以用一次
+                         `renderLabelOptions()` 的重入（下面立刻返回）。
                     */
                     if (labelDraft !== key) {
                         labelDraft = key;
                         fieldDraft = null;
                     }
+                    subOpenKey = (subOpenKey === key) ? null : key;
                     renderLabelOptions();
-                    openSubPicker(key);
                 });
 
                 btn.appendChild(subBtn);
@@ -4243,58 +4313,142 @@
 
             btn.addEventListener('click', function () {
                 /*
-                  ⚠️ 点标签本体只改标签，**不动子标签**（v0.2.11）。
-                     旧版这里会 `subOpen = false`，而 subOpen 已废弃。
+                  ⚠️ 点标签本体只改标签，**不动子标签**（v0.2.11），
+                     但要**收起已展开的下拉**（v0.2.13）——
+                     否则下拉会跟着留在上一个标签上。
                 */
                 labelDraft = key;
+                subOpenKey = null;
                 renderLabelOptions();
             });
 
             li.appendChild(btn);
 
+            /*
+              ══ ⚠️⚠️ 子标签下拉**在当前表单内展开**，不另开表单（v0.2.13）══
+
+              用户两次指出同一件事：
+
+                「子标签作为选项的值，下拉选择子标签」
+                「我新开启的子标签表单似乎层级低于标签表单，所以应该按我之前
+                  说的，走下拉选项的路子」
+
+              ── v0.2.12 错在哪 ──
+
+              我用 `ScholariusUI.pickSheet()` 弹了 `#sheet-picker` ——
+              那是**独立的另一个底部表单**，盖在标注表单之上。
+              于是：标注表单 → 子标签表单 → 选完回来，
+              层级越走越深；返回键要按两次；用户还得重新找到刚才那行。
+
+              用户要的是**下拉（dropdown）**：就挂在这一行下面，
+              点一下展开、再点收起，或选完自动收起。层级不变。
+
+              ── ✅ 现在 ──
+
+              下拉面板作为 `li` 的子元素、`position: absolute` 挂在行下方：
+                · 不改变列表高度（不挤动其他标签）；
+                · 不打开新表单（返回键一次就关掉整个标注表单）；
+                · 选中后立即收起并把值写回这一行。
+
+              ⚠️ `li` 需要 `position: relative`（见 CSS）。
+              ⚠️ 只允许一个下拉同时展开：用模块级 `subOpenKey` 记录。
+            */
+            if (labelHasSub(key) && subOpenKey === key) {
+                li.appendChild(buildSubDropdown(key));
+            }
+
             labelListEl.appendChild(li);
         });
+
+        /*
+          ⚠️ 点列表空白处收起下拉。
+             用 `once` 之外的写法：这个监听挂在 document 上，
+             每次渲染都会加一个 —— 所以先移除再添加（见 bindDropClose）。
+        */
+        bindDropClose();
 
         renderCitePicker();
         renderFieldPicker();
     }
 
+    /** 绑定「点别处收起下拉」的文档级监听（幂等） */
+    function bindDropClose() {
+        if (global.__scholariusDropCloseBound) return;
+        global.__scholariusDropCloseBound = true;
+        document.addEventListener('pointerdown', function (ev) {
+            if (!subOpenKey) return;
+            var t2 = ev.target;
+            /*
+              ⚠️ 在下拉面板内部点不算"点别处" ——
+                 否则点选项的瞬间就被收起，选不中。
+              ⚠️ 在本行（触发它的那个 li）里点也不算，交给它自己的 click 处理。
+            */
+            if (t2 && t2.closest &&
+                (t2.closest('.sel-sub-dropdown') || t2.closest('.sel-label-sub-toggle'))) {
+                return;
+            }
+            subOpenKey = null;
+            renderLabelOptions();
+        }, true);
+    }
+
     /**
-     * 弹出「作者项」子标签选择面板（v0.2.11）。
+     * 造一个行内下拉面板（v0.2.13）。
      *
-     * ⚠️ 复用 `#sheet-picker`（设置页那套底部选择器）而不是新造一个 ——
-     *    它已经有：遮罩、动画、返回键处理、单选高亮。
-     *    再写一套只会让"两处行为不一致"。
+     * ══ ⚠️ 为什么不用 `pickSheet` ══
      *
-     * ⚠️ `openSheetPicker` 的签名要 `row` + `valueEl`，
-     *    这里没有真实的行元素 —— 传一个**虚拟 row**（带 `setAttribute`
-     *    与 `querySelector` 的最小实现），标题另用 `config.title` 覆盖。
-     *    这是刻意的：宁可适配现有接口，也不为它加一条分支。
+     * 用户明确否掉了"另开一个表单"的做法（层级更深、返回键要按两次）。
+     * 下拉就该**贴着触发它的那一行**展开。
+     *
+     * 结构：
+     *
+     *   ┌──────────────────────────────┐
+     *   │ 作者                 单位  › │
+     *   ├──────────────────────────────┤  ← 这一层挂在 li 内，absolute 定位
+     *   │  不设置                       │
+     *   │  姓名                         │
+     *   │  单位                    ✓    │
+     *   └──────────────────────────────┘
      */
-    function openSubPicker(key) {
-        var ui = global.ScholariusUI;
-        if (!ui || typeof ui.pickSheet !== 'function') return;
-        if (key !== 'author') return;
+    function buildSubDropdown(key) {
+        var box = document.createElement('ul');
+        box.className = 'sel-sub-dropdown';
+        box.setAttribute('role', 'listbox');
 
         var options = [{ value: '', label: t('reader.fieldNone') }];
-        AUTHOR_FIELDS.forEach(function (f) {
-            options.push({ value: f, label: t('reader.field.' + f) });
+        if (key === 'author') {
+            AUTHOR_FIELDS.forEach(function (f) {
+                options.push({ value: f, label: t('reader.field.' + f) });
+            });
+        }
+
+        options.forEach(function (opt) {
+            var li = document.createElement('li');
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'sel-sub-option';
+            btn.setAttribute('role', 'option');
+            var active = (fieldDraft || '') === opt.value;
+            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+            if (active) btn.classList.add('is-active');
+            btn.textContent = opt.label;
+            btn.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                ev.preventDefault();
+                /*
+                  ⚠️ 选中即写值、即收起。
+                     用户要的是"下拉选择子标签"，选完就该回到正常列表，
+                     不该留一个展开着的面板挡着下面的标签。
+                */
+                fieldDraft = opt.value || null;
+                subOpenKey = null;
+                renderLabelOptions();
+            });
+            li.appendChild(btn);
+            box.appendChild(li);
         });
 
-        ui.pickSheet({
-            title: t('reader.fieldPick'),
-            options: options,
-            current: fieldDraft || '',
-            /*
-              ⚠️ 选中后要**立即回写并重渲染标注列表**，
-                 否则箭头上的文字不会更新 ——
-                 用户会以为"选了没生效"。
-            */
-            onPick: function (v) {
-                fieldDraft = v || null;
-                renderLabelOptions();
-            }
-        });
+        return box;
     }
 
     /**

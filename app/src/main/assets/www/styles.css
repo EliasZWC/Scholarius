@@ -2775,6 +2775,23 @@ body {
 }
 
 /*
+  ══ ⚠️⚠️ 下拉面板的定位基准（v0.2.13）══
+
+  子标签下拉用 `position: absolute` 挂在**这一行内部**，
+  所以这一行必须是定位祖先。
+
+  ⚠️ 踩过一次：调试时 `getComputedStyle(row).position` 仍是 `static`，
+     下拉的 `top: 100%` 于是相对 `#sheet-label-list` 算，
+     落到 y=919（屏幕外），而该行在 y=487。
+     **症状是"点了箭头什么都没发生"** —— 感觉像事件没绑上，
+     实际是面板画到看不见的地方去了。
+     判据：下拉的 y 与行的 y 差出几百像素 → 先查 `position`。
+*/
+.sel-label-row {
+    position: relative;
+}
+
+/*
   ══ ⚠️⚠️ 平级标签之间加分割线（v0.1.93）══
 
   用户要求：
@@ -2937,8 +2954,86 @@ body {
     transform: rotate(90deg);
 }
 
+/*
+  ⚠️ 下拉展开时箭头再翻一次（v0.2.13）——
+     展开态指向**上**，表示"点这里收起"。
+     用户对折叠箭头的原始要求就是「折叠的时候向上，展开的时候向下」，
+     这里保持同一套语义，只是基准方向是 90deg（朝下）。
+*/
+.sel-label-sub-toggle.is-open {
+    transform: rotate(-90deg);
+}
+
 .sel-label-sub-toggle:active {
     background: var(--ui-active-bg);
+}
+
+/*
+  ══ 子标签行内下拉面板（v0.2.13）══
+
+  用户要求（两次）：
+
+    「子标签作为选项的值，下拉选择子标签」
+    「我新开启的子标签表单似乎层级低于标签表单，所以应该按我之前说的，
+      走下拉选项的路子」
+
+  ⚠️⚠️ 关键是**层级不能变深**：
+      v0.2.12 用 `pickSheet` 弹的是 `#sheet-picker` —— 那是另一个
+      完整表单，盖在标注表单之上。用户要返回得按两次，还得重新找到那一行。
+
+  ✅ 现在它挂在触发行的 `li` 内部、`position: absolute`：
+     · 不打开新表单（返回键一次就关掉整个标注表单）；
+     · 不改变列表高度（absolute 不占流），其他标签不会被挤动。
+
+  ⚠️ 依赖 `li.sel-label-row` 的 `position: relative`（见单独那条规则）。
+  ⚠️ `z-index` 要足够高：它可能压到下面的标签行上。
+*/
+.sel-sub-dropdown {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    z-index: 20;
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 4px;
+    /*
+      ⚠️ 最多 8 项高度后滚动 —— 选项多于视口时不能顶穿屏幕。
+    */
+    max-height: 240px;
+    overflow-y: auto;
+    border-radius: 12px;
+    /*
+      ⚠️ 用 `--surface` + 阴影，而不是半透明：
+         下拉要盖住下面的文字，透明会串行。
+    */
+    background: var(--surface);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.sel-sub-option {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--on-surface);
+    font-family: inherit;
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.sel-sub-option.is-active {
+    background: var(--ui-active-bg);
+    font-weight: 600;
+}
+
+.sel-sub-option:active {
+    opacity: 0.6;
 }
 
 /*

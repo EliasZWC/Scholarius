@@ -109,6 +109,22 @@
             'reader.importTemplateDone': 'Template applied',
             'reader.importTemplateFailed': 'Could not read this template file.',
             'reader.importTemplateMismatch': 'This template was made for a different PDF.',
+            /*
+              ⚠️ 导入前确认（v0.2.13）。
+                 文案必须说清"会覆盖什么"，不能只写“确定吗？”——
+                 导入是直接套用且不可撤销的。
+            */
+            'reader.importTemplateConfirmTitle': 'Import this template?',
+            'reader.importTemplateConfirmMsg':
+                'The template rebuilds the whole document layout: paragraphs ' +
+                'may be merged, split or dropped, and annotations attached to ' +
+                'removed lines will be lost. This cannot be undone.',
+            'reader.importTemplateConfirmTitleHas': 'Replace the current template?',
+            'reader.importTemplateConfirmMsgHas':
+                'A template is already applied to this document. Importing ' +
+                'replaces it, rebuilds the whole layout, and drops annotations ' +
+                'on removed lines. This cannot be undone.',
+            'reader.importTemplateConfirmOk': 'Choose file',
 
             // 通用字段
             'vault.field.title': 'Title',
@@ -498,6 +514,20 @@
             'reader.importTemplateDone': '已套用模板',
             'reader.importTemplateFailed': '无法读取该模板文件。',
             'reader.importTemplateMismatch': '这个模板是为另一份 PDF 做的。',
+            /*
+              ⚠️ 导入前确认（v0.2.13）。
+                 文案必须说清会被覆盖的是什么，不能只写“确定吗？”——
+                 导入是直接套用且不可撤销的。
+            */
+            'reader.importTemplateConfirmTitle': '导入这个模板？',
+            'reader.importTemplateConfirmMsg':
+                '模板会重建整篇文档的排版：段落可能被合并、拆分或丢弃，'
+                + '被丢掉的行上的标注也会一起消失。这个操作无法撤销。',
+            'reader.importTemplateConfirmTitleHas': '替换当前模板？',
+            'reader.importTemplateConfirmMsgHas':
+                '这篇文档已经套着一个模板。导入会替换掉它，重新构建整篇排版，'
+                + '被丢掉的行上的标注也会一起消失。这个操作无法撤销。',
+            'reader.importTemplateConfirmOk': '选择文件',
 
             // 通用字段
             'vault.field.title': '标题',
