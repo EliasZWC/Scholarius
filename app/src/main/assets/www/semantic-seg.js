@@ -155,10 +155,27 @@
     /** 句末标点后是否真的开始了新句 */
     function startsSentenceAfter(text, dotIndex) {
         var after = text.slice(dotIndex + 1);
-        /* 后面必须紧跟空白（或到结尾） */
-        var m = after.match(/^([ \t\u00a0]+)(\S)/);
+        /*
+          ══ ⚠️ 换行也是合法分隔（v0.2.32 修）══
+
+          旧写法只认 `[ \t\u00a0]+`，**不认换行** ——
+          于是这种情况切不开：
+
+              这些模型由多层组成.
+              摘要 主流的序列转换模型基于 RNN.
+
+          块与块之间用 `\n` 连接（`semanticReflow` 就是这么拼的），
+          如果换行不算分隔，整段会粘成一个"句子"，
+          模型只能对它算一次相似度 —— 分段能力直接失效。
+
+          ✅ `\s` 包含 `\n` / `\r` / 全角空格。
+          ⚠️ 但**不能把换行后面紧跟小写的情况也当句子边界** ——
+             那是排版折行（`... the dominant\nsequence transduction ...`），
+             下面「必须大写或数字开头」的判据仍然拦得住。
+        */
+        var m = after.match(/^\s+(\S)/);
         if (!m) return false;
-        var next = m[2];
+        var next = m[1];
         /* 必须是大写字母或数字（句子开头） */
         return /[A-Z0-9\u4e00-\u9fff]/.test(next);
     }
@@ -183,6 +200,90 @@
         if (/^[A-Za-z]$/.test(bare)) return true;
 
         return false;
+    }
+
+    /**
+     * 切句（保留原文偏移版，v0.2.32）。
+     *
+     * ══ ⚠️⚠️ 为什么必须带偏移 ══
+     *
+     * 用户反馈：
+     *
+     *   「模型切分前后怎么文本内容还变了？按理来说不应该仅切分吗
+     *     不更改内容吗？」
+     *
+     * 他是对的。切分只该决定**在哪里断开**，绝不该重写文本。
+     * 旧实现只返回 `string[]`，调用方拿不到位置，只能用
+     * `buf.join(' ')` 重新拼 —— 于是原文里的换行、多空格、
+     * 制表符全部被规范化成一个空格，文本**确实变了**。
+     *
+     * ✅ 现在返回 `{text, start, end}`：
+     *    · `text`  用于喂模型（trim 过的干净句子）
+     *    · `start` / `end` 是在**原文**中的精确区间
+     *
+     *    调用方据此从原文 `slice()` 切段落，一个字符都不会改。
+     *
+     * ⚠️ `start`/`end` 指向**未 trim 的原始区间**，
+     *    这样相邻句子首尾相接，拼起来正好还原原文。
+     *
+     * @param {string} text
+     * @return {Array<{text:string, start:number, end:number}>}
+     */
+    function splitSentencesWithOffsets(text) {
+        var s = String(text == null ? '' : text);
+        if (!s) return [];
+
+        var raw = [];   /* {start, end} —— 未 trim */
+
+        var push = function (a, b) {
+            /* 去掉首尾空白，但**保留区间在原文里的位置** */
+            var x = a, y = b;
+            while (x < y && /\s/.test(s.charAt(x))) x++;
+            while (y > x && /\s/.test(s.charAt(y - 1))) y--;
+            if (y > x) raw.push({ start: x, end: y });
+        };
+
+        var cur = 0;
+
+        for (var i = 0; i < s.length; i++) {
+            var c = s.charAt(i);
+
+            if (c === '\u3002' || c === '\uff01' || c === '\uff1f') {
+                push(cur, i + 1);
+                cur = i + 1;
+                continue;
+            }
+
+            if (c !== '.' && c !== '!' && c !== '?' && c !== '\uff0e') continue;
+            if (c === '.' && isAbbreviation(s, i)) continue;
+            if (!startsSentenceAfter(s, i)) continue;
+
+            push(cur, i + 1);
+            cur = i + 1;
+        }
+        push(cur, s.length);
+
+        /*
+          ⚠️ 合并极短碎片（`1.` `[12]`），门槛按文字类型分开 ——
+             理由见 `splitSentences` 里的长注释，两边必须一致，
+             否则模型输入的句子集合会不同。
+        */
+        var merged = [];
+        for (var k = 0; k < raw.length; k++) {
+            var it = raw[k];
+            var t = s.slice(it.start, it.end);
+            var minLen = /[\u4e00-\u9fff]/.test(t) ? 3 : 12;
+            if (t.length < minLen && k + 1 < raw.length) {
+                /* 合并区间：从本句起点到下一句终点（中间空白一并包含） */
+                raw[k + 1] = { start: it.start, end: raw[k + 1].end };
+                continue;
+            }
+            merged.push(it);
+        }
+
+        return merged.map(function (r) {
+            return { text: s.slice(r.start, r.end), start: r.start, end: r.end };
+        });
     }
 
     /**
@@ -610,7 +711,14 @@
                 failStreak = 0;
                 var scores = [];
                 var paragraphs = [];
-                var buf = [sentences[0]];
+                /*
+                  ⚠️ 同时记下每段由**哪些句子下标**组成（v0.2.32）。
+                     调用方要用它从**原文**精确切片，
+                     而不是用 `paragraphs` 里那个被 join 过的字符串。
+                */
+                var paragraphRanges = [];
+                var buf = [0];
+                var bufStart = 0;
 
                 for (var i = 1; i < sentences.length; i++) {
                     var sim = cosine(vectors[i - 1], vectors[i]);
@@ -619,17 +727,23 @@
                     if (sim < threshold) {
                         /* 相似度低 → 换段 */
                         paragraphs.push(buf.join(' '));
+                        paragraphRanges.push({ from: bufStart, to: i - 1 });
                         buf = [sentences[i]];
+                        bufStart = i;
                     } else {
                         buf.push(sentences[i]);
                     }
                 }
-                if (buf.length) paragraphs.push(buf.join(' '));
+                if (buf.length) {
+                    paragraphs.push(buf.join(' '));
+                    paragraphRanges.push({ from: bufStart, to: sentences.length - 1 });
+                }
 
                 return {
                     paragraphs: paragraphs,
                     sentences: sentences,
-                    scores: scores
+                    scores: scores,
+                    paragraphRanges: paragraphRanges
                 };
             })
             .catch(function (e) {
@@ -658,6 +772,8 @@
 
     global.ScholariusSeg = {
         splitSentences: splitSentences,
+        /* v0.2.32：带原文偏移的切句，供"只切不改"的段落重建使用 */
+        splitSentencesWithOffsets: splitSentencesWithOffsets,
         segment: segment,
         ensureModel: ensureModel,
         /**

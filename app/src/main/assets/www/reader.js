@@ -7180,11 +7180,65 @@
                 if (userCancelled) return null;
 
                 var parts = [];
+                var partBlocks = [];
                 for (var r = 0; r < run.length; r++) {
                     var t = String(blocks[run[r]].text || '').trim();
-                    if (t) parts.push(t);
+                    if (t) { parts.push(t); partBlocks.push(run[r]); }
                 }
                 if (parts.length < 2) return null;
+
+                /*
+                  ══ ⚠️⚠️ 建立「模型输入文本 → 原文」的映射（v0.2.32）══
+
+                  用户反馈：
+
+                    「模型切分前后怎么文本内容还变了？按理来说不应该
+                      仅切分吗不更改内容吗？」
+
+                  完全正确。切分只该决定**在哪里断开**。
+
+                  ── 旧实现为什么会改字 ──
+
+                  ① 每个块 `trim()` 后放进 `parts` 数组，**块与块之间
+                     原有的分隔（换行、缩进、多个空格）直接丢掉**；
+                  ② `seg.segment(parts)` 里 `buf.join(' ')` 用**单个空格**
+                     把句子连起来返回；
+                  ③ 结果直接当新块 `text`。
+
+                  于是原文的所有空白都被"规范化"成一个空格 ——
+                  文字没少，但**排版信息全丢了**，用户看到的就是
+                  「内容变了」。
+
+                  ── ✅ 现在的做法：只取"断点"，不取"文本" ──
+
+                  1. 把这一区段的所有块用**原文中的真实分隔符**接成 `joined`
+                     （块之间用一个换行，块内保留原样）；
+                  2. 对 `joined` 切句，每个句子带着自己在 `joined` 里的偏移；
+                  3. 模型只输出「第 i 句和第 i+1 句是同一段吗」，
+                     我们按句子的偏移从 `joined` 里 `slice()` ——
+                     切出来的段落合起来**逐字符等于 `joined`**。
+
+                  这样无论模型怎么判断，文本本身一个字符都不会变。
+                */
+                var joinedBuf = [];
+                for (var pb = 0; pb < partBlocks.length; pb++) {
+                    var bt = String(blocks[partBlocks[pb]].text || '')
+                        .replace(/^\s+|\s+$/g, '');
+                    if (pb > 0) {
+                        /* 块间用单换行 —— 切片时这些换行会原样保留在段落里 */
+                        joinedBuf.push('\n');
+                    }
+                    joinedBuf.push(bt);
+                }
+                var joined = joinedBuf.join('');
+
+                /* 带偏移切句（与 segment 内部同一套规则） */
+                var sentsWithOff = (seg.splitSentencesWithOffsets)
+                    ? seg.splitSentencesWithOffsets(joined)
+                    : null;
+                if (!sentsWithOff || sentsWithOff.length < 2) return null;
+
+                var sentTexts = sentsWithOff.map(function (z) { return z.text; });
 
                 /*
                   ⚠️⚠️ 每个区段单独 catch（v0.1.96）。
@@ -7197,7 +7251,7 @@
                   判据：局部失败只能影响局部。
                 */
                 var runCount = parts.length;
-                return seg.segment(parts, {
+                return seg.segment(sentTexts, {
                     /*
                       ══ 加载阶段进度（v0.2.1）══
 
@@ -7244,51 +7298,105 @@
                 }).then(function (res) {
                     doneSentences += runCount;
                     if (prog) prog.progress(doneSentences, grandTotal);
-                    var paras = (res && res.paragraphs) || [];
-                    if (!paras.length) return null;
+                    var ranges = (res && res.paragraphRanges) || [];
+                    if (!ranges.length) return null;
                     /*
-                      ⚠️ 结果与原文块数一致时**不改** ——
+                      ⚠️ 段落数与原块数一致时**不改** ——
                          说明模型的判断和版式完全一样，
-                         替换反而可能丢掉块内的原始换行。
+                         没必要动用户已经看到的结构。
                     */
-                    if (paras.length === parts.length) return null;
+                    if (ranges.length === parts.length) return null;
 
                     /*
-                      ③ 重新分配行号。
-                         每个新段落按**字符数占比**从原块的行号区间里切一段。
-                         用字符数而不是句数：长段落本来就该占更多行。
+                      ══ ⚠️⚠️ 从**原文**切片，不重新拼（v0.2.32）══
+
+                      模型只告诉我们「第 from 句到第 to 句是同一段」。
+                      段落的文字必须从 `joined` 里按句子的原始偏移 `slice()`，
+                      这样：
+                        · 原文的换行、多空格、缩进**全部原样保留**
+                        · 所有段落首尾相接，合起来逐字符等于 `joined`
+                          —— 也就是说**一个字符都没被改**
+
+                      ⚠️ 旧实现直接用了 `res.paragraphs`（`join(' ')` 的产品），
+                         那就是用户说的「切分前后文本内容还变了」。
+
+                      ══ ⚠️ 段落首部空白归给前一段 ══
+
+                      按句子偏移切出来的段落，开头可能带着上一段结尾之后的
+                      `\n`（因为句子区间是 trim 过的，空白在区间之外）：
+
+                          段1 = "Introduction."
+                          段2 = "\nThese models are ..."
+
+                      渲染时段2 开头那个换行会变成多余空行。
+
+                      ✅ 把段落**首部的空白**剥给前一段（追加到前一段末尾）——
+                         视觉上干净，且所有段落拼起来仍然逐字符等于原文。
+                         第一段的首部空白无法"给前一段"，直接保留
+                         （通常是原文本来就有的缩进）。
                     */
+                    var rebuilt = [];
+                    var prevEnd = -1;
+                    for (var p = 0; p < ranges.length; p++) {
+                        var rg = ranges[p];
+                        var s0 = sentsWithOff[rg.from];
+                        var s1 = sentsWithOff[rg.to];
+                        if (!s0 || !s1) continue;
+                        /*
+                          ⚠️ 切片起点：**接着上一段的终点**，不是本句起点。
+                             句间空白（换行、多个空格）要归给前一段，
+                             否则这些空白会被丢掉，合起来就不等于原文了。
+                          ⚠️ 第一段从头切到第一句终点之前 —— 包含全文开头的
+                             任何缩进/空行。
+                        */
+                        var cutStart = (prevEnd < 0) ? 0 : prevEnd;
+                        var cutEnd = s1.end;
+                        /* 最后一段切到末尾，吃掉尾随空白 */
+                        if (p === ranges.length - 1) cutEnd = joined.length;
+
+                        var pieceText = joined.slice(cutStart, cutEnd);
+                        prevEnd = s1.end;
+
+                        if (!String(pieceText || '').replace(/\s+/g, '')) continue;
+
+                        /* 段落首部空白 → 前一段尾部（第一段除外） */
+                        if (rebuilt.length) {
+                            var mLead = /^[ \t\r\n\u00a0]+/.exec(pieceText);
+                            if (mLead) {
+                                rebuilt[rebuilt.length - 1].text += mLead[0];
+                                pieceText = pieceText.slice(mLead[0].length);
+                            }
+                        }
+
+                        rebuilt.push({ text: pieceText, firstSent: rg.from });
+                    }
+                    if (!rebuilt.length) return null;
+
                     var allLines = [];
                     for (var q = 0; q < run.length; q++) {
                         allLines.push(blocks[run[q]].line);
                     }
-                    var totalChars = 0;
-                    for (var c = 0; c < parts.length; c++) {
-                        totalChars += parts[c].length;
-                    }
-                    if (!totalChars || !allLines.length) return null;
+                    if (!allLines.length) return null;
 
-                    var rebuilt = [];
-                    var usedChars = 0;
-                    for (var p = 0; p < paras.length; p++) {
-                        var lo = Math.floor(usedChars / totalChars * allLines.length);
-                        usedChars += paras[p].length;
-                        var hi = Math.ceil(usedChars / totalChars * allLines.length) - 1;
-                        if (hi < lo) hi = lo;
-                        if (lo > allLines.length - 1) lo = allLines.length - 1;
-                        if (hi > allLines.length - 1) hi = allLines.length - 1;
-                        var src = blocks[run[lo]];
-                        rebuilt.push({
-                            /* ⚠️ 行号取区间的下界 —— 编辑/标注按行号寻址时能命中 */
-                            line: allLines[lo],
-                            page: src ? src.page : null,
-                            text: paras[p],
-                            kind: 'paragraph',
-                            level: undefined,
-                            lines: undefined
-                        });
+                    var totalChars = 0;
+                    for (var c2 = 0; c2 < rebuilt.length; c2++) {
+                        totalChars += rebuilt[c2].text.length;
                     }
-                    if (!rebuilt.length) return null;
+                    if (!totalChars) return null;
+
+                    var usedChars = 0;
+                    for (var p2 = 0; p2 < rebuilt.length; p2++) {
+                        var lo = Math.floor(usedChars / totalChars * allLines.length);
+                        usedChars += rebuilt[p2].text.length;
+                        if (lo > allLines.length - 1) lo = allLines.length - 1;
+                        var src = blocks[run[lo]];
+                        rebuilt[p2].line = allLines[lo];
+                        rebuilt[p2].page = src ? src.page : null;
+                        rebuilt[p2].kind = 'paragraph';
+                        rebuilt[p2].level = undefined;
+                        rebuilt[p2].lines = undefined;
+                        delete rebuilt[p2].firstSent;
+                    }
 
                     patches.push({ start: run[0], count: run.length, items: rebuilt });
                     return null;
