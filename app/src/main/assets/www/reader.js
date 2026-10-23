@@ -132,6 +132,17 @@
 
     /** 当前打开的文献 */
     var currentDoc = null;
+    /**
+     * 最后一次 setText 的入参摘要（v0.1.99 诊断用）。
+     *
+     * ⚠️ 必须**声明**在这里。上一版只写 `lastDiag = ...` 而没有 var，
+     *    在严格模式下（本文件是否严格取决于外层包装）会直接抛
+     *    `ReferenceError: lastDiag is not defined` ——
+     *    而它就在 setText 的第一行，于是**整个正文渲染被这一个
+     *    诊断变量搞挂**。
+     *    这是"为了排查问题而引入新 bug"的典型案例。
+     */
+    var lastDiag = '';
     /** 菜单是否可见 */
     var menuOpen = false;
     /** 设置面板是否展开 */
@@ -4990,7 +5001,30 @@
         */
         clearSelection();
 
+        /*
+          ══ ⚠️⚠️ 延迟清理必须**绑在关闭时的那个文档上**（v0.1.99）══
+
+          这是一个真实存在的竞态，症状恰好是"正文空白 / 提示提取失败"：
+
+            1. 用户点开文档 A → open() 设 currentDoc = A，请求正文
+            2. 用户立刻返回 → close() 排了一个 280ms 后的清理
+            3. 用户 280ms 内点开文档 B → open() 设 currentDoc = B
+            4. 280ms 到了，清理执行：`root` 可能刚好又不是 is-open
+               （或者 B 还没渲染完），于是 **currentDoc = null**
+            5. 原生把 B 的正文推回来 → `currentDoc.id !== id` →
+               被当成"过期结果"丢弃 → 正文永远空白
+
+          ⚠️ 判据 `!root.classList.contains('is-open')` **不够**：
+             它只看"现在开没开"，不看"现在开的是不是当初关的那篇"。
+             正确做法是：把这个延迟清理**绑定到被关掉的 docId**，
+             只要 currentDoc 已经不是它了，就整个跳过。
+        */
+        var closingDocId = currentDoc ? currentDoc.id : null;
         global.setTimeout(function () {
+            /* 期间又打开了别的文档（或同一篇）→ 这次清理作废 */
+            if (currentDoc && currentDoc.id !== closingDocId) {
+                return;
+            }
             if (!root.classList.contains('is-open')) {
                 root.hidden = true;
                 currentDoc = null;
@@ -6627,6 +6661,29 @@
      * @param {Object|null} meta    行排版元数据 {fonts:[名], lines:[[字体下标,字号x10,页]]}
      */
     function setText(id, text, outline, meta, blocks, fromMd) {
+        /*
+          ══ 诊断（v0.1.99）══
+
+          ⚠️ 用户连续四版报「无法提取」，而我这边每一种模拟都能通过。
+             说明失败点在某个**只有真机才有**的条件里。
+
+          「无法提取」这句话本身不含信息 —— 可能是：
+            · 原生根本没推（桥没注 / 文件丢了 / md 解析失败）
+            · 推了但 blocks 是空的
+            · 块都空（text 全是空白）
+            · id 对不上（被当成过期结果丢了）
+
+          这四种的修法完全不同。所以把这些数字**直接显示在错误提示上**，
+          用户截个图就能定位，不必会抓 logcat。
+
+          ⚠️ 只记最后一个失败原因，供 showError 读取。
+        */
+        lastDiag = 'id=' + String(id).slice(0, 8) +
+            ' cur=' + (currentDoc ? String(currentDoc.id).slice(0, 8) : 'null') +
+            ' blocks=' + (blocks ? blocks.length : 0) +
+            ' fromMd=' + !!fromMd +
+            ' text=' + (text ? String(text).length : 0);
+
         if (!currentDoc || currentDoc.id !== id) {
             trace('reader:text-stale', 'ignored ' + id);
             return;
@@ -8354,21 +8411,6 @@ function tocTitleFrom(text) {
     }
 
     /**
-     * 字号：夹在 [SIZE_MIN, SIZE_MAX] 内。
-     * ⚠️ 必须夹，不能只把非法值换成默认 —— 用户手动输入 999 时
-     *    如果不管，正文会被放大到看不见。
-     */
-    function getSize() {
-        var v = parseInt(readStore(SIZE_KEY, ''), 10);
-        if (!isFinite(v)) return DEFAULT_SIZE;
-        return Math.min(SIZE_MAX, Math.max(SIZE_MIN, v));
-    }
-
-    function colorValues() {
-        return COLORS.map(function (c) { return c.value; });
-    }
-
-    /**
      * 把设置写进 DOM。
      *
      * ⚠️ 字号只写在 contentEl 上（内联 style），**不写在 .reader 或 body 上**。
@@ -8721,6 +8763,8 @@ function tocTitleFrom(text) {
          *   python tools/emu_js.py --file tools/_seg_reflow.js
          */
         __reflow: semanticReflow,
+        /** 最后一次 setText 的入参摘要（v0.1.99 诊断） */
+        __diag: function () { return lastDiag; },
         /**
          * 对当前文档重新做语义分段（v0.1.98）。
          *

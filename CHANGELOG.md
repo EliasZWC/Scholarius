@@ -4,6 +4,85 @@
 
 ---
 
+## [0.1.99] - 2026-10-23
+
+### 真正的原因：PDF 提取崩溃，与模型毫无关系
+
+用户第五次报「还是那个提示」，并质问：
+
+> 「我需要再次质问你，原本的提取逻辑确实没有改变吗？」
+
+**回答：没改。但提取本身就有一个崩溃 bug，只是以前没被这个文件触发。**
+
+这次不再靠模拟，直接拿设备上真实存在的文献
+（`2013_Word2Vec提出.pdf`）走完整链路，一次就复现了：
+
+```
+[reader] loading text for devtest1
+[reader] no text for devtest1            ← 原生 result == null
+reader:error | extract-failed
+```
+
+日志里是：
+
+```
+java.lang.StringIndexOutOfBoundsException: index -1, length 0
+    at PdfText.endsWithHyphen(PdfText.kt:2405)
+    at PdfText.mergeParagraphs(PdfText.kt:1586)
+    at PdfText.extract(PdfText.kt:1126)
+```
+
+`endsWithHyphen` 直接取 `a[a.length - 1]`，而 `mergeParagraphs`
+在某些排版下会传入**空的 StringBuilder** → 下标 -1 → 整篇提取抛异常
+→ `extract` 返回 null → 网页显示「无法提取」。
+
+**为什么前五版都没找到**：这个崩溃只在特定排版上触发
+（这份 PDF 有空段落边界）。我一直用手造的块数据测网页层，
+从来没跑过真实 PDF，所以永远碰不到。
+
+修复：`if (a.isEmpty()) return false`。
+
+验证（真实 PDF，修复前后）：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 原生推送 | `no text` | `md hit 120 blocks` |
+| 渲染段落 | 0 | **121** |
+| 正文字符 | 18（错误文案） | **38,575** |
+
+### 另外两个自己引入的 bug
+
+**① `lastDiag is not defined`**（v0.1.98 的诊断代码）
+
+为了排查问题加诊断变量，却只赋值没 `var` 声明，而它在 `setText`
+**第一行** —— 结果 `ReferenceError` 让整个正文渲染挂掉。
+**为了排查问题而制造了同一类问题。**
+
+**② `getSize` / `colorValues` 重复定义**
+
+同一段代码在 `reader.js` 里写了两遍（8418/8424 行覆盖了 8393/8399 行）。
+两个函数体完全相同，所以没造成故障，但会掩盖将来只改一处的疏漏。
+
+### 新增工具链
+
+- `tools/wait_release.py` —— 等 CI 产出 APK 并断言 `state == uploaded`
+- ESLint 扫 `no-undef` / `no-redeclare` —— `node --check` 只查语法，
+  查不出未声明变量。**以后改完 JS 必须跑一次。**
+
+### 顶栏按钮位置
+
+切分按钮移到**详情按钮左边**：
+
+```
+返回(8px)  切分(56px) ·············· 详情(364px)
+```
+
+实现方式是调整 DOM 顺序 —— `.reader-detail-btn` 自带
+`margin-left: auto`，会把自己的所有**前置兄弟**挤到左侧。
+不要反过来给切分按钮加 `margin-left: auto`（两个 auto 会平分空白）。
+
+---
+
 ## [0.1.98] - 2026-10-23
 
 ### 语义模型与提取彻底隔离

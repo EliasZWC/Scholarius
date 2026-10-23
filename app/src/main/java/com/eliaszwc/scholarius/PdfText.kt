@@ -2400,8 +2400,35 @@ object PdfText {
         return ENGLISH_TRAILING_PUNCT.indexOf(last) >= 0
     }
 
-    /** 已积累的文本是否以连字符结尾（断词续行的标志） */
+    /**
+     * 已积累的文本是否以连字符结尾（断词续行的标志）。
+     *
+     * ══ ⚠️⚠️ 必须处理空串（v0.1.99 线上崩溃）══
+     *
+     * 事故：用户导入 Word2Vec 那篇 PDF 后打开阅读页，直接提示
+     * 「无法提取文本」。日志里是：
+     *
+     *     java.lang.StringIndexOutOfBoundsException: index -1, length 0
+     *         at PdfText.endsWithHyphen(PdfText.kt:2405)
+     *         at PdfText.mergeParagraphs(PdfText.kt:1586)
+     *         at PdfText.extract(PdfText.kt:1126)
+     *
+     * ⚠️ 这是**整篇提取失败**，不是"少一段"：`extract` 抛异常 →
+     *    上层 `catch` 得到 null → 原生推 `readerText(id, null, ...)`
+     *    → 网页显示"提取失败"。
+     *
+     * 真因：`mergeParagraphs` 会在某些排版下拿到**空的 StringBuilder**
+     * （比如一段的首行是纯图形/空白，被跳过之后缓冲区仍为空），
+     * 而这里直接 `a[a.length - 1]` = `a[-1]`。
+     *
+     * 为什么之前一直没暴露：绝大多数 PDF 的每个段落至少有一个字符。
+     * 只有特定排版（这份 Word2Vec 的页面里有空段落边界）才会踩到。
+     * **这类"只在特定文件上崩"的 bug，跑固定样本永远发现不了。**
+     *
+     * ✅ 空串在语义上等于"还没积累任何文本"，当然不以连字符结尾。
+     */
     private fun endsWithHyphen(a: StringBuilder): Boolean {
+        if (a.isEmpty()) return false
         val c = a[a.length - 1]
         return c == '-' || c == '\u2010' || c == '\u2011'
     }

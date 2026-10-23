@@ -840,14 +840,6 @@
                 </svg>
             </button>
             <!--
-              详情按钮。只在菜单展开时可见（与返回按钮同一条顶栏）。
-              图标由 JS 用 ScholariusUI.icon('moreHoriz') 填 ——
-              这样图标路径只有 components.js 一处定义，不在这里重复一遍。
-            -->
-            <button class="icon-button reader-detail-btn" type="button"
-                id="reader-detail" aria-haspopup="dialog" aria-expanded="false"
-                aria-label="Details" data-i18n-aria-label="reader.details"></button>
-            <!--
               语义切分按钮（v0.1.98）。
 
               用户裁决：「悬浮表单顶部栏增加一个切分的图标，
@@ -862,11 +854,35 @@
               ⚠️ 只在开启语义分段时可见（由 JS 控制 hidden）——
                  没开功能的用户不该看到一个点了没反应的按钮。
                  图标由 JS 用 ScholariusUI.icon() 填。
+
+              ══ ⚠️⚠️ 位置：必须在详情按钮**左边**（v0.1.99）══
+
+              用户明确指出：「切分按钮应该在详情按钮左边，不是右边」。
+
+              原因在 CSS：`.reader-detail-btn` 带 `margin-left: auto`，
+              它会把**自己**顶到最右，同时把它之前的所有兄弟元素
+              挤到左边。所以「谁在 DOM 里靠前，谁就靠左」——
+              把切分按钮放在详情按钮之前，它自然落在左边。
+
+              ⚠️ 不要反过来给切分按钮加 `margin-left: auto` 来"调位置"：
+                 那两个 auto 会平分剩余空间，中间出现一大段空白
+                 （CSS 注释里记过这个坑，见 .reader-top 那段）。
             -->
             <button class="icon-button reader-seg-btn" type="button"
                 id="reader-seg" hidden
                 aria-label="Re-split paragraphs"
                 data-i18n-aria-label="reader.resegment"></button>
+            <!--
+              详情按钮。只在菜单展开时可见（与返回按钮同一条顶栏）。
+              图标由 JS 用 ScholariusUI.icon('moreHoriz') 填 ——
+              这样图标路径只有 components.js 一处定义，不在这里重复一遍。
+
+              ⚠️ `margin-left: auto` 让**它**靠右，从而把它前面的
+                 切分按钮留在左侧。见上面切分按钮的说明。
+            -->
+            <button class="icon-button reader-detail-btn" type="button"
+                id="reader-detail" aria-haspopup="dialog" aria-expanded="false"
+                aria-label="Details" data-i18n-aria-label="reader.details"></button>
         </header>
 
         <!--
