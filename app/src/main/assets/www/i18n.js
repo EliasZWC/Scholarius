@@ -91,6 +91,8 @@
             'meta.typeHint': 'Pick a type first — the fields below change with it.',
             'meta.placeholder': 'Not Set',
             'reader.details': 'Details',
+            'reader.resegment': 'Re-split paragraphs',
+            'reader.resegmentNoChange': 'Paragraphs already look right',
             'detail.sourceFile': 'Source File',
             'detail.saveFailed': 'Could Not Save Changes.',
 
@@ -464,6 +466,8 @@
             'meta.typeHint': '先选类别，下面的字段会跟着变。',
             'meta.placeholder': '未填',
             'reader.details': '详情',
+            'reader.resegment': '重新划分段落',
+            'reader.resegmentNoChange': '段落已是最佳划分',
             'detail.sourceFile': '源文件',
             'detail.saveFailed': '无法保存修改。',
 

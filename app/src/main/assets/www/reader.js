@@ -119,6 +119,8 @@
     var topEl = null;
     var backBtn = null;
     var detailBtn = null;
+    /** 语义切分按钮（v0.1.98）—— 模型的唯一入口 */
+    var segBtn = null;
     var bottomEl = null;
     var tocBtn = null;
     var settingsBtn = null;
@@ -784,6 +786,7 @@
         topEl = document.getElementById('reader-top');
         backBtn = document.getElementById('reader-back');
         detailBtn = document.getElementById('reader-detail');
+        segBtn = document.getElementById('reader-seg');
         bottomEl = document.getElementById('reader-bottom');
         tocBtn = document.getElementById('reader-toc-btn');
         settingsBtn = document.getElementById('reader-settings-btn');
@@ -867,6 +870,67 @@
                     global.ScholariusDetail.open(currentDoc);
                 }
             });
+        }
+
+        mountSegBtn();
+    }
+
+    /**
+     * 语义切分按钮（v0.1.98）。
+     *
+     * 用户裁决：
+     *   「给语义切分模型隔离起来，不参与提取，然后悬浮表单顶部栏
+     *     增加一个切分的图标，点击图标后才触发整篇文章文本的重新切分」
+     *
+     * ⚠️ 这是模型的**唯一入口**。`setText` 里已经没有模型代码了，
+     *    所以"打开文献失败"这一类问题从根上消失 —— 打开永远是同步渲染。
+     *
+     * ⚠️ 可见性：只在开启语义分段时显示。
+     *    没开的用户看到一个永远点不动的按钮比不显示更糟。
+     * ⚠️ 每次打开新文档都要重新判断一次（用户可能在设置里改了开关）。
+     */
+    function mountSegBtn() {
+        if (!segBtn) return;
+        if (global.ScholariusUI) {
+            segBtn.innerHTML = global.ScholariusUI.icon('annoBody');
+        }
+        segBtn.addEventListener('click', function () {
+            /*
+              ⚠️ 防连点：分段期间按钮变成「进行中」状态并禁用。
+                 否则用户点两次会跑两遍模型（第二遍还可能与第一遍交错，
+                 把 blocks 数组搞乱）。
+            */
+            if (segBtn.disabled) return;
+            segBtn.disabled = true;
+
+            resegmentCurrent().then(function (changed) {
+                segBtn.disabled = false;
+                if (!changed) {
+                    /*
+                      ⚠️ 没有变化时也要给反馈 ——
+                         否则用户点了没反应，会以为按钮坏了。
+                         两种"没变化"：模型没开 / 分段结果与版式相同。
+                    */
+                    if (global.ScholariusUI && global.ScholariusUI.toast) {
+                        global.ScholariusUI.toast(t('reader.resegmentNoChange'));
+                    }
+                }
+            }, function () {
+                segBtn.disabled = false;
+            });
+        });
+        syncSegBtn();
+    }
+
+    /** 按语义分段开关更新按钮可见性 */
+    function syncSegBtn() {
+        if (!segBtn) return;
+        var sem = global.ScholariusSemantic;
+        var on = !!(sem && sem.isEnabled && sem.isEnabled());
+        if (on) {
+            segBtn.removeAttribute('hidden');
+        } else {
+            segBtn.setAttribute('hidden', '');
         }
     }
 
@@ -4889,6 +4953,13 @@
         loadAnnotations(doc.id);
 
         /*
+          ⚠️ 每次打开都重新判断切分按钮是否可见（v0.1.98）——
+             用户可能刚在设置里开启了语义分段，也可能关掉了。
+             不刷新的话按钮状态会停留在上一次打开时的判断。
+        */
+        syncSegBtn();
+
+        /*
           ⚠️ 打开时重算一次颜色行的色块。
              主题可能在阅读页关闭期间被改过（比如在「设置」里切了夜间模式），
              此时正文颜色已随新主题变化，而色块还是上次的值。
@@ -6720,39 +6791,36 @@
 
         /*
           ══════════════════════════════════════════════════════════════
-          ══ ⚠️⚠️ 架构修正：**先渲染，再分段**（v0.1.97）══
+          ══ ⚠️⚠️ 语义模型与提取/渲染**彻底隔离**（v0.1.98）══
           ══════════════════════════════════════════════════════════════
 
-          前两版（v0.1.95 / v0.1.96）都把顺序搞反了：
+          用户裁决：
 
-              semanticReflow(blocks).then(渲染)      ← 错的
+            「给语义切分模型隔离起来，不参与提取，然后悬浮表单顶部栏
+              增加一个切分的图标，点击图标后才触发整篇文章文本的重新切分」
 
-          于是"分段"成了"渲染"的前置条件。模型一旦出问题
-          （reject **或**永不 settle），渲染就永远不发生。
+          ── 为什么这是对的 ──
 
-          v0.1.96 只修了 reject，没修"永不 settle" ——
-          而真机上发生的正是后者：ONNX wasm 编译在低端机上
-          可以卡几十秒甚至永久挂住。用户连续两版看到
-          「无法提取」，原因就在这里。
+          v0.1.95 / 0.1.96 / 0.1.97 三版都在试图让模型"不阻碍"渲染：
+          先渲染再分段、超时兜底、失败降级…… 但根本问题是
+          **模型和渲染在同一条链上**，只要这条链有任何异常行为
+          （reject / 挂起 / 超时判定失误），就还有下一次翻车的机会。
 
-          用户的原话点破了关键：
-            「模型并不干扰提取逻辑」
-            「导入的进度条是完成了的」
-          —— 对。导入成功 = md 已落盘，文本**一定在**。
-             模型只该影响"段落怎么切"，不该影响"有没有文字"。
+          用户连着报了三次「无法提取」。三次都在改"怎么兜底"，
+          而没有质疑**该不该自动跑模型**。
 
-          ✅ 正确顺序：
-             ① 立刻用**原始块**渲染（文字马上出现，可读可标注）；
-             ② 模型在后台跑，**只有真正成功**且用户还在这篇文档时，
-                才用更好的分段**重新渲染**一次；
-             ③ 模型超时 / 失败 / 用户切走 → 什么都不做，
-                用户已经在读的那份内容不受任何影响。
+          ✅ 现在：`setText` 里**一行模型代码都没有**。
+             打开文献 = 纯同步渲染 PDF 提取出来的块。
+             这一条路径与 v0.1.94 完全一致，不可能因为模型出问题。
 
-          判据：**文本可见性与模型完全解耦**。
-                模型挂了 = 段落切得粗糙，仅此而已。
+          ✅ 语义分段变成**用户显式动作**（点顶栏图标）。
+             它是"对我正在读的这篇重新排版"，而不是"打开文档时
+             悄悄做的一件事"。用户知道它在跑，也能取消。
+
+          判据：**一个可选功能的代码，不应该出现在主链路上。**
+                出现在主链路上，就意味着它失败时主功能也会坏。
         */
 
-        /* ① 立刻渲染原始块 —— 这一步是同步的，不依赖任何异步结果 */
         try {
             continueWith(id, text, outline, meta, blocks, fromMd);
         } catch (e) {
@@ -6790,39 +6858,89 @@
                 showError('extract-failed', 'render threw twice: ' + (e2 && e2.message));
             }
         }
+    }
 
+    /**
+     * 对**当前这篇**重新做语义分段（v0.1.98）。
+     *
+     * 由顶栏的切分图标触发 —— 用户明确的主动行为。
+     *
+     * ⚠️ 与 `setText` 完全无关：这里失败了只影响"这次重排"，
+     *    正文保持在屏幕上的原始分段，一字不动。
+     *
+     * @return {Promise<boolean>} true = 分段生效并重绘；false = 没变化或失败
+     */
+    function resegmentCurrent() {
+        if (!currentDoc) {
+            trace('reader:seg', 'no current doc');
+            return Promise.resolve(false);
+        }
+        if (!lastBlocks || !lastBlocks.length) {
+            trace('reader:seg', 'no blocks to segment');
+            return Promise.resolve(false);
+        }
+
+        var sem = window.ScholariusSemantic;
+        if (!sem || !sem.isEnabled || !sem.isEnabled()) {
+            trace('reader:seg', 'semantic disabled, nothing to do');
+            return Promise.resolve(false);
+        }
+
+        var docId = currentDoc.id;
         /*
-          ② 后台分段（可选优化）。
-             ⚠️ 不 await、不阻塞渲染 —— 这是与前一版最本质的差别。
-             ⚠️ 超时 20 秒：到点就放弃这次优化，用户看到的仍是①的结果。
-                正常首次加载约 1~3 秒，20 秒足够宽松。
+          ⚠️ 用 `lastBlocks`（当前屏幕上的块）而不是重新去读文件 ——
+             用户可能已经编辑过段落，那些编辑结果在 docModel.blocks 里。
+             拿原始 PDF 块重新分段会把编辑冲掉。
+
+          ⚠️ 但语义分段会重写段落结构，与已有的手工编辑**天然冲突**。
+             这里选择：以 docModel.blocks（含编辑）为输入。
+             分段后行号按比例重分配，标注位置可能偏移 —— 这是可接受的，
+             因为用户是**主动**要求重排的。
         */
-        withTimeout(semanticReflow(blocks), blocks, 20000).then(function (finalBlocks) {
-            /* 用户已经切走 / 关掉这篇 → 丢弃结果 */
-            if (!currentDoc || currentDoc.id !== id) {
-                trace('reader:seg', 'dropped, doc changed');
-                return;
-            }
-            /*
-              ⚠️ 分段没有改变任何东西（模型没开 / 结果与版式一致 /
-                 超时返回原数组）→ 不要重绘。
-                 重绘会丢掉滚动位置与选区，是纯损失。
-            */
-            if (!finalBlocks || finalBlocks === blocks ||
-                finalBlocks.length === blocks.length) {
-                trace('reader:seg', 'no change, keep initial render');
-                return;
-            }
-            trace('reader:seg', 'applying reflow: ' + blocks.length +
-                  ' -> ' + finalBlocks.length + ' blocks');
-            try {
-                continueWith(id, text, outline, meta, finalBlocks, fromMd);
-            } catch (e) {
-                /* ② 失败无所谓 —— ① 的内容已经在屏幕上了 */
-                trace('reader:seg', 're-render failed, keeping initial: ' +
-                      (e && e.message));
-            }
-        });
+        var source = (docModel.blocks && docModel.blocks.length)
+            ? docModel.blocks
+            : lastBlocks;
+
+        var prog = window.ScholariusSegProgress;
+        if (prog) prog.start(source.length);
+
+        trace('reader:seg', 'manual resegment of ' + source.length + ' blocks');
+
+        return withTimeout(semanticReflow(source), source, 120000)
+            .then(function (out) {
+                if (!currentDoc || currentDoc.id !== docId) {
+                    trace('reader:seg', 'doc changed during resegment');
+                    return false;
+                }
+                if (!out || out === source || out.length === source.length) {
+                    trace('reader:seg', 'no structural change');
+                    if (prog) prog.finish('done');
+                    return false;
+                }
+                trace('reader:seg', 'applying: ' + source.length +
+                      ' -> ' + out.length + ' blocks');
+                /*
+                  ⚠️ 重绘前先记下滚动位置 —— 分段后段落数变了，
+                     高度也变了，不恢复的话用户会被弹回顶部。
+                     用**比例**恢复而不是像素：总高度变了，像素没有意义。
+                */
+                var ratio = 0;
+                if (bodyEl && bodyEl.scrollHeight > bodyEl.clientHeight) {
+                    ratio = bodyEl.scrollTop /
+                        (bodyEl.scrollHeight - bodyEl.clientHeight);
+                }
+                continueWith(docId, null, null, null, out, true);
+                if (bodyEl && bodyEl.scrollHeight > bodyEl.clientHeight) {
+                    bodyEl.scrollTop = ratio *
+                        (bodyEl.scrollHeight - bodyEl.clientHeight);
+                }
+                return true;
+            })
+            .catch(function (e) {
+                trace('reader:seg', 'resegment failed: ' + (e && e.message));
+                if (prog) prog.finish('failed');
+                return false;
+            });
     }
 
     /**
@@ -8603,6 +8721,13 @@ function tocTitleFrom(text) {
          *   python tools/emu_js.py --file tools/_seg_reflow.js
          */
         __reflow: semanticReflow,
+        /**
+         * 对当前文档重新做语义分段（v0.1.98）。
+         *
+         * ⚠️ 只由顶栏的切分按钮调用。`setText` 里没有模型代码 ——
+         *    这是"模型不参与提取"的保证。
+         */
+        resegment: resegmentCurrent,
         /**
          * 供排查：伪造一个"当前文档"，让 setText 能通过 id 校验。
          *

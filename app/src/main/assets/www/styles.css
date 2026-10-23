@@ -6816,32 +6816,37 @@ body {
     position: fixed;
     left: var(--safe-left);
     right: var(--safe-right);
-    bottom: calc(var(--keyboard) + var(--safe-bottom));
-    z-index: 60;
     /*
-      ⚠️ z-index 60：低于所有弹层（100+），高于正文（默认）。
-         分段进行时用户如果打开目录/详情，进度条应该在它们**下面**，
-         否则会盖住弹层底部按钮。
+      ══ ⚠️ 挂在顶栏下方（v0.1.98）══
+
+      用户裁决：「悬浮表单顶部栏增加一个切分的图标」
+
+      既然触发入口在顶栏，反馈也应该在顶栏附近 ——
+      把进度条放在底部会让「点了图标 → 底部动了一下」这种
+      视线跳转，用户容易错过。
+
+      ⚠️ 位置：顶栏高度（--reader-top-h）再往下 4px。
+         不能盖住顶栏本身（那会挡住切分按钮，用户没法再点）。
     */
+    top: calc(var(--reader-top-h) + 4px);
+    z-index: 60;
     background: var(--surface-raised);
     border-radius: 12px;
     margin: 0 12px 8px;
     padding: 10px 14px 12px;
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.16);
-    transform: translateY(140%);
+    transform: translateY(-140%);
     opacity: 0;
     transition: transform 240ms cubic-bezier(0.2, 0, 0, 1),
                 opacity 240ms cubic-bezier(0.2, 0, 0, 1);
-    /*
-      ⚠️ 不设 pointer-events: none —— 用户要能点「跳过」。
-         但整条只有按钮是可交互的，其余区域不拦手势：
-         见下面 .seg-bar-row 的说明。
-    */
+    pointer-events: none;
 }
 
 .seg-bar.is-open {
     transform: translateY(0);
     opacity: 1;
+    /* 打开时才接手势 —— 用户要能点「跳过」 */
+    pointer-events: auto;
 }
 
 .seg-bar-fill {

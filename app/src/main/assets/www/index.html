@@ -847,6 +847,26 @@
             <button class="icon-button reader-detail-btn" type="button"
                 id="reader-detail" aria-haspopup="dialog" aria-expanded="false"
                 aria-label="Details" data-i18n-aria-label="reader.details"></button>
+            <!--
+              语义切分按钮（v0.1.98）。
+
+              用户裁决：「悬浮表单顶部栏增加一个切分的图标，
+                        点击图标后才触发整篇文章文本的重新切分」
+
+              ⚠️ 为什么是**手动**而不是打开时自动做：
+                 前三版（0.1.95/96/97）都让模型参与主链路，
+                 结果模型一卡就把正文一起拖死，用户连着报三次
+                 「无法提取」。现在提取/渲染与模型彻底隔离 ——
+                 打开文献永远只是"把 PDF 提取出来的文本画出来"。
+
+              ⚠️ 只在开启语义分段时可见（由 JS 控制 hidden）——
+                 没开功能的用户不该看到一个点了没反应的按钮。
+                 图标由 JS 用 ScholariusUI.icon() 填。
+            -->
+            <button class="icon-button reader-seg-btn" type="button"
+                id="reader-seg" hidden
+                aria-label="Re-split paragraphs"
+                data-i18n-aria-label="reader.resegment"></button>
         </header>
 
         <!--
