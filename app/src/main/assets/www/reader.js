@@ -4244,150 +4244,118 @@
             nameEl.textContent = t('reader.label.' + key);
             btn.appendChild(nameEl);
 
-            if (labelHasSub(key)) {
+            /*
+              ══ ⚠️⚠️ 右侧显示**当前选中的值**（v0.2.15 重做）══
+
+              用户说得很清楚：
+
+                「我让你参考是参考设置项那个设计，就是点击之后自动弹出
+                  下拉选项，然后右边是选中的目前的值」
+
+              ✅ 所以每一行就是设置项的样子：
+
+                  正文                          ✓
+                  标题                          ✓
+                  作者                        单位  ▾
+
+              · 左边 = 标签名
+              · 右边 = **当前值**（有子标签的显示子标签值；没有的就只有勾）
+              · 点整行 = 弹出下拉选项
+
+              ── 我上一版错在哪 ──
+
+              v0.2.14 我给整个列表**加了一个卡片外框**，还额外造了一个
+              只能点箭头的小按钮 —— 用户看到的是一个"奇形怪状的框"，
+              完全不是设置项那种一行一行的样子。
+
+              ── ✅ 现在 ──
+
+              · **去掉外框**，列表就是普通的行序列（与设置项一致）；
+              · **整行可点**（不再要求精确点箭头）；
+              · 右侧用 `.sel-label-value` 显示当前值，
+                没有值时显示占位 `—`；
+              · 有子标签的行右端给一个 ▾ 提示"可展开"。
+
+              ⚠️ 值必须对**所有**行都显示（不只是当前选中行）——
+                 设置项里每一行右侧都有自己的当前值。
+                 但只有 `labelDraft === key` 时那个值才是"本次将要写入"的，
+                 所以非当前行的值用弱化色，避免误导。
+            */
+            var hasSub = labelHasSub(key);
+
+            var tailEl = document.createElement('span');
+            tailEl.className = 'sel-label-tail';
+            btn.appendChild(tailEl);
+
+            if (hasSub) {
+                var valEl = document.createElement('span');
+                valEl.className = 'sel-label-value';
                 /*
-                  ══ ⚠️⚠️ 选中的子标签值显示在**左边**（v0.2.12）══
-
-                  用户要求（原话）：
-
-                    「既然子标签作为值，选中的子标签值则应该显示在选项左边，
-                      而不是隐藏」
-
-                  ── 之前错在哪 ──
-
-                  v0.2.11 把「当前子标签」拼在箭头**按钮的文本**里
-                  （`subBtn.textContent = '单位 ›'`）。问题：
-                    · 它读起来像"一个叫『单位›』的按钮"，而不是"这个标签的值"；
-                    · 值随箭头贴在行尾，与左侧的标签名隔得很远，
-                      用户要横跨整行才能确认"这条设的是单位"；
-                    · 箭头按钮变宽 → 右侧点击区不稳定。
-
-                  ── ✅ 现在 ──
-
-                  三个独立元素，从左到右：
-
-                      [作者信息]        [单位]        [›]
-                       ↑ 标签名          ↑ 当前值      ↑ 下拉按钮
-
-                  值用**胶囊**样式贴在名字右边（不是行尾），
-                  一眼就是"这个标签带了个值"。
-                  值为空时整个胶囊不渲染 —— 不留空壳。
-
-                  ⚠️ 值胶囊 `pointer-events: none`：
-                     点它应当等同于点标签本体（选中标签），
-                     而不是打开下拉。要开下拉请点箭头。
+                  ⚠️ 只有当前行才有实际选中的子标签值；
+                     其余行显示占位符，表示"可设置但没有值"。
                 */
                 if (key === labelDraft && fieldDraft) {
-                    var valEl = document.createElement('span');
-                    valEl.className = 'sel-label-value';
                     valEl.textContent = t('reader.field.' + fieldDraft);
-                    btn.appendChild(valEl);
+                    valEl.classList.add('is-set');
+                } else {
+                    valEl.textContent = '—';
                 }
+                tailEl.appendChild(valEl);
 
-                var subBtn = document.createElement('button');
-                subBtn.type = 'button';
-                subBtn.className = 'sel-label-sub-toggle';
-                subBtn.setAttribute('aria-label', t('reader.fieldPick'));
-                subBtn.setAttribute('aria-haspopup', 'listbox');
-                subBtn.setAttribute('aria-expanded',
-                    subOpenKey === key ? 'true' : 'false');
-                if (subOpenKey === key) subBtn.classList.add('is-open');
+                var caretEl = document.createElement('span');
+                caretEl.className = 'sel-label-caret';
+                caretEl.setAttribute('aria-hidden', 'true');
+                caretEl.textContent = '▾';
+                if (subOpenKey === key) caretEl.classList.add('is-open');
+                tailEl.appendChild(caretEl);
+            } else if (key === labelDraft && subOpenKey !== key) {
                 /*
-                  ⚠️ 箭头**只放符号**，不再拼值（值已由上面的胶囊显示）。
-                     拼在一起会让按钮宽度随值变化，点击区不稳定。
+                  ⚠️ 没有子标签的行：选中时右端给一个勾，
+                     与设置项「字体家族」的选中态一致。
+                     有子标签的行不放勾 —— 那里已经有 ▾ 了。
                 */
-                subBtn.textContent = '›';
-
-                /*
-                  ⚠️ 必须 `stopPropagation` —— 否则点箭头会同时触发
-                     外层的"选择该标签"点击。
-                */
-                subBtn.addEventListener('click', function (ev) {
-                    ev.stopPropagation();
-                    ev.preventDefault();
-                    /*
-                      ⚠️ 先选中该标签再开下拉 ——
-                         否则用户选了"单位"却发现标签还是上一个。
-                      ⚠️ 只切换 `subOpenKey`，**不重渲染整表** ——
-                         重渲染会让点击事件在旧节点上派发到一半就失效。
-                         但为了显示"选中态"又必须刷新，所以用一次
-                         `renderLabelOptions()` 的重入（下面立刻返回）。
-                    */
-                    if (labelDraft !== key) {
-                        labelDraft = key;
-                        fieldDraft = null;
-                    }
-                    subOpenKey = (subOpenKey === key) ? null : key;
-                    renderLabelOptions();
-                });
-
-                btn.appendChild(subBtn);
-            }
-
-            btn.addEventListener('click', function () {
-                /*
-                  ⚠️ 点标签本体只改标签，**不动子标签**（v0.2.11），
-                     但要**收起已展开的下拉**（v0.2.13）——
-                     否则下拉会跟着留在上一个标签上。
-                */
-                labelDraft = key;
-                subOpenKey = null;
-                renderLabelOptions();
-            });
-
-            /*
-              ══ 选中项右端加一个勾（v0.2.13）══
-
-              用户要求「参照设置选项里字体家族这个栏目的设计」。
-              那一栏（`.row-menu`）的选中态是 **加粗 + 右端勾**，
-              不是整条铺底色。
-
-              ⚠️ 追加在箭头之后，才能落在行的最右端。
-              ⚠️ 展开着下拉的行**不显示勾** ——
-                 那行右端已经有箭头在旋转，再叠一个勾会挤成一团。
-            */
-            li.appendChild(btn);
-
-            if (key === labelDraft && subOpenKey !== key) {
                 var checkEl = document.createElement('span');
                 checkEl.className = 'sel-label-check';
                 checkEl.setAttribute('aria-hidden', 'true');
                 checkEl.innerHTML =
                     '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
                     '<path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>';
-                btn.appendChild(checkEl);
+                tailEl.appendChild(checkEl);
             }
 
+            li.appendChild(btn);
+
             /*
-              ══ ⚠️⚠️ 子标签下拉**在当前表单内展开**，不另开表单（v0.2.13）══
+              ══ ⚠️⚠️ 点**整行**都弹下拉（v0.2.15）══
 
-              用户两次指出同一件事：
+              用户要求：「点击之后自动弹出下拉选项」。
 
-                「子标签作为选项的值，下拉选择子标签」
-                「我新开启的子标签表单似乎层级低于标签表单，所以应该按我之前
-                  说的，走下拉选项的路子」
-
-              ── v0.2.12 错在哪 ──
-
-              我用 `ScholariusUI.pickSheet()` 弹了 `#sheet-picker` ——
-              那是**独立的另一个底部表单**，盖在标注表单之上。
-              于是：标注表单 → 子标签表单 → 选完回来，
-              层级越走越深；返回键要按两次；用户还得重新找到刚才那行。
-
-              用户要的是**下拉（dropdown）**：就挂在这一行下面，
-              点一下展开、再点收起，或选完自动收起。层级不变。
-
-              ── ✅ 现在 ──
-
-              下拉面板作为 `li` 的子元素、`position: absolute` 挂在行下方：
-                · 不改变列表高度（不挤动其他标签）；
-                · 不打开新表单（返回键一次就关掉整个标注表单）；
-                · 选中后立即收起并把值写回这一行。
-
-              ⚠️ `li` 需要 `position: relative`（见 CSS）。
-              ⚠️ 只允许一个下拉同时展开：用模块级 `subOpenKey` 记录。
+              ⚠️ 上一版要求精确点那个小箭头，点击区窄、还多一个视觉元素。
+                 现在整行就是一个按钮：点哪里都行。
+              ⚠️ 有子标签的行，点行 = **同时**选中该标签 + 展开下拉 ——
+                 这正是用户说的"下拉选择子标签"。
+              ⚠️ 没有子标签的行，点行就只是选中它。
             */
-            if (labelHasSub(key) && subOpenKey === key) {
+            btn.addEventListener('click', function () {
+                if (hasSub) {
+                    if (labelDraft !== key) {
+                        labelDraft = key;
+                        fieldDraft = null;
+                    }
+                    subOpenKey = (subOpenKey === key) ? null : key;
+                } else {
+                    labelDraft = key;
+                    subOpenKey = null;
+                }
+                renderLabelOptions();
+            });
+
+            /*
+              下拉面板：挂在这一行下面，`position: absolute`。
+              ⚠️ 不挤动其他行（absolute 不占流）。
+              ⚠️ `li` 需要 `position: relative`（见 CSS）。
+            */
+            if (hasSub && subOpenKey === key) {
                 li.appendChild(buildSubDropdown(key));
             }
 
@@ -4415,10 +4383,12 @@
             /*
               ⚠️ 在下拉面板内部点不算"点别处" ——
                  否则点选项的瞬间就被收起，选不中。
-              ⚠️ 在本行（触发它的那个 li）里点也不算，交给它自己的 click 处理。
+              ⚠️ 在**任何标签行**里点也不算 ——
+                 行自己的 click 会负责切换，
+                 这里再收起一次会和它打架（先收起再展开 = 看起来没反应）。
             */
             if (t2 && t2.closest &&
-                (t2.closest('.sel-sub-dropdown') || t2.closest('.sel-label-sub-toggle'))) {
+                (t2.closest('.sel-sub-dropdown') || t2.closest('.sel-label-item'))) {
                 return;
             }
             subOpenKey = null;
@@ -4466,9 +4436,44 @@
             btn.setAttribute('aria-selected', active ? 'true' : 'false');
             if (active) btn.classList.add('is-active');
             btn.textContent = opt.label;
-            btn.addEventListener('click', function (ev) {
-                ev.stopPropagation();
-                ev.preventDefault();
+
+            /*
+              ══ ⚠️⚠️ 必须用 `pointerdown`，不能用 `click`（v0.2.15 修 bug）══
+
+              用户实测：点下拉里的选项**毫无反应**（不收起、值也不变）。
+
+              ── 真因 ──
+
+              文档级那个"点别处收起下拉"的监听用的是**捕获阶段**的
+              `pointerdown`。事件顺序是：
+
+                  pointerdown（捕获，document → 先跑，重渲染列表）
+                  ↓ 旧节点从 DOM 移除
+                  pointerup
+                  ↓ click 派发到**已被移除的旧节点**
+                  click 监听 —— 节点已不在文档里，逻辑照跑但
+                                 紧接着又被下一轮渲染覆盖
+
+              结果就是"点了没用"。
+
+              ── ✅ 修法 ──
+
+              在这个按钮自己的 `pointerdown` 上处理，并且
+              `stopPropagation` 阻止它冒泡到 document。
+
+              ⚠️ 同时保留 `click` 作为兜底（键盘/无障碍触发的 click
+                 没有 pointerdown 阶段）。
+              ⚠️ `hasPicked` 防止 pointerdown 与 click 都跑一遍
+                 —— 两次都设值不影响结果，但会渲染两次，闪一下。
+            */
+            var hasPicked = false;
+            function pick(ev) {
+                if (ev) {
+                    ev.stopPropagation();
+                    ev.preventDefault();
+                }
+                if (hasPicked) return;
+                hasPicked = true;
                 /*
                   ⚠️ 选中即写值、即收起。
                      用户要的是"下拉选择子标签"，选完就该回到正常列表，
@@ -4477,7 +4482,11 @@
                 fieldDraft = opt.value || null;
                 subOpenKey = null;
                 renderLabelOptions();
-            });
+            }
+
+            btn.addEventListener('pointerdown', pick);
+            btn.addEventListener('click', pick);
+
             li.appendChild(btn);
             box.appendChild(li);
         });
