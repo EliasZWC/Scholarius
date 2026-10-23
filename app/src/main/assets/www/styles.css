@@ -1868,68 +1868,60 @@ body {
 }
 
 /* =====================================================================
-   md 结构渲染（v0.2.22）
+   md 结构渲染（v0.2.22 / v0.2.24 对齐原设定）
 
-   ══ ⚠️⚠️ 渲染**完全**按 md 格式 ══
+   ══ ⚠️⚠️ 渲染**完全**按 md 格式，但样式**沿用原层级设定** ══
 
    用户裁决：
-     「我觉得完成了md作为基础数据储存结构之后，渲染就很简单了吧」
      「直接清理，完全按照md格式来渲染」
+     「不对啊，字体样式也不对啊，类型、大小、字重都不对啊，
+       你得看之前的设置啊」
 
-   ✅ md → DOM 是一一对应的，不再有模糊地带：
+   ⚠️ v0.2.22 我自己发明了一套字号（1.5em / 1.22em / 1.08em），
+      那是错的 —— 原有的层级视觉是 v0.1.x 反复调出来的。
+      现在把 `h1..h4` 对齐到原来的 `reader-role-title` /
+      `reader-role-heading1..3`：
 
-       #     → <h1>          文章标题
-       ##    → <h2>          一级标题
-       ###   → <h3>          二级标题
-       ####  → <h4>          三级标题
-       - x   → <ul><li>      作者项
-       1. x  → <ol><li>      文献
-       (空行) → <p>          正文段
+          md        →  原 role            字号    字重
+          # (h1)    →  reader-role-title   1.35em  700
+          ## (h2)   →  reader-role-heading1 1.18em  700
+          ### (h3)  →  reader-role-heading2 1.08em  700
+          #### (h4) →  reader-role-heading3 1em     700
 
-   ══ ⚠️ 这里**必须**设字号了（v0.2.22 变更）══
-
-   v0.1.39 曾裁决「不允许有任何模板，我看到的应该是无等级的全部文本」。
-   那条的背景是：当时标题层级靠**推断**（位置启发式），
-   推错了就变成"莫名其妙的大小差异"，所以干脆全拉平。
-
-   现在层级来自 md 的 `#` 个数 —— 这是**用户标注的结果**，
-   不是推断。层级是数据，就该显示出来，否则用户标了 `##`
-   却在界面上完全看不出来，等于标注没生效。
-
-   ⚠️ 但幅度保持克制：`h1` 到 `h4` 之间差异不大，
-      不用浏览器默认那种夸张的 2em/1.5em。阅读场景下
-      层级要能分辨，但不能打断阅读节奏。
+   ⚠️ 字号差异刻意很小（1.35 → 1.0），因为正文基准是 1em：
+      阅读场景下层级要能分辨，但不能打断阅读节奏。
    ===================================================================== */
 
 /* 标题：统一基线 */
 .reader-heading {
     font-weight: 700;
-    line-height: 1.35;
-    margin: 1.5em 0 0.6em;
+    line-height: 1.4;
     letter-spacing: 0.01em;
 }
 
+/* `#` 文章标题 —— 对齐 reader-role-title */
 .reader-h1 {
-    font-size: 1.5em;
-    margin-top: 0.4em;
-    margin-bottom: 0.9em;
-    letter-spacing: 0.005em;
+    font-size: 1.35em;
+    line-height: 1.35;
+    margin: 1.2em 0 0.8em;
 }
 
+/* `##` 一级标题 —— 对齐 reader-role-heading1 */
 .reader-h2 {
-    font-size: 1.22em;
-    padding-bottom: 0.3em;
-    /* 一级标题带一条细分隔线 —— 章节分界的视觉锚点 */
-    border-bottom: 1px solid var(--outline);
+    font-size: 1.18em;
+    margin: 1.6em 0 0.6em;
 }
 
+/* `###` 二级标题 —— 对齐 reader-role-heading2 */
 .reader-h3 {
     font-size: 1.08em;
+    margin: 1.3em 0 0.5em;
 }
 
+/* `####` 三级标题 —— 对齐 reader-role-heading3 */
 .reader-h4 {
     font-size: 1em;
-    opacity: 0.92;
+    margin: 1.1em 0 0.4em;
 }
 
 /* 列表容器：去掉浏览器默认的大缩进和外边距 */
@@ -1946,10 +1938,12 @@ body {
     list-style: decimal;
 }
 
-/* 列表项 */
+/* 列表项 —— 对齐 reader-role-author（0.95em / 0.85 opacity）*/
 .reader-li {
-    margin: 0.25em 0;
+    margin: 0.2em 0;
     line-height: 1.55;
+    font-size: 0.95em;
+    opacity: 0.85;
     /* ⚠️ 列表项内的长文本要能换行，不能撑破容器 */
     overflow-wrap: anywhere;
 }
