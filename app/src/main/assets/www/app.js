@@ -457,6 +457,10 @@
         if (window.ScholariusImport) {
             window.ScholariusImport.init();
         }
+        /* 分段进度条（v0.1.97）—— 同理，提前建好，避免首帧卡顿 */
+        if (window.ScholariusSegProgress) {
+            window.ScholariusSegProgress.init();
+        }
         /*
           ⚠️ detail.js 要在 reader.js **之前**初始化。
              reader 的详情按钮回调会调 ScholariusDetail.open() ——

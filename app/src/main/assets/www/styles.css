@@ -6798,3 +6798,108 @@ body {
     word-break: break-word;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   分段进度条（v0.1.97）
+
+   用户要求：「那给模型渲染也加一个进度表单」
+
+   ⚠️ 与导入表单的本质区别：**不拦操作**。
+      这时正文已经可读，用户可能正在滚动或选字。
+      弹模态遮罩会把手势全吃掉 —— 那是纯打扰。
+
+   ✅ 固定在底部、很窄 (`44px`)、贴安全区上方。
+      不盖住正文最后一行的办法：正文容器自身加了 padding-bottom
+      （见 .reader-content），这里只需要不超出即可。
+   ══════════════════════════════════════════════════════════════════════ */
+
+.seg-bar {
+    position: fixed;
+    left: var(--safe-left);
+    right: var(--safe-right);
+    bottom: calc(var(--keyboard) + var(--safe-bottom));
+    z-index: 60;
+    /*
+      ⚠️ z-index 60：低于所有弹层（100+），高于正文（默认）。
+         分段进行时用户如果打开目录/详情，进度条应该在它们**下面**，
+         否则会盖住弹层底部按钮。
+    */
+    background: var(--surface-raised);
+    border-radius: 12px;
+    margin: 0 12px 8px;
+    padding: 10px 14px 12px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.16);
+    transform: translateY(140%);
+    opacity: 0;
+    transition: transform 240ms cubic-bezier(0.2, 0, 0, 1),
+                opacity 240ms cubic-bezier(0.2, 0, 0, 1);
+    /*
+      ⚠️ 不设 pointer-events: none —— 用户要能点「跳过」。
+         但整条只有按钮是可交互的，其余区域不拦手势：
+         见下面 .seg-bar-row 的说明。
+    */
+}
+
+.seg-bar.is-open {
+    transform: translateY(0);
+    opacity: 1;
+}
+
+.seg-bar-fill {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    width: 0;
+    background: var(--accent, #2D6A4F);
+    border-radius: 0 0 12px 12px;
+    transition: width 200ms linear;
+}
+
+.seg-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.seg-bar-text {
+    flex: 1 1 auto;
+    font-size: 13px;
+    color: var(--on-surface);
+    /* 文案切换时不该换行，固定单行 */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.seg-bar-pct {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--on-surface-variant);
+    font-variant-numeric: tabular-nums;
+}
+
+.seg-bar-skip {
+    flex: 0 0 auto;
+    border: none;
+    background: transparent;
+    color: var(--accent, #2D6A4F);
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    padding: 4px 8px;
+    margin: -4px -8px -4px 0;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.seg-bar-skip:active {
+    background: color-mix(in srgb, var(--accent, #2D6A4F) 12%, transparent);
+}
+
+.seg-bar-skip:disabled {
+    color: var(--on-surface-variant);
+    opacity: 0.6;
+    cursor: default;
+}
+

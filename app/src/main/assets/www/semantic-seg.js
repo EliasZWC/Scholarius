@@ -98,6 +98,17 @@
     var failStreak = 0;
     var MAX_FAIL_STREAK = 3;
 
+    /**
+     * 取消请求（用户点「跳过」）。
+     *
+     * ⚠️ 这是**协作式**取消：置标志后，正在跑的批处理在下一个
+     *    批次边界退出。不能强行中断 `session.run()` ——
+     *    那会让 wasm 处于不一致状态，后续推理全部出错。
+     * ⚠️ 取消**不算失败**，不增加 failStreak。
+     *    用户主动跳过不该让功能被熔断。
+     */
+    var cancelRequested = false;
+
     function t(key) {
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
     }
@@ -403,6 +414,14 @@
         var idx = 0;
 
         function next() {
+            /*
+              ⚠️ 在每个批次边界检查取消 —— 这是唯一安全的时机。
+                 强制中断 `session.run()` 会破坏 wasm 内部状态。
+                 最坏延迟 = 一批（16 句）的处理时间，通常 <100ms。
+            */
+            if (cancelRequested) {
+                return Promise.reject(new Error('cancelled'));
+            }
             if (idx >= sentences.length) return Promise.resolve(vectors);
 
             var chunk = sentences.slice(idx, idx + BATCH);
@@ -464,6 +483,8 @@
 
         return ensureModel()
             .then(function () {
+                /* ⚠️ 加载完就检查一次 —— 用户可能已经点了「跳过」 */
+                if (cancelRequested) throw new Error('cancelled');
                 return embedSentences(sentences, opts.onProgress);
             })
             .then(function (vectors) {
@@ -498,9 +519,19 @@
                   ⚠️ 计数 + 记录，然后**继续向上抛** ——
                      调用方需要知道这一步失败了（它要退回原始块）。
                      吞掉异常会让 reader.js 以为"分出来一段"，结果更糟。
+
+                  ⚠️ 用户主动取消**不算失败**，不计入熔断。
+                     否则点几次「跳过」功能就被禁用了 —— 那是荒谬的。
                 */
+                var msg = String((e && e.message) || e);
+                if (msg === 'cancelled') {
+                    /* 重置标志，否则下一批永远立即取消 */
+                    cancelRequested = false;
+                    segLog('segment cancelled by user');
+                    throw e;
+                }
                 failStreak++;
-                lastError = String((e && e.message) || e);
+                lastError = msg;
                 segLog('segment failed (' + failStreak + '/' + MAX_FAIL_STREAK +
                        '): ' + lastError);
                 throw e;
@@ -521,6 +552,22 @@
             };
         },
         /**
+         * 请求取消当前分段（用户在进度条上点「跳过」）。
+         *
+         * ⚠️ 协作式：在下一个批次边界生效，不会强杀 wasm 推理。
+         * ⚠️ 取消后必须在**下一次开始前**调 resetCancel() 清标志，
+         *    否则下次一分段就立刻被取消。
+         */
+        cancel: function () {
+            cancelRequested = true;
+            segLog('cancel requested');
+            return true;
+        },
+        resetCancel: function () {
+            cancelRequested = false;
+            return true;
+        },
+        /**
          * 重置失败计数并清掉已加载的 pipeline。
          *
          * ⚠️ 用户在设置里**重新打开开关**时必须调用它 ——
@@ -533,6 +580,7 @@
             loadPromise = null;
             extractor = null;
             state = 'idle';
+            cancelRequested = false;
             segLog('retry: reset');
             return true;
         },

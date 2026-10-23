@@ -50,6 +50,14 @@
             'import.stage.index': 'Saving to library',
             'import.stage.done': 'Done',
 
+            /* 分段进度条（v0.1.97） */
+            'seg.loading': 'Loading model\u2026',
+            'seg.working': 'Splitting paragraphs\u2026',
+            'seg.boundaries': 'Finding boundaries\u2026',
+            'seg.done': 'Paragraphs updated',
+            'seg.failed': 'Paragraph splitting unavailable',
+            'seg.skip': 'Skip',
+
             /*
               文献类型（发表载体性质）。
 
@@ -417,6 +425,14 @@
             'import.stage.meta': '正在读取元数据',
             'import.stage.index': '正在存入文库',
             'import.stage.done': '完成',
+
+            /* 分段进度条（v0.1.97） */
+            'seg.loading': '正在加载模型…',
+            'seg.working': '正在划分段落…',
+            'seg.boundaries': '正在判定边界…',
+            'seg.done': '段落已更新',
+            'seg.failed': '分段不可用',
+            'seg.skip': '跳过',
             'vault.readerSoon': '阅读页即将推出',
 
             /*

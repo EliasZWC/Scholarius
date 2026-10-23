@@ -4964,7 +4964,7 @@
      *
      * @param {string} reason 'no-bridge' | 'extract-failed'
      */
-    function showError(reason) {
+    function showError(reason, detail) {
         if (!contentEl) {
             return;
         }
@@ -4975,6 +4975,31 @@
             ? t('reader.noBridge')
             : t('reader.extractFailed');
         contentEl.appendChild(hint);
+        /*
+          ══ 诊断详情（v0.1.97）══
+
+          ⚠️ 只在 debug 构建里显示。
+
+          为什么必须加：用户在真机上报「仍然是那个无法提取的提示」，
+          但我这边无论如何都复现不出来 —— 说明失败点在某个
+          只在真机上才有的条件（内存、WebView 版本、特定 PDF）。
+
+          「无法提取」这句话本身**不含任何信息**：它可能是
+            · 原生根本没推数据（桥没注/文件丢了）
+            · 推了但 blocks 是空数组
+            · 块都空（text 全是空白字符串）
+            · 渲染抛异常且没有可用的纯文本
+          这四种情况的修法完全不同，光看文案只能瞎猜。
+
+          ✅ 把关键数字直接打在提示下面，用户截个图就能定位。
+             这是唯一能在真机上拿到的现场数据。
+        */
+        if (detail && global.__SCHOLARIUS_DEBUG__ !== false) {
+            var dbg = document.createElement('div');
+            dbg.className = 'reader-hint-detail';
+            dbg.textContent = detail;
+            contentEl.appendChild(dbg);
+        }
         trace('reader:error', reason || 'extract-failed');
     }
 
@@ -6267,6 +6292,31 @@
         if (!worth.length) return Promise.resolve(blocks);
 
         /*
+          ══ 进度条（v0.1.97）══
+
+          用户要求：「那给模型渲染也加一个进度表单」
+
+          ⚠️ 为什么在这里而不是在 setText 里：
+             只有真正要跑模型（`worth` 非空）时才该显示进度条。
+             若在 setText 里无条件显示，那么"分段关闭"的用户
+             每次打开文献都会看到一根进度条闪一下 —— 纯噪音。
+
+          ⚠️ 总数是**预估**：真正切出的句子数要等模型分句。
+             这里先用块数当上界，第一个批次回调时再校正。
+             不准也没关系 —— 进度条只要在动就行。
+        */
+        var prog = window.ScholariusSegProgress;
+        var grandTotal = 0;
+        for (var w = 0; w < worth.length; w++) grandTotal += worth[w].length;
+        var doneSentences = 0;
+
+        if (prog) {
+            prog.start(grandTotal);
+            /* ⚠️ 每次重新开始分段都必须清掉上次的取消标志 */
+            if (seg.resetCancel) seg.resetCancel();
+        }
+
+        /*
           ② 逐区段跑模型。
              ⚠️ 串行而不是并行：模型只有一个 wasm 实例，
                 同时跑会让内存翻倍（实测 OOM 风险）。
@@ -6284,10 +6334,15 @@
              第二阶段从后往前一次性重建 —— 从后往前保证前面的下标不受影响。
         */
         var patches = [];   /* [{start, count, items}] 按 start 升序 */
+        /* ⚠️ 用户点了「跳过」→ 后续区段全部不再处理 */
+        var userCancelled = false;
 
         var chain = Promise.resolve();
         worth.forEach(function (run) {
             chain = chain.then(function () {
+                /* 已经取消 → 直接跳过，节省模型算力 */
+                if (userCancelled) return null;
+
                 var parts = [];
                 for (var r = 0; r < run.length; r++) {
                     var t = String(blocks[run[r]].text || '').trim();
@@ -6305,7 +6360,27 @@
                   而这篇的其他区段本来是能正常处理的。
                   判据：局部失败只能影响局部。
                 */
-                return seg.segment(parts).then(function (res) {
+                var runCount = parts.length;
+                return seg.segment(parts, {
+                    onProgress: function (done, total) {
+                        /*
+                          ⚠️ 进度要**跨区段累加**。
+                             每个区段各自从 0 报到 total，直接透传会让
+                             进度条每次换区段就跌回 0 —— 看起来像重来。
+                          ⚠️ 总数用第一次拿到的真实值校正预估：
+                             模型的分句器切出的句子数通常比块数多。
+                        */
+                        if (total > 0 && grandTotal !== total) {
+                            /* 只校正一次，且只增不减，避免抖动 */
+                            if (total > grandTotal) grandTotal = total;
+                        }
+                        if (prog) {
+                            prog.progress(doneSentences + done, grandTotal);
+                        }
+                    }
+                }).then(function (res) {
+                    doneSentences += runCount;
+                    if (prog) prog.progress(doneSentences, grandTotal);
                     var paras = (res && res.paragraphs) || [];
                     if (!paras.length) return null;
                     /*
@@ -6356,15 +6431,37 @@
                     return null;
                 }, function (err) {
                     /* 这个区段失败 → 保留原块，继续处理后面的区段 */
-                    trace('reader:seg', 'run failed at ' + run[0] + ': ' +
-                          (err && err.message));
+                    var msg = String((err && err.message) || err);
+                    trace('reader:seg', 'run failed at ' + run[0] + ': ' + msg);
+                    /*
+                      ⚠️ 用户取消 → 立刻 stop，不再处理后面的区段。
+                         继续跑完后面的区段是纯浪费（用户已经不要了）。
+                         用 cancelFlag 而不是 break —— 这是 Promise 链。
+                    */
+                    if (msg === 'cancelled') {
+                        userCancelled = true;
+                    }
                     return null;
                 });
             });
         });
 
         return chain.then(function () {
-            if (!patches.length) return blocks;
+            /*
+              ⚠️ 所有收尾路径都要调 finish()，否则进度条会永远停在那里 ——
+                 那比不显示更糟（用户以为一直在跑）。
+            */
+            if (userCancelled) {
+                trace('reader:seg', 'cancelled by user, keeping raw blocks');
+                if (prog) prog.finish('skipped');
+                return blocks;
+            }
+
+            if (!patches.length) {
+                /* 模型判断与版式一致 → 没有可改的，也算"完成" */
+                if (prog) prog.finish('done');
+                return blocks;
+            }
 
             /* ④ 从后往前重建：前面的 start 不受后面的增删影响 */
             var out = blocks.slice();
@@ -6375,6 +6472,7 @@
             }
             trace('reader:seg', 'reflowed ' + blocks.length + ' -> ' +
                   out.length + ' blocks in ' + patches.length + ' runs');
+            if (prog) prog.finish('done');
             return out;
         }, function (err) {
             /*
@@ -6383,10 +6481,69 @@
                  最坏的结果应该是"和没开一样"，而不是白屏。
             */
             trace('reader:seg', 'failed: ' + (err && err.message));
+            if (prog) prog.finish('failed');
             return blocks;
         });
     }
 
+    /**
+     * 给语义分段加**超时**（v0.1.97）。
+     *
+     * ══ ⚠️⚠️ 为什么必须有（这是"仍无法提取"的真正原因）══
+     *
+     * 用户连续两版报「仍然是那个无法提取的提示」，而我这边
+     * 无论怎么模拟"模型崩溃"都能正常降级。差别在于：
+     *
+     *   · 我模拟的是「Promise **reject**」→ 降级生效；
+     *   · 真机上发生的是「Promise **永不 settle**」→ 降级永不触发。
+     *
+     * 什么时候会永不 settle：
+     *   · ONNX session 正在初始化（wasm 编译要几秒到几十秒）；
+     *   · 低端机内存紧张，wasm 分配后长时间无响应；
+     *   · `waitRuntime(15000)` 只在**取 transformers 对象**时超时，
+     *     之后 `pipeline(...)` 本身没有超时 —— 它可能挂任意久。
+     *
+     * 而 `setText` 的渲染**排在语义分段之后**（`continueWith` 在 then 里），
+     * 所以模型一卡，正文就永远不出现 → 用户看到空白 → 显示提取失败。
+     *
+     * ✅ 正解：**正文渲染不该等模型**。
+     *    超时一到就用原始块渲染，模型的结果如果之后才回来，
+     *    直接丢弃（用户已经在读了，再替换会打断阅读）。
+     *
+     * @param {Promise<Array>} p  语义分段 Promise
+     * @param {Array}  fallback   超时/失败时用的块
+     * @param {number} ms         超时毫秒
+     * @return {Promise<Array>}   一定会 settle
+     */
+    function withTimeout(p, fallback, ms) {
+        return new Promise(function (resolve) {
+            var done = false;
+
+            var timer = global.setTimeout(function () {
+                if (done) return;
+                done = true;
+                trace('reader:seg', 'timeout after ' + ms + 'ms, using raw blocks');
+                resolve(fallback);
+            }, ms);
+
+            p.then(function (v) {
+                if (done) {
+                    /* 超时后结果才回来 → 丢弃，避免打断正在进行的阅读 */
+                    trace('reader:seg', 'result arrived after timeout, dropped');
+                    return;
+                }
+                done = true;
+                global.clearTimeout(timer);
+                resolve(v);
+            }, function (e) {
+                if (done) return;
+                done = true;
+                global.clearTimeout(timer);
+                trace('reader:seg', 'error, using raw blocks: ' + (e && e.message));
+                resolve(fallback);
+            });
+        });
+    }
     /**
      * 原生推来正文文本。
      *
@@ -6548,56 +6705,123 @@
 
           判据：**可选功能失败时，退化结果必须等于"没开这个功能"**。
         */
-        semanticReflow(blocks).then(function (finalBlocks) {
+        /*
+          ⚠️ 超时兜底（v0.1.97）：正文**必须**在有限时间内出现。
+
+          用户连续两版报「仍然是那个无法提取的提示」。真机上
+          模型不是在 reject，而是**永不 settle**（wasm 编译卡住 /
+          内存紧张），于是 `continueWith` 永远不执行 → 空白 → 报错。
+
+          超时值取 8 秒：正常首次加载约 1 秒（本地 17MB），
+          8 秒还不出来说明确实卡住了，此时先让用户看到文字更重要。
+        */
+        trace('reader:text', 'blocks=' + (blocks ? blocks.length : 0) +
+              ' fromMd=' + !!fromMd + ' text=' + (text ? text.length : 0));
+
+        /*
+          ══════════════════════════════════════════════════════════════
+          ══ ⚠️⚠️ 架构修正：**先渲染，再分段**（v0.1.97）══
+          ══════════════════════════════════════════════════════════════
+
+          前两版（v0.1.95 / v0.1.96）都把顺序搞反了：
+
+              semanticReflow(blocks).then(渲染)      ← 错的
+
+          于是"分段"成了"渲染"的前置条件。模型一旦出问题
+          （reject **或**永不 settle），渲染就永远不发生。
+
+          v0.1.96 只修了 reject，没修"永不 settle" ——
+          而真机上发生的正是后者：ONNX wasm 编译在低端机上
+          可以卡几十秒甚至永久挂住。用户连续两版看到
+          「无法提取」，原因就在这里。
+
+          用户的原话点破了关键：
+            「模型并不干扰提取逻辑」
+            「导入的进度条是完成了的」
+          —— 对。导入成功 = md 已落盘，文本**一定在**。
+             模型只该影响"段落怎么切"，不该影响"有没有文字"。
+
+          ✅ 正确顺序：
+             ① 立刻用**原始块**渲染（文字马上出现，可读可标注）；
+             ② 模型在后台跑，**只有真正成功**且用户还在这篇文档时，
+                才用更好的分段**重新渲染**一次；
+             ③ 模型超时 / 失败 / 用户切走 → 什么都不做，
+                用户已经在读的那份内容不受任何影响。
+
+          判据：**文本可见性与模型完全解耦**。
+                模型挂了 = 段落切得粗糙，仅此而已。
+        */
+
+        /* ① 立刻渲染原始块 —— 这一步是同步的，不依赖任何异步结果 */
+        try {
+            continueWith(id, text, outline, meta, blocks, fromMd);
+        } catch (e) {
+            /*
+              ⚠️ 渲染本身出错时的最后一道防线。
+
+              正文数据明明在手里，只是"结构化渲染"这一步炸了
+              （比如某个块的字段形状意外、DOM 操作异常）。
+              这时候**绝不能**显示"提取失败" —— 那是在对用户撒谎。
+
+              ✅ 退化到最朴素的方式：把纯文本按行塞进去。
+                 没有分块、没有标注，但**文字一字不少**。
+            */
+            trace('reader:render-failed', String(e && e.message));
+            try {
+                contentEl.textContent = '';
+                var fallback = text;
+                if (!fallback) {
+                    var acc = [];
+                    for (var i = 0; i < (blocks || []).length; i++) {
+                        var bt = String((blocks[i] && blocks[i].text) || '');
+                        if (bt) acc.push(bt);
+                    }
+                    fallback = acc.join('\n\n');
+                }
+                if (fallback) {
+                    contentEl.textContent = fallback;
+                    contentEl.classList.add('reader-plain-fallback');
+                } else {
+                    showError('extract-failed',
+                              'blocks=' + (blocks ? blocks.length : 0) +
+                              ' text=' + (text ? text.length : 0));
+                }
+            } catch (e2) {
+                showError('extract-failed', 'render threw twice: ' + (e2 && e2.message));
+            }
+        }
+
+        /*
+          ② 后台分段（可选优化）。
+             ⚠️ 不 await、不阻塞渲染 —— 这是与前一版最本质的差别。
+             ⚠️ 超时 20 秒：到点就放弃这次优化，用户看到的仍是①的结果。
+                正常首次加载约 1~3 秒，20 秒足够宽松。
+        */
+        withTimeout(semanticReflow(blocks), blocks, 20000).then(function (finalBlocks) {
+            /* 用户已经切走 / 关掉这篇 → 丢弃结果 */
             if (!currentDoc || currentDoc.id !== id) {
-                trace('reader:text-stale', 'seg ignored ' + id);
+                trace('reader:seg', 'dropped, doc changed');
                 return;
             }
+            /*
+              ⚠️ 分段没有改变任何东西（模型没开 / 结果与版式一致 /
+                 超时返回原数组）→ 不要重绘。
+                 重绘会丢掉滚动位置与选区，是纯损失。
+            */
+            if (!finalBlocks || finalBlocks === blocks ||
+                finalBlocks.length === blocks.length) {
+                trace('reader:seg', 'no change, keep initial render');
+                return;
+            }
+            trace('reader:seg', 'applying reflow: ' + blocks.length +
+                  ' -> ' + finalBlocks.length + ' blocks');
             try {
                 continueWith(id, text, outline, meta, finalBlocks, fromMd);
             } catch (e) {
-                /*
-                  ⚠️⚠️ 渲染本身出错时的最后一道防线（v0.1.96）。
-
-                  正文数据明明在手里，只是"结构化渲染"这一步炸了
-                  （比如某个块的字段形状意外、DOM 操作异常）。
-                  这时候**绝不能**显示"提取失败" —— 那是在对用户撒谎。
-
-                  ✅ 退化到最朴素的方式：把纯文本按行塞进去。
-                     没有分块、没有标注，但**文字一字不少**。
-                     这比"什么都看不到"好得多，也是用户明确要求的：
-                     「即便没有模型，以前也有划分不准的全部文本」。
-                */
-                trace('reader:render-failed', String(e && e.message));
-                try {
-                    contentEl.textContent = '';
-                    var fallback = text;
-                    if (!fallback) {
-                        var acc = [];
-                        for (var i = 0; i < (blocks || []).length; i++) {
-                            var bt = String((blocks[i] && blocks[i].text) || '');
-                            if (bt) acc.push(bt);
-                        }
-                        fallback = acc.join('\n\n');
-                    }
-                    if (fallback) {
-                        contentEl.textContent = fallback;
-                        contentEl.classList.add('reader-plain-fallback');
-                    } else {
-                        showError('extract-failed');
-                    }
-                } catch (e2) {
-                    showError('extract-failed');
-                }
+                /* ② 失败无所谓 —— ① 的内容已经在屏幕上了 */
+                trace('reader:seg', 're-render failed, keeping initial: ' +
+                      (e && e.message));
             }
-        }, function (err) {
-            /*
-              ⚠️ 理论上到不了这里（semanticReflow 自己会 catch），
-                 但"理论上"在异步链里不算数 —— 留这一层，成本为零。
-            */
-            trace('reader:seg', 'unexpected reject: ' + (err && err.message));
-            if (!currentDoc || currentDoc.id !== id) return;
-            continueWith(id, text, outline, meta, blocks, fromMd);
         });
     }
 
