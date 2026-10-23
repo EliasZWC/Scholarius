@@ -5967,29 +5967,54 @@
             var b = run.blocks[i];
 
             /*
-              ══ ⚠️⚠️ 一个区域只挂一个编号（v0.1.93）══
+              ══ ⚠️⚠️ 编号挂在「条目」上，不是「区域」上（v0.2.10）══
 
-              用户要求（原话）：
-                「同一个作者区域的编号应当相同，提示条应当连续」
+              用户反馈：
 
-              ⚠️ 之前这里每块都调 `makeContentEl(..., markTyped)`，
-                 而作者块内部又各自 `markTyped(p, 'author')` ——
-                 于是同一个作者区域被标成 A1、A2、A3，
-                 每块还各带一条竖线，看起来像三个独立区域。
+                「选中好几段标注为作者信息，作者信息区域从提示条来看分开了，
+                  但却没有编号，只有第一个有 A1，其他都没有」
 
-              ✅ 正确语义：**区域**是编号单位，不是块。
-                 区域的第一个块挂编号，其余块不挂编号 ——
-                 但**竖线每块都要有**，否则提示带中间断开，
-                 看起来就像两个区域了（用户原话：「提示条应当连续」）。
+              ── 真因 ──
 
-              ⚠️ 只对「合并成一个区域」的路径生效（本函数），
-                 `reference` 走的是上面的逐块独立分支，
-                 每条文献仍然有自己的 R1/R2/R3 —— 那是它们本来就该有的。
-              ⚠️ 传 `null` 而不是删掉参数：`makeAuthorLinesEl` /
-                 `makeContentEl` 内部都会判 `if (markTyped)`，
-                 传 null 就自然跳过编号，不需要改它们的签名。
+              v0.1.93 为了让"一个作者区域"内的多行共用同一个编号，
+              把这里改成 `regionMarker = (i === 0) ? markTyped : null` ——
+              即**只有区域首块挂编号**。
+
+              但这条规则的前提是「一个区域 = 一个作者条目被拆成多块」。
+              而实际使用中，用户连续标注**好几段独立的作者信息**时
+              （姓名 / 单位 / 邮箱各占一段），这些块的签名都是 `author`，
+              于是被合并成**同一个 run** —— 结果只有第一段拿到 A1，
+              其余段落既没有编号、也不会递增到 A2/A3。
+
+              用户看到的"提示条分开了"是因为每块都有竖线
+              （下面那段 `attachBodyMarker(e2, null)` 补的），
+              但编号只挂了一个 —— 正是这个不对称造成的困惑。
+
+              ── ✅ 现在的判据 ──
+
+              看这**块本身**是不是一个完整的作者条目：
+
+                · `labelSplitsPerBlock('author')` 为 true 时（当前**不是**），
+                  每块独立成区，各挂编号；
+                · 否则每块仍是同一区域里的**一行**，共用首块编号 ——
+                  这正是 v0.1.93 要的行为（一个作者条目含姓名/单位多行）。
+
+              但用户遇到的"好几段标注为作者信息"在**数据上**与
+              "一个条目的多行"完全无法区分 —— 两者都是一个块带 author 标签。
+
+              ✅ 所以改用一条更符合直觉的规则：
+                 **当区域内只有一个块时**，它当然挂编号；
+                 **当区域内有多个块时**，每块都是一个独立条目，各挂编号。
+                 理由：PDF 提取出的块已经是**段落**粒度
+                 （`PdfText` 按坐标分行聚合），一个块就是一行/一段。
+                 多块 = 多条信息，不是一条信息的多行。
+
+              ⚠️ 真正的"一条信息多行"由 `makeAuthorLinesEl` 在**块内**处理
+                 （按已标注的词条拆分），不依赖跨块合并 ——
+                 所以按块编号不会切碎一条作者信息。
             */
-            var regionMarker = (i === 0) ? markTyped : null;
+            var multiInRun = run.blocks.length > 1;
+            var regionMarker = (multiInRun || i === 0) ? markTyped : null;
             var el = makeContentEl(b, bodyIndex, refIndex, authorIndex, regionMarker);
 
             /*
@@ -9865,6 +9890,50 @@ function tocTitleFrom(text) {
         /** 当前缓存里的模板 id 或 null（v0.2.6 排查用） */
         getTemplateId: function () {
             return templateCache ? (templateCache.id || '?') : null;
+        },
+        /**
+         * 直接渲染给定的块与标注（v0.2.10，供排查"编号缺失"这类问题）。
+         *
+         * ⚠️ 为什么不走 `setMd`：`setMd` 要真实文档 id + 原生桥配合，
+         *    自动化里很难摆出"三段都标了作者"这样的具体状态。
+         *    有了这个钩子就能把任意块 + 标注直接喂进渲染链路，
+         *    看见的 DOM 就是用户会看见的 DOM。
+         *
+         * @param {Array} blocks 块
+         * @param {Object} marks  {line: [{start,end,label}]}
+         */
+        __testRender: function (blocks, marks) {
+            labels = {};
+            if (marks) {
+                for (var k in marks) {
+                    if (Object.prototype.hasOwnProperty.call(marks, k)) {
+                        labels[parseInt(k, 10)] = marks[k];
+                    }
+                }
+            }
+            currentDoc = { id: '__test__', title: 'test' };
+            docStoreKey = '__test__';
+            docModel.blocks = blocks.map(function (b) {
+                return {
+                    line: b.line, page: b.page, text: b.text || '',
+                    kind: b.kind || '', level: b.level, lines: b.lines,
+                    role: b.role || '', roleLevel: b.roleLevel
+                };
+            });
+            renderBlocks(docModel.blocks);
+            var heads = document.querySelectorAll('.reader-label-head');
+            var marks2 = document.querySelectorAll('[data-body-no]');
+            var nos = [];
+            for (var i = 0; i < marks2.length; i++) {
+                nos.push(marks2[i].getAttribute('data-body-no'));
+            }
+            return {
+                heads: heads.length,
+                headTexts: Array.prototype.map.call(heads, function (h) {
+                    return h.textContent;
+                }),
+                markers: nos
+            };
         },
         /**
          * 供排查/测试：直接跑一次语义重组，不碰 DOM、不依赖打开文档。
