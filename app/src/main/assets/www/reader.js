@@ -6295,6 +6295,16 @@
                 }
                 if (parts.length < 2) return null;
 
+                /*
+                  ⚠️⚠️ 每个区段单独 catch（v0.1.96）。
+
+                  原来 `return seg.segment(parts).then(...)` 没有 catch，
+                  于是**一个区段**推理失败（OOM、张量尺寸越界、wasm 崩）
+                  就会让整条 chain reject → 整篇正文都不渲染。
+
+                  而这篇的其他区段本来是能正常处理的。
+                  判据：局部失败只能影响局部。
+                */
                 return seg.segment(parts).then(function (res) {
                     var paras = (res && res.paragraphs) || [];
                     if (!paras.length) return null;
@@ -6343,6 +6353,11 @@
                     if (!rebuilt.length) return null;
 
                     patches.push({ start: run[0], count: run.length, items: rebuilt });
+                    return null;
+                }, function (err) {
+                    /* 这个区段失败 → 保留原块，继续处理后面的区段 */
+                    trace('reader:seg', 'run failed at ' + run[0] + ': ' +
+                          (err && err.message));
                     return null;
                 });
             });
@@ -6509,13 +6524,80 @@
              走的是和以前完全一样的同步路径 —— 只是多包了一层 then。
           ⚠️ 异步期间用户可能已经切走 —— 必须**重新校验** id，
              否则会把 A 的正文画到 B 上（和文件头那段同样的道理）。
+
+          ══ ⚠️⚠️ 正文渲染**绝不能**依赖模型成功（v0.1.96 修）══
+
+          用户报的原话：
+            「进入阅读视图提示 Could not extract text from this pdf。
+              这显然有问题，因为即便没有模型，以前也有划分不准的全部文本，
+              加入了模型反而直接无法提取」
+
+          真因：这一行原来是 `semanticReflow(blocks).then(...)` ——
+          **没有 catch**。只要模型这条链抛了任何异常（ONNX 推理崩、
+          wasm 加载失败、内存不足…），`continueWith` 就**永远不会被调用**，
+          正文区域保持空白 → 用户看到"提取失败"。
+
+          而"提取失败"这个结论是**错的**：PDF 明明提取成功了，
+          块数据就在 `blocks` 里，只是段落整理那一步失败了。
+
+          ✅ 三个保证，缺一不可：
+             ① `semanticReflow` 内部 catch 掉一切，永不 reject（见下）；
+             ② 这里再挂一个 `catch` 兜底，走原始 blocks；
+             ③ `continueWith` 自己也包 try/catch —— 渲染出错要让用户
+                看到**能看的部分**，而不是一句"提取失败"。
+
+          判据：**可选功能失败时，退化结果必须等于"没开这个功能"**。
         */
         semanticReflow(blocks).then(function (finalBlocks) {
             if (!currentDoc || currentDoc.id !== id) {
                 trace('reader:text-stale', 'seg ignored ' + id);
                 return;
             }
-            continueWith(id, text, outline, meta, finalBlocks, fromMd);
+            try {
+                continueWith(id, text, outline, meta, finalBlocks, fromMd);
+            } catch (e) {
+                /*
+                  ⚠️⚠️ 渲染本身出错时的最后一道防线（v0.1.96）。
+
+                  正文数据明明在手里，只是"结构化渲染"这一步炸了
+                  （比如某个块的字段形状意外、DOM 操作异常）。
+                  这时候**绝不能**显示"提取失败" —— 那是在对用户撒谎。
+
+                  ✅ 退化到最朴素的方式：把纯文本按行塞进去。
+                     没有分块、没有标注，但**文字一字不少**。
+                     这比"什么都看不到"好得多，也是用户明确要求的：
+                     「即便没有模型，以前也有划分不准的全部文本」。
+                */
+                trace('reader:render-failed', String(e && e.message));
+                try {
+                    contentEl.textContent = '';
+                    var fallback = text;
+                    if (!fallback) {
+                        var acc = [];
+                        for (var i = 0; i < (blocks || []).length; i++) {
+                            var bt = String((blocks[i] && blocks[i].text) || '');
+                            if (bt) acc.push(bt);
+                        }
+                        fallback = acc.join('\n\n');
+                    }
+                    if (fallback) {
+                        contentEl.textContent = fallback;
+                        contentEl.classList.add('reader-plain-fallback');
+                    } else {
+                        showError('extract-failed');
+                    }
+                } catch (e2) {
+                    showError('extract-failed');
+                }
+            }
+        }, function (err) {
+            /*
+              ⚠️ 理论上到不了这里（semanticReflow 自己会 catch），
+                 但"理论上"在异步链里不算数 —— 留这一层，成本为零。
+            */
+            trace('reader:seg', 'unexpected reject: ' + (err && err.message));
+            if (!currentDoc || currentDoc.id !== id) return;
+            continueWith(id, text, outline, meta, blocks, fromMd);
         });
     }
 
@@ -8297,6 +8379,21 @@ function tocTitleFrom(text) {
          *   python tools/emu_js.py --file tools/_seg_reflow.js
          */
         __reflow: semanticReflow,
+        /**
+         * 供排查：伪造一个"当前文档"，让 setText 能通过 id 校验。
+         *
+         * ⚠️ 只给诊断用 —— 正常流程靠 open() 建立 currentDoc。
+         *    存在的理由：`setText` 的 id 校验会拒绝任何"没打开的文档"，
+         *    于是没法单独验证渲染/降级路径。有了它，一行 JS 就能
+         *    把任意块数据喂进完整渲染链路。
+         */
+        __testDocId: function (id) {
+            currentDoc = { id: id || '__diag__', title: 'diag' };
+            docStoreKey = 'diag';
+            edits = {};
+            labels = {};
+            return currentDoc.id;
+        },
         /**
          * 编辑 / 标注的当前状态（供真机排查用，v0.1.46）。
          *

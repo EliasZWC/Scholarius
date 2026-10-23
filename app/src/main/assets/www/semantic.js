@@ -452,6 +452,21 @@
         if (modelReady) {
             saveEnabled(true);
             syncSettingRow();
+            /*
+              ⚠️ 重新打开时必须重置引擎状态（v0.1.96）。
+
+              引擎有熔断（连续失败 3 次就停止尝试）。如果不重置，
+              用户关掉再打开也还是熔断状态 —— 开关看着是"开启"，
+              实际每次分段都直接失败，正文只能退回原始块。
+              那会让人以为"功能坏了、修不好"。
+
+              重置代价是一次重新加载（17MB 本地读，约 1 秒），
+              但只在用户主动操作时发生，可接受。
+            */
+            if (global.ScholariusSeg &&
+                typeof global.ScholariusSeg.retry === 'function') {
+                global.ScholariusSeg.retry();
+            }
             return;
         }
 

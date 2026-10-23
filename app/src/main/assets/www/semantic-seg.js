@@ -79,6 +79,25 @@
     var state = 'idle';   // idle | loading | ready | failed
     var lastError = '';
 
+    /*
+      ══ 连续失败计数 → 自动降级（v0.1.96）══
+
+      为什么需要：模型能加载 ≠ 能推理。
+      实测可能的失败点：
+        · 文本超长 → 张量分配失败（OOM）
+        · 某些字符让 tokenizer 抛异常
+        · wasm 内存碎片导致 session.run 崩溃
+
+      这些都不是"模型坏了"，但**每篇文献都要重试一遍**会让打开
+      任何一篇都卡十几秒，然后才能退化成纯文本。
+
+      ✅ 连续失败 3 次就把 state 置为 'failed' 并停止尝试。
+         用户重新打开设置里的开关会调用 retry()（见下）重置计数。
+      ⚠️ 判据是**连续**失败：中间成功一次就清零。
+    */
+    var failStreak = 0;
+    var MAX_FAIL_STREAK = 3;
+
     function t(key) {
         return global.ScholariusI18n ? global.ScholariusI18n.t(key) : key;
     }
@@ -264,6 +283,24 @@
             state = 'failed';
             lastError = String((e && e.message) || e);
             segLog('FAILED: ' + lastError);
+            /*
+              ══ ⚠️⚠️ 失败后必须清掉 loadPromise（v0.1.96）══
+
+              原来这里只设置 state 就 rethrow，`loadPromise` 仍然是
+              那个**已 reject** 的 Promise。后果：
+
+                · 之后每次 `ensureModel()` 都 `return loadPromise`
+                  → 立刻 reject，永不重试；
+                · 用户即使重新下载了模型、或内存缓过来了，
+                  也必须**重启应用**才能恢复；
+                · 更糟的是 `state` 一直是 'failed'，
+                  设置页显示"开启"（因为文件在），但实际每次分段都失败 ——
+                  这就是"加了模型反而无法提取"那个现象的来源之一。
+
+              ✅ 清掉之后，下一次调用会重新尝试加载。
+                 失败重试有代价（重新加载 17MB），但比"永远坏掉"好。
+            */
+            loadPromise = null;
             throw e;
         });
 
@@ -414,11 +451,24 @@
 
         var threshold = typeof opts.threshold === 'number'
             ? opts.threshold : thresholdFor(sentences.length);
+
+        /*
+          ⚠️ 熔断：连续失败太多次就不再尝试 —— 直接 reject，
+             调用方（reader.js）会退回原始块，正文照常渲染。
+             不熔断的话每篇文献都要重试一遍加载，打开很慢。
+        */
+        if (failStreak >= MAX_FAIL_STREAK) {
+            return Promise.reject(new Error(
+                'semantic disabled after ' + failStreak + ' failures: ' + lastError));
+        }
+
         return ensureModel()
             .then(function () {
                 return embedSentences(sentences, opts.onProgress);
             })
             .then(function (vectors) {
+                /* 成功 → 清零 */
+                failStreak = 0;
                 var scores = [];
                 var paragraphs = [];
                 var buf = [sentences[0]];
@@ -442,6 +492,18 @@
                     sentences: sentences,
                     scores: scores
                 };
+            })
+            .catch(function (e) {
+                /*
+                  ⚠️ 计数 + 记录，然后**继续向上抛** ——
+                     调用方需要知道这一步失败了（它要退回原始块）。
+                     吞掉异常会让 reader.js 以为"分出来一段"，结果更糟。
+                */
+                failStreak++;
+                lastError = String((e && e.message) || e);
+                segLog('segment failed (' + failStreak + '/' + MAX_FAIL_STREAK +
+                       '): ' + lastError);
+                throw e;
             });
     }
 
@@ -452,7 +514,27 @@
         cosine: cosine,
         threshold: DEFAULT_THRESHOLD,
         getState: function () {
-            return { state: state, error: lastError };
+            return {
+                state: state,
+                error: lastError,
+                failStreak: failStreak
+            };
+        },
+        /**
+         * 重置失败计数并清掉已加载的 pipeline。
+         *
+         * ⚠️ 用户在设置里**重新打开开关**时必须调用它 ——
+         *    否则熔断之后的开关是"看得见、点不动"，会让人以为功能坏了。
+         *    代价是一次重新加载（17MB 从本地读，约 1 秒）。
+         */
+        retry: function () {
+            failStreak = 0;
+            lastError = '';
+            loadPromise = null;
+            extractor = null;
+            state = 'idle';
+            segLog('retry: reset');
+            return true;
         },
         /* 供测试：直接注入一个假的 extractor */
         __setExtractor: function (fn) {
