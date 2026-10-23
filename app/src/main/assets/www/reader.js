@@ -5871,6 +5871,53 @@
              渲染层不该再自己拼。
         */
 
+        /*
+          ══ 视觉层：标签段 + 分类编号（v0.2.24 恢复）══
+
+          用户裁决：
+            「我们只是改了储存，没改样式啊」
+            「不是，之前设置的各种标签的样式怎么都放弃了？」
+            「嗯加吧，反正我只要样式回来」
+
+          ✅ 这些**不是模板**，是 v0.1.4x～v0.1.7x 迭代出来的功能：
+             · 标签段「标题」「作者信息」—— 每个区域前面一次
+             · 正文段编号 `1 │`（竖线 + 数字）
+             · 作者 `A1` / 文献 `R1` 分类编号
+          它们和"按 md 渲染"不冲突：md 决定**结构**，这层是**附加视觉**。
+
+          ⚠️ 分类编号只在**区域第一段**出现，后续段只挂竖线 ——
+             这样 `A1` 只出现一次，竖线连成一条（用户 v0.1.93 要求）。
+        */
+        var authorSeq = 0;
+        var refSeq = 0;
+        var lastLabelKey = null;   // 上一个区域的标签（相邻同类只输出一次头）
+
+        function pushLabelHead(labelKey, isH1) {
+            if (!labelKey) return;
+            if (lastLabelKey === labelKey) return;
+            lastLabelKey = labelKey;
+            var head = document.createElement('p');
+            head.className = 'reader-label-head';
+            head.setAttribute('data-label', labelKey);
+            if (isH1) head.classList.add('is-h1-head');
+            var txt = document.createElement('span');
+            txt.className = 'reader-label-text';
+            txt.textContent = t('reader.label.' + labelKey);
+            head.appendChild(txt);
+            /*
+              ⚠️ 一级标题后面跟一条分隔线（v0.1.71）——
+                 表示"整个文章被一级标题分割成不同章节"。
+            */
+            if (isH1) {
+                var hr = document.createElement('span');
+                hr.className = 'reader-label-rule';
+                head.appendChild(hr);
+            }
+            frag.appendChild(head);
+        }
+
+        function resetLabelHead() { lastLabelKey = null; }
+
         function closeList() {
             if (openList) {
                 frag.appendChild(openList);
@@ -5997,7 +6044,23 @@
                 closeList();
                 var lv = mdHead[1].length;
                 if (lv > 4) lv = 4;
-                var h = document.createElement('h' + lv);
+
+                /*
+                  ⚠️ 标签段（v0.2.24 恢复）——
+                     `#` 是文章标题（title），`##` 是一级标题（h1），
+                     `###`/`####` 分别是 h2/h3。
+                      一级标题额外画一条分隔线。
+                */
+                if (lv === 1) {
+                    pushLabelHead('title', false);
+                } else if (lv === 2) {
+                    pushLabelHead('h1', true);
+                } else {
+                    pushLabelHead('h' + (lv - 1), false);
+                }
+
+                /* ⚠️ 标题也在标题段里 —— 关闭上一个区域的相邻判据 */
+                var h = document.createElement(lv <= 4 ? 'h' + lv : 'h4');
                 h.className = 'reader-heading reader-h' + lv;
                 h.textContent = mdHead[2];
                 copyBlockAttrs(h, null, b);
@@ -6020,26 +6083,25 @@
             /* ── 无序列表项 → <ul><li> ── */
             if (isBullet) {
                 var ul = ensureList('ul');
+
+                /*
+                  ⚠️ 作者区：标签段「作者信息」+ `A1` 分类编号（v0.2.24 恢复）。
+                     ⚠️ 只有**区域第一项**挂编号，后续项只挂竖线 ——
+                         与 v0.1.93 的规则一致（"同一个作者区域的编号应当相同，
+                         提示条应当连续"）。
+                */
+                var isAuthorItem = /^Author\b/i.test(mdBullet[1]);
                 var li1 = document.createElement('li');
                 li1.className = 'reader-li reader-li-bullet';
 
-                /*
-                  ══ 无序列表项：文本就是全部信息（v0.2.23）══
+                if (isAuthorItem) {
+                    pushLabelHead('author', false);
+                    authorSeq++;
+                    li1.setAttribute('data-body-no', 'A' + authorSeq);
+                } else {
+                    resetLabelHead();
+                }
 
-                  `- ` 后面的内容原样显示。用户要的两种形态
-                  （`- Author: ...` / `- Author Name: ...`）都已经是
-                  **文本的一部分**，所以这里不需要任何前缀判断 ——
-                  写 md 时就已经把前缀写进去了。
-
-                  ⚠️ 唯一的特殊处理：连续多个"不带前缀"的无序项，
-                     如果它们来自同一个作者区的标注，要合并成一条。
-                     但这个"是不是作者区"的判断**不应该**在这里靠 labels 做。
-
-                  ✅ 正确做法：完全按文本。md 里一条 `- ` 就是一条。
-                     作者区合并成一条的规则，在**写 md 时**就完成了
-                     （`authorNested` 把多个无子标签项合成一条
-                     `- Author: a b c`）。所以读回来自然只有一条。
-                */
                 li1.textContent = mdBullet[1];
                 copyBlockAttrs(li1, null, b);
                 ul.appendChild(li1);
@@ -6050,15 +6112,18 @@
             if (isOrdered) {
                 ordNum += 1;
                 var ol = ensureList('ol');
+
+                /*
+                  ⚠️ 文献区：标签段「参考文献」+ `R1` 分类编号（v0.2.24 恢复）。
+                */
+                pushLabelHead('reference', false);
+                refSeq++;
+
                 var li2 = document.createElement('li');
                 li2.className = 'reader-li reader-li-ordered';
-                /*
-                  ⚠️ 序号用 md 里的**原始编号**（`mdOrdered[1]`），
-                     不用计数器 —— md 里写的是几就是几。
-                     这是"完全按 md 渲染"的直接体现。
-                */
                 li2.textContent = mdOrdered[2];
                 li2.setAttribute('data-md-num', String(ordNum));
+                li2.setAttribute('data-body-no', 'R' + refSeq);
                 copyBlockAttrs(li2, null, b);
                 ol.appendChild(li2);
                 continue;
@@ -6066,9 +6131,50 @@
 
             /* ── 普通段落 → <p> ── */
             closeList();
+            resetLabelHead();
+
             var p = document.createElement('p');
             p.className = 'reader-para';
-            p.textContent = text;
+
+            /*
+              ══ 引用高亮（v0.2.24 恢复）══
+
+              用户要求：
+                「增加一个引用标签，比如我给类似「[12]」这种就可以加引用标签」
+
+              ⚠️ 引用标注是**行内**的（夹在正文句子中间），
+                 不能把整块拆开 —— 那会把一句话劈成三段。
+                 所以这里先看有没有 cite 标注，有就把那段包成 `<span>`。
+            */
+            var citeSpan = null;
+            if (spans && spans.length) {
+                for (var cs = 0; cs < spans.length; cs++) {
+                    if (spans[cs] && spans[cs].label === 'cite') { citeSpan = spans[cs]; break; }
+                }
+            }
+
+            if (citeSpan) {
+                var ca = Math.max(0, Math.min(Number(citeSpan.start) || 0, text.length));
+                var cb = Math.max(ca, Math.min(Number(citeSpan.end) || 0, text.length));
+                if (cb > ca) {
+                    p.appendChild(document.createTextNode(text.slice(0, ca)));
+                    var ce = document.createElement('span');
+                    ce.className = 'reader-cite';
+                    ce.setAttribute('data-label', 'cite');
+                    if (typeof citeSpan.ref === 'number') {
+                        ce.setAttribute('data-cite', String(citeSpan.ref));
+                    }
+                    ce.textContent = text.slice(ca, cb);
+                    p.appendChild(ce);
+                    if (cb < text.length) {
+                        p.appendChild(document.createTextNode(text.slice(cb)));
+                    }
+                } else {
+                    p.textContent = text;
+                }
+            } else {
+                p.textContent = text;
+            }
 
             /*
               ⚠️ 正文段编号：只有**真正未标注的正文**才计数。
