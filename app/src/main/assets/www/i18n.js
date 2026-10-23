@@ -93,6 +93,9 @@
             'reader.details': 'Details',
             'reader.resegment': 'Re-split paragraphs',
             'reader.resegmentNoChange': 'Paragraphs already look right',
+            'reader.resegmentConfirmTitle': 'Re-split paragraphs?',
+            'reader.resegmentConfirmBody': 'Paragraphs will be re-cut by meaning. Your manual edits and annotations will be discarded, because paragraph numbers change. This cannot be undone.',
+            'reader.resegmentConfirmOk': 'Discard and re-split',
             'detail.sourceFile': 'Source File',
             'detail.saveFailed': 'Could Not Save Changes.',
 
@@ -468,6 +471,9 @@
             'reader.details': '详情',
             'reader.resegment': '重新划分段落',
             'reader.resegmentNoChange': '段落已是最佳划分',
+            'reader.resegmentConfirmTitle': '重新划分段落？',
+            'reader.resegmentConfirmBody': '段落会按语义重新切分。你手动编辑过的段落和已加的标注都会被丢弃（因为段落编号变了）。此操作无法撤销。',
+            'reader.resegmentConfirmOk': '丢弃并重新切分',
             'detail.sourceFile': '源文件',
             'detail.saveFailed': '无法保存修改。',
 
