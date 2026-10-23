@@ -1434,6 +1434,53 @@
             '<path d="' + GITHUB_MARK_PATH + '"/></svg>';
     }
 
+    /**
+     * 通用轻量选择器（v0.2.11）。
+     *
+     * ══ 为什么需要它 ══
+     *
+     * `openSheetPicker` 是给「设置页的行」用的：它要 `row`（挂
+     * `aria-expanded`、点击展开）、`valueEl`（右侧当前值文字）、
+     * 还要往 `row` 上挂配置对象。标注表单里的子标签下拉没有这些 ——
+     * 它只是一个"选了就回调"的临时菜单。
+     *
+     * ✅ 这里直接复用 `#sheet-picker` 那套 DOM（遮罩、动画、返回键、
+     *    单选打勾、标题、取消按钮都已就绪），但绕开对 `row` / `valueEl`
+     *    的依赖：传一个最简的行对象即可。
+     *
+     * ⚠️ 不新造一套弹层。两套并存必然出现"一处能按返回键关、另一处不能"
+     *    这类不一致。
+     *
+     * @param {Object} opts
+     *   @param {string}   opts.title     标题
+     *   @param {Array}    opts.options   [{value, label}]
+     *   @param {*}        opts.current   当前值（用于打勾）
+     *   @param {function} opts.onPick    选中回调 (value) => void
+     */
+    function pickSheet(opts) {
+        var fakeRow = {
+            setAttribute: function () {},
+            querySelector: function () { return null; }
+        };
+        /* 固定配置只挂一次 —— 每次 pick 都重建会让 fakeRow 上的键无意义 */
+        var config = {
+            title: opts.title,
+            getValue: function () { return opts.current; },
+            getOptions: function () { return opts.options || []; },
+            onChange: function (v) {
+                if (typeof opts.onPick === 'function') opts.onPick(v);
+            }
+        };
+        fakeRow[SHEET_PICKER_CONFIG] = config;
+        fakeRow[SHEET_PICKER_VALUE_EL] = null;
+        openSheetPicker(fakeRow, config);
+    }
+
+    /** 关掉当前打开的选项表单（包括 pickSheet 打开的） */
+    function closePickSheet() {
+        closeSheetPicker();
+    }
+
     global.ScholariusUI = {
         t: t,
         toast: toast,
@@ -1443,6 +1490,8 @@
         isSheetOpen: isSheetOpen,
         currentSheet: currentSheetEl,
         confirmSheet: confirmSheet,
+        pickSheet: pickSheet,
+        closePickSheet: closePickSheet,
         createRowPicker: createRowPicker,
         createRowSheetPicker: createRowSheetPicker,
         hasOpenRowMenu: hasOpenRowMenu,

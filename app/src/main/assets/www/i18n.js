@@ -201,12 +201,12 @@
               ❗ 措辞要点：说清“下载”与“本地运行”，
                  别让用户以为文献会被传到服务器上。
             */
-            'setting.semanticSeg': 'Semantic Paragraphs',
-            'semantic.title': 'Semantic Paragraphs',
+            'setting.semanticSeg': 'Semantic Model',
+            'semantic.title': 'Semantic Model',
             'semantic.off': 'Off',
             'semantic.on': 'On',
-            'semantic.desc': 'Split paragraphs by meaning instead of punctuation.',
-            'semantic.needModel': 'Semantic paragraph splitting needs a model (~29 MB). It runs entirely on your device - documents are never uploaded.',
+            'semantic.desc': 'Use a language model to re-split paragraphs by meaning.',
+            'semantic.needModel': 'The semantic model (~29 MB) runs entirely on your device - documents are never uploaded.',,
             'semantic.download': 'Download',
             'semantic.cancel': 'Cancel',
             'semantic.downloading': 'Downloading…',
@@ -576,13 +576,13 @@
             */
             'setting.group.vault': '文库',
             'setting.venueShortcut': '发表物简称',
-            /* 语义分段（v0.1.94）—— 强调本地运行，不上传文献 */
-            'setting.semanticSeg': '语义分段',
-            'semantic.title': '语义分段',
+            /* 语义模型（v0.1.94）—— 强调本地运行，不上传文献 */
+            'setting.semanticSeg': '语义模型',
+            'semantic.title': '语义模型',
             'semantic.off': '关闭',
             'semantic.on': '开启',
-            'semantic.desc': '按语义而不是标点划分段落。',
-            'semantic.needModel': '语义分段需要下载模型（约 29 MB）。它完全在本地运行，文献不会被上传。',
+            'semantic.desc': '用语言模型按语义重新划分段落。',
+            'semantic.needModel': '语义模型需要下载（约 29 MB）。它完全在本地运行，文献不会被上传。',
             'semantic.download': '下载',
             'semantic.cancel': '取消',
             'semantic.downloading': '下载中…',

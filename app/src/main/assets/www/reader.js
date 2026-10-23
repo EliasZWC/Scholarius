@@ -3966,14 +3966,16 @@
     /** 选中的作者项键（null = 不设置） */
     var fieldDraft = null;
 
-    /**
-     * 子标签展开区是否展开（v0.1.78）。
-     *
-     * ⚠️ 单一布尔值而不是"每个标签一个" ——
-     *    用户点开一个标签的子选项时，其他标签的应当自动收起。
-     *    这也符合"点图标展开、再点收起"的手感。
-     */
-    var subOpen = false;
+    /*
+      ⚠️ 原来的 `subOpen`（子标签展开区是否展开）已在 v0.2.11 删除。
+
+      用户要求改成"点箭头 → 弹出下拉菜单"，不再是把子标签区展开在
+      这一行下面。所以"展开状态"这个变量本身没有意义了 ——
+      菜单的开合由 `#sheet-picker` 自己管理。
+
+      留一个注释说明它曾经存在且**确定不要**回来，
+      避免以后有人看到 `buildSubList` 的痕迹又想恢复。
+    */
 
     function mountLabelSheet() {
         if (labelSheetEl) return;
@@ -4041,11 +4043,10 @@
         fieldDraft = findExistingAuthorField(labelSpan);
 
         /*
-          ⚠️ 子标签区默认**收起**（v0.1.78）——
-             用户要求"点击图标之后则展示子标签选项"，
-             所以打开表单时不能自动展开。
+          ⚠️ 子标签不再有"展开区"（v0.2.11）——
+             改成点箭头弹下拉菜单，所以这里不需要重置任何展开状态。
+             打开表单时箭头显示当前值（或空），就足够了。
         */
-        subOpen = false;
 
         renderLabelOptions();
 
@@ -4170,25 +4171,58 @@
                 subBtn.type = 'button';
                 subBtn.className = 'sel-label-sub-toggle';
                 subBtn.setAttribute('aria-label', t('reader.fieldPick'));
-                subBtn.setAttribute('aria-expanded',
-                    (key === labelDraft && subOpen) ? 'true' : 'false');
-                if (key === labelDraft && subOpen) subBtn.classList.add('is-open');
-                subBtn.textContent = '›';
+                subBtn.setAttribute('aria-haspopup', 'menu');
+                /*
+                  ══ ⚠️⚠️ 子标签改成「下拉操作」，不再是「折叠展开区」（v0.2.11）══
+
+                  用户要求（原话）：
+
+                    「子标签作为选项的值，下拉选择子标签，点击非下拉按钮则
+                      相当于点击标签。这样选中的直接就是标签等级，
+                      而子标签不作为折叠选项，而是下拉操作选项菜单出现」
+
+                  ── 旧行为的问题 ──
+
+                  旧设计是把子标签区**展开在这一行下面**（`subOpen`），于是：
+                    · 列表被撑长，展开时其他标签被挤下去；
+                    · 用户容易以为"展开"等于"选中了作者信息"，
+                      实际标签还没选上；
+                    · 展开区里的选项和主列表选项长得一样，层级混乱。
+
+                  ── ✅ 新行为 ──
+
+                    · 点**标签本体** → 选中该标签（子标签保持原值）；
+                    · 点右侧**箭头** → 弹出一个独立的选项面板选子标签。
+
+                  这样"选中级别"与"设置子标签"是两件独立的事，
+                  点哪里做什么一目了然。
+
+                  ⚠️ 箭头上的文字显示当前子标签（如「单位」），
+                     让用户不用打开就知道设了什么。
+                */
+                subBtn.setAttribute('aria-expanded', 'false');
+                var subLabel = (key === labelDraft && fieldDraft)
+                    ? t('reader.field.' + fieldDraft) : '';
+                subBtn.textContent = subLabel ? subLabel + ' ›' : '›';
 
                 /*
-                  ⚠️ 必须 `stopPropagation` —— 否则点图标会同时触发
-                     外层的"选择该标签"点击，导致每点一次都重渲染整个列表，
-                     展开状态立刻被重置。
+                  ⚠️ 必须 `stopPropagation` —— 否则点箭头会同时触发
+                     外层的"选择该标签"点击。
                 */
                 subBtn.addEventListener('click', function (ev) {
                     ev.stopPropagation();
                     ev.preventDefault();
+                    /*
+                      ⚠️ 先选中该标签再弹下拉 ——
+                         否则用户选了"单位"却发现标签还是上一个，
+                         会有"白设了"的感觉。
+                    */
                     if (labelDraft !== key) {
                         labelDraft = key;
                         fieldDraft = null;
                     }
-                    subOpen = !subOpen;
                     renderLabelOptions();
+                    openSubPicker(key);
                 });
 
                 btn.appendChild(subBtn);
@@ -4196,39 +4230,58 @@
 
             btn.addEventListener('click', function () {
                 /*
-                  ⚠️ 切换到别的标签时收起子标签 ——
-                     否则「作者信息」的展开状态会跟着跑到别的标签上。
+                  ⚠️ 点标签本体只改标签，**不动子标签**（v0.2.11）。
+                     旧版这里会 `subOpen = false`，而 subOpen 已废弃。
                 */
-                if (labelDraft !== key) {
-                    labelDraft = key;
-                    fieldDraft = null;
-                    subOpen = false;
-                } else {
-                    labelDraft = key;
-                }
+                labelDraft = key;
                 renderLabelOptions();
             });
 
             li.appendChild(btn);
-
-            /*
-              ══ 子标签展开区（v0.1.78）══
-
-              ⚠️ 只有「当前选中的标签」且 `subOpen` 时才展开 ——
-                 用户要求"点击图标之后展示子标签选项"，
-                 所以它默认收起，不会和标签列表"重叠"。
-              ⚠️ 展开区放在**这一项里面**（li 的子元素），
-                 视觉上就挂在它下面，不会跑到列表末尾去。
-            */
-            if (key === labelDraft && subOpen && labelHasSub(key)) {
-                li.appendChild(buildSubList(key));
-            }
 
             labelListEl.appendChild(li);
         });
 
         renderCitePicker();
         renderFieldPicker();
+    }
+
+    /**
+     * 弹出「作者项」子标签选择面板（v0.2.11）。
+     *
+     * ⚠️ 复用 `#sheet-picker`（设置页那套底部选择器）而不是新造一个 ——
+     *    它已经有：遮罩、动画、返回键处理、单选高亮。
+     *    再写一套只会让"两处行为不一致"。
+     *
+     * ⚠️ `openSheetPicker` 的签名要 `row` + `valueEl`，
+     *    这里没有真实的行元素 —— 传一个**虚拟 row**（带 `setAttribute`
+     *    与 `querySelector` 的最小实现），标题另用 `config.title` 覆盖。
+     *    这是刻意的：宁可适配现有接口，也不为它加一条分支。
+     */
+    function openSubPicker(key) {
+        var ui = global.ScholariusUI;
+        if (!ui || typeof ui.pickSheet !== 'function') return;
+        if (key !== 'author') return;
+
+        var options = [{ value: '', label: t('reader.fieldNone') }];
+        AUTHOR_FIELDS.forEach(function (f) {
+            options.push({ value: f, label: t('reader.field.' + f) });
+        });
+
+        ui.pickSheet({
+            title: t('reader.fieldPick'),
+            options: options,
+            current: fieldDraft || '',
+            /*
+              ⚠️ 选中后要**立即回写并重渲染标注列表**，
+                 否则箭头上的文字不会更新 ——
+                 用户会以为"选了没生效"。
+            */
+            onPick: function (v) {
+                fieldDraft = v || null;
+                renderLabelOptions();
+            }
+        });
     }
 
     /**
@@ -4241,55 +4294,17 @@
         return key === 'author';
     }
 
-    /**
-     * 造「作者项」子标签列表（v0.1.78）。
-     *
-     * 用户要求：
-     *   「干脆就直接给划一个子标签区……点击图标之后则展示子标签选项」
-     *
-     * ⚠️ 首项是「不设置」—— 用户说过「没有添加设置项的时候不显示」，
-     *    所以子标签是**可选**的，必须能退回"无"。
-     */
-    function buildSubList(key) {
-        var box = document.createElement('ul');
-        box.className = 'sel-sub-list';
-        box.setAttribute('role', 'radiogroup');
+    /*
+      ⚠️ `buildSubList` / `makeSubItem` 已在 v0.2.11 删除。
 
-        /* ① 「不设置」 */
-        box.appendChild(makeSubItem(t('reader.fieldNone'), fieldDraft == null,
-            function () {
-                fieldDraft = null;
-                renderLabelOptions();
-            }));
+      旧设计把子标签**展开在标签行下面**；用户改成"点箭头弹下拉菜单"
+      （见 `openSubPicker`）。这两个函数因此没有调用点了 ——
+      留着只会让人以为还有一条"展开区"的路径。
 
-        /* ② 各子标签 */
-        if (key === 'author') {
-            AUTHOR_FIELDS.forEach(function (f) {
-                box.appendChild(makeSubItem(t('reader.field.' + f),
-                    fieldDraft === f, function () {
-                        fieldDraft = f;
-                        renderLabelOptions();
-                    }));
-            });
-        }
-
-        return box;
-    }
-
-    /** 造一条子标签选项 */
-    function makeSubItem(text, active, onClick) {
-        var li = document.createElement('li');
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'sel-cite-item';
-        btn.setAttribute('role', 'radio');
-        btn.setAttribute('aria-checked', active ? 'true' : 'false');
-        if (active) btn.classList.add('is-active');
-        btn.textContent = text;
-        btn.addEventListener('click', onClick);
-        li.appendChild(btn);
-        return li;
-    }
+      将来若要恢复"行内展开"，请连同 `subOpen` 状态一起加回来，
+      并确认 `.sel-sub-list` 的样式还在（当前保留未删，
+      因为 `openSubPicker` 之外没有别的地方用到它，删样式风险更低）。
+    */
 
     /**
      * 旧的「作者项」选择器 —— 已由行内子标签区取代（v0.1.78）。
@@ -4297,11 +4312,6 @@
      * ⚠️ 保留成空函数而不是直接删掉调用点：
      *    底部区块 `#sheet-field-picker` 仍在 HTML 里，
      *    这里只负责把它**永远隐藏**，避免残留显示。
-     *
-     * 用户要求变更：
-     *   「既然 author field 可以出现，那么干脆就直接给划一个子标签区。
-     *     每个标签选项有子标签的直接在选项最右边增加一个子标签的图标，
-     *     点击图标之后则展示子标签选项，这样就避免了重叠问题。」
      */
     function renderFieldPicker() {
         if (fieldPickerEl) fieldPickerEl.hidden = true;
@@ -4629,6 +4639,35 @@
 
             for (var r = 0; r < rows.length; r++) {
                 if (!rows[r].replace(/\s+/g, '')) continue;
+
+                /*
+                  ══ ⚠️ 若能并到「上一行的右列」，就不新起一行（v0.2.11）══
+
+                  这是同一条规则的另一半：词条行后面跟着的普通文字，
+                  只要还没跨过行边界，就该留在那一行里。
+
+                  ⚠️ 只并 `.is-author-term` 的行 —— 普通行本来就该独占一行，
+                     把它并起来会让两段原文粘在一起。
+                  ⚠️ 判据用 `rows.length === 1 && cuts 有边界`：
+                     当这一片段**完全落在同一原始行内**时 `rows` 只有一项，
+                     此时才允许并入上一行。
+                     如果 `cuts` 为空（没有行信息），`rows` 来自 `\n` 硬切，
+                     也可能只有一项 —— 那种情况同样应该并入，
+                     否则就会产生用户报的多余换行。
+                */
+                var prevLine = boxEl.lastElementChild;
+                var canJoin = prevLine &&
+                    prevLine.classList.contains('is-author-term') &&
+                    rows.length === 1;
+
+                if (canJoin) {
+                    var vPrev = tailOf(prevLine);
+                    if (vPrev) {
+                        vPrev.textContent = vPrev.textContent + rows[r];
+                        continue;
+                    }
+                }
+
                 var lineEl = document.createElement('span');
                 lineEl.className = 'reader-author-line';
                 var fEl = document.createElement('span');
@@ -4642,15 +4681,20 @@
             }
         }
 
-        function pushTerm(termText, field) {
+        /**
+         * 造一行「左项名 + 右内容」。
+         *
+         * @param {string} field     项名键（空串 = 无项名）
+         * @param {string} value     右列文字
+         * @param {boolean} isName   姓名行（用正文色）
+         * @return {Element} 这一行的元素
+         */
+        function makeAuthorLine(field, value, isName) {
             var lineEl = document.createElement('span');
-            lineEl.className = 'reader-author-line is-author-term';
-            if (field === 'name') lineEl.classList.add('is-author-name');
+            lineEl.className = 'reader-author-line';
+            if (field) lineEl.classList.add('is-author-term');
+            if (isName) lineEl.classList.add('is-author-name');
 
-            /*
-              ⚠️ 词条的字段名放在**左列**（与普通行同一列），
-                 不新起区域、不加额外标题 —— 用户要求"不单独显示"。
-            */
             var fEl = document.createElement('span');
             fEl.className = 'reader-author-field';
             fEl.textContent = field ? t('reader.field.' + field) : '';
@@ -4658,10 +4702,20 @@
 
             var vEl = document.createElement('span');
             vEl.className = 'reader-author-value';
-            vEl.textContent = termText;
+            vEl.textContent = value;
             lineEl.appendChild(vEl);
 
-            boxEl.appendChild(lineEl);
+            return lineEl;
+        }
+
+        /**
+         * 这一行的「右列文字」是否还能继续接内容。
+         *
+         * ⚠️ 判断依据是**这一行是否由词条产生**（`.is-author-term`）——
+         *    只有词条行才值得接后续文字；普通行本来就该独占一行。
+         */
+        function tailOf(el) {
+            return el ? el.querySelector('.reader-author-value') : null;
         }
 
         for (var m = 0; m < marks.length; m++) {
@@ -4682,8 +4736,82 @@
             if (termB <= termA) continue;
 
             pushPlain(flatText.slice(cursor, termA), cursor);
-            pushTerm(flatText.slice(termA, termB), mk.field);
+
+            /*
+              ══ ⚠️⚠️ 同一行的剩余文字要**并回词条行**（v0.2.11）══
+
+              用户反馈：
+
+                「之前改掉的那个子标签选定后（比如机构）换行的 bug 重新出现，
+                  需修复」
+
+              ── 现象 ──
+
+                       姓名          Ashish Vaswani
+                                     , Google Brain      ← 凭空多一行
+
+              原文是 `Ashish Vaswani, Google Brain` 一个块。
+              用户只把 `Ashish Vaswani` 标成"姓名"，
+              逗号与单位留在同一段的后续文字里。
+
+              ── 真因 ──
+
+              `pushTerm` 把词条渲染成**独立的一整行**（左项名 + 右内容），
+              而 `pushPlain` 处理剩余文字时又**另起一行**。
+              于是一行原文被强行拆成两行 —— 不是数据问题，是渲染分行的粒度
+              定得太粗：按"词条"分行，而不是按"原文行"分行。
+
+              ── ✅ 修法 ──
+
+              词条之后的文字，只要**还在同一个原始行边界内**，
+              就并到词条那一行的右列尾部，而不是新起一行。
+              这样：
+
+                       姓名          Ashish Vaswani, Google Brain
+
+              ⚠️ 必须在**行边界**处停下 —— 一旦越过 `lineBoundaries`，
+                 就说明真的换行了，剩下的部分要按普通行继续输出。
+              ⚠️ `b.lines` 为空时没有边界信息，此时**整块当作一行**处理
+                 （并回去），而不是每段一行 —— 后者必然产生多余换行。
+            */
+            var termLine = makeAuthorLine(
+                mk.field, flatText.slice(termA, termB), mk.field === 'name');
+            boxEl.appendChild(termLine);
             cursor = termB;
+
+            /* ① 先算出"同一原始行"能延伸到哪 */
+            var lineStop = -1;
+            if (lineBoundaries && lineBoundaries.length) {
+                for (var lb2 = 0; lb2 < lineBoundaries.length; lb2++) {
+                    if (lineBoundaries[lb2] > cursor) {
+                        lineStop = lineBoundaries[lb2];
+                        break;
+                    }
+                }
+            }
+            if (lineStop < 0) lineStop = flatText.length;
+
+            /* ② 同一行内、且在下一条标注之前的文字 → 接到右列尾部 */
+            var nextMarkStart = flatText.length;
+            if (m + 1 < marks.length) {
+                nextMarkStart = marks[m + 1].start;
+            }
+            var joinEnd = Math.min(lineStop, flatText.length);
+            if (nextMarkStart > cursor && nextMarkStart < joinEnd) {
+                joinEnd = nextMarkStart;
+            }
+            if (joinEnd > cursor) {
+                var joined = flatText.slice(cursor, joinEnd);
+                /*
+                  ⚠️ 只并"非空"的尾巴；纯空白并进去会让右列多出空格，
+                     看起来像缩进变了。
+                */
+                if (joined.replace(/\s+/g, '')) {
+                    var vTail = tailOf(termLine);
+                    if (vTail) vTail.textContent = vTail.textContent + joined;
+                    cursor = joinEnd;
+                }
+            }
         }
         pushPlain(flatText.slice(cursor), cursor);
 
