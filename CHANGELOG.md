@@ -4,6 +4,85 @@
 
 ---
 
+## [0.2.6] - 2026-10-23
+
+### 排版模板：从「能存文件」到「真的生效」
+
+v0.2.5 只做到了模板文件的保存/读取，模板套上去**界面上没有任何变化**。
+这一版把它接通了。
+
+#### ① 块角色化
+
+块的渲染以前只有两态：有标签 / 没标签。模板需要更细的分类，
+所以给 `docModel.blocks` 加了两个字段：
+
+| 字段 | 含义 |
+|---|---|
+| `role` | 模板指定的角色（title / heading / abstract / body / caption / reference / formula / drop） |
+| `roleLevel` | 标题层级（1~3） |
+
+⚠️ 不复用已有的 `kind`：`kind` 是 **PDF 提取层**的判断，
+`role` 是**模板**的显式指定。两者来源不同，`role` 必须能覆盖 `kind`，
+同时并存 —— 用户取消模板时把 `role` 清空就回到原状。
+
+#### ② 渲染要认 role（这里是踩了三处的地方）
+
+渲染一个块其实有**三条**路径，各自造 `<p>`：
+
+```
+① makeBlockEl     —— 无标签的普通块
+② makePlainPara   —— 有标签但标注异常/空区间的兜底
+③ makeContentEl   —— 有标签的正常路径
+```
+
+一开始只在 ① 加了 `reader-role-*` class。结果模板给
+`title`/`author`/`abstract`/`heading` 这些**需要标签段**的角色时，
+它们全走 ③，一个 class 都没加上。
+
+现象很典型：`getDocBlocks()` 里 role 全对，DOM 里 `reader-role-*`
+一个都没有 —— **数据对、界面错**。
+
+修法：抽出 `roleClassOf(b)`，三处都调它。新增渲染路径时也必须调。
+
+#### ③ 模板块没有 `labels`，会被当成"无标签"
+
+`appendLabeledRun` 里的 `labelKey` 读的是 `labels[line]`，
+而模板块上没有用户标注 —— 于是 `labelKey` 为 null，
+最终落到无标签分支，模板角色依然没效果。
+
+修法：先看 `roleSignatureOf()`，有签名就用 role 当标签来源，
+跳过所有 `labels` 相关逻辑。
+
+#### ④ `currentDoc.templateId` 不存在
+
+`continueWith` 里原来的判据是 `currentDoc.templateId && templateCache`。
+但 `currentDoc` 是 `open(doc)` 时网页侧传进来的对象，**不带这个字段** ——
+所以模板永远不生效。
+
+修法：判据只用 `templateCache`。它由原生通过 `setTemplate` 明确设进来，
+才是"这次要套用哪个模板"的唯一权威。
+
+#### ⑤ 详情页入口
+
+详情表单底部新增「排版模板」下拉：
+
+- 只列 **sha256 匹配本文献**的模板 —— 块序号是按某一份 PDF 排的，
+  允许选一个注定错位的模板是设计缺陷，不是灵活性
+- 选完**立刻生效**，不等「保存」按钮：模板改的是排版，
+  用户要能试错
+- 没有模板时显示说明，而不是只留一个空下拉
+
+真机验证：
+
+```
+有模板：roles={title:1, author:1, abstract:1, heading1:1, heading2:1}
+        heads=5  bodyNos=113（drop 生效）  blocks 120→118
+无模板：roleEls=0  bodyNos=120  blocks=120（完全回退，无副作用）
+详情页：opts=2  val=tpl-e2e1  正确回显
+```
+
+---
+
 ## [0.2.5] - 2026-10-23
 
 ### ① 切分后阅读视图不更新（严重）

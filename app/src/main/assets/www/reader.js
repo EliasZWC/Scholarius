@@ -258,6 +258,19 @@
     var labels = {};
 
     /**
+     * 当前文献要套用的排版模板（v0.2.6）。null = 没有模板。
+     *
+     * ⚠️ 由原生在推文献列表之后单独推过来（`setTemplate`），
+     *    而不是混在 `setLibrary` 里：模板内容含 `blocks`/`ops`
+     *    两个大数组，而列表推送是**全库**的 ——
+     *    把每个模板都塞进去，几十篇文献就是几百 KB。
+     *
+     * ⚠️ 只缓存**当前打开的这一篇**的模板。切文献时必须换掉，
+     *    否则 A 的模板会套到 B 上（序号全错，而且不会报错）。
+     */
+    var templateCache = null;
+
+    /**
      * ══ 文档模型（v0.1.57）══
      *
      * 用户要求原话：
@@ -372,6 +385,63 @@
         reference: 'R',
         author: 'A'
     };
+
+    /**
+     * 排版模板的 `role` → 渲染用的「区域签名」（v0.2.6）。
+     *
+     * ══ 为什么需要这张表 ══
+     *
+     * 模板里的 role 是一套**独立的词汇**（title / heading / abstract /
+     * body / caption / reference / formula / drop），而渲染层的分区
+     * 是按「标签签名」做的（`labelSignatureOf`）。两者是不同来源：
+     *
+     *   · 标签来自用户手动标注（`labels[line]`）；
+     *   · role 来自模板文件（块的 `.role` 字段）。
+     *
+     * ✅ 这张表把 role 翻译成同一个签名空间，于是 `renderFlat` 的
+     *    run 归并逻辑**完全不用改** —— 模板块与标注块走同一套渲染。
+     *
+     * ⚠️ `undefined` 与 `''` 的区别很重要：
+     *    · 表里**没有**的 role  →  `undefined` → 回退去看用户标注；
+     *    · 映射到 `''` 的 role   ���  空签名      → 走无标签的正文路径。
+     *    若都用 `''`，那"模板没管这个块"就会被误判成"模板说它是正文"，
+     *    用户在模板之外的标注会全部失效。
+     *
+     * ⚠️ 复用已有的标签键（`title` / `author` / `abstract` / `reference`
+     *    等），不新造一套 —— 否则 i18n、编号前缀、样式全都要再来一遍。
+     */
+    var ROLE_SIGNATURE = {
+        /* 需要显示标签段的角色 */
+        title: 'title',
+        author: 'author',
+        abstract: 'abstract',
+        reference: 'reference',
+        /* ⚠️ heading 按层级拆成 h1/h2/h3 —— 与手工标注的标签键一致 */
+        heading: 'h1',
+        /* 正文类：不需要标签段，直接从者原路径 */
+        body: '',
+        caption: '',
+        formula: '',
+        /* ⚠️ drop 不在这里 —— 丢弃发生在应用模板阶段，不会进渲染 */
+        drop: ''
+    };
+
+    /**
+     * 带层级的 role 签名（v0.2.6）。
+     *
+     * ⚠️ `heading` 的层级来自块的 `roleLevel`（1 起）。
+     *    超出 3 级一律按 h3 —— 再细分在阅读视图里没有视觉意义。
+     */
+    function roleSignatureOf(b) {
+        if (!b || !b.role) return undefined;
+        if (b.role === 'heading') {
+            var lv = b.roleLevel | 0;
+            if (lv <= 1) return 'h1';
+            if (lv === 2) return 'h2';
+            return 'h3';
+        }
+        return ROLE_SIGNATURE[b.role];
+    }
 
     /**
      * 作者信息区域的「项名」预设（v0.1.74）。
@@ -512,6 +582,10 @@
                 if (b.kind) item.kind = b.kind;
                 if (b.level != null) item.level = b.level;
                 if (b.lines && b.lines.length) item.lines = b.lines;
+                /* ⚠️ 模板角色要一起存（v0.2.6）—— 不存的话重开就丢，
+                       用户会看到「套了模板，下次打开又变回去了」 */
+                if (b.role) item.role = b.role;
+                if (b.roleLevel != null) item.roleLevel = b.roleLevel;
                 plain.push(item);
             }
             writeStore('scholarius.blocks.' + docStoreKey,
@@ -5542,6 +5616,25 @@
      */
     function labelSignatureOf(b) {
         if (!b || typeof b.line !== 'number') return '';
+
+        /*
+          ══ ⚠️⚠️ 模板角色优先于用户标注（v0.2.6）══
+
+          模板指定了 `role` 时，直接用它当签名 —— 模板是**显式**的
+          排版意图，比"用户有没有在这个块上画过标注"更权威。
+
+          ⚠️ 为什么不让两者叠加（`role + labels`）：
+             叠加会得到一个全新的签名，于是这个块被划进独立的 run，
+             本该和相邻块合并的区域反而被切开。
+             模板的语义就是"告诉我这个块属于哪一类"，
+             它应当是这一类**唯一**的依据。
+
+          ⚠️ `role: 'body'` 也返回空签名 —— 正文本来就该走无标签路径。
+             只有需要显示标签段的角色才返回非空签名。
+        */
+        var roleSig = roleSignatureOf(b);
+        if (roleSig !== undefined) return roleSig;
+
         var spans = labels[b.line];
         if (!spans || !spans.length) return '';
 
@@ -5602,8 +5695,58 @@
      *    标签签名相同（见 labelSignatureOf），所以取哪个都一样。
      */
     function appendLabeledRun(frag, run, bodyIndex, refIndex, authorIndex, markTyped) {
-        var firstLine = run.blocks[0].line;
+        var firstBlock = run.blocks[0];
+        var firstLine = firstBlock.line;
         var spans = labels[firstLine] || [];
+
+        /*
+          ══ ⚠️⚠️ 模板角色的块没有 `labels`，必须单独处理（v0.2.6）══
+
+          `labelSignatureOf` 让模板块拿到了非空签名（因此进了这个函数），
+          但这里的 `spans` 读的是 `labels[line]` —— 模板块上**没有**用户标注，
+          所以 `spans` 是空的，`labelKey` 会是 null，
+          最终落到"无标签"分支，模板角色一点效果都没有。
+
+          实测现象：`getDocBlocks()` 里 role 全对，
+          DOM 里 `reader-role-*` 一个都没有 —— 数据对、界面错。
+
+          ✅ 所以先看 role：`roleSignatureOf` 给出签名时，
+             就用 role 自己当标签来源，跳过所有 `labels` 相关逻辑。
+             （模板是**显式**排版意图，它本身就是完整的分类依据。）
+
+          ⚠️ 标签文字走 `t('reader.label.' + key)`，
+             与手工标注共用同一套 i18n 文案 —— 模板不需要新文案。
+        */
+        var roleSig = roleSignatureOf(firstBlock);
+        if (roleSig !== undefined && roleSig !== '') {
+            /*
+              ⚠️ `reference` 每块独立成区（与手工标注保持一致）——
+                 每条文献都要自己的 R 编号，不能合并成一个大区域。
+            */
+            var perBlock = labelSplitsPerBlock(roleSig);
+            for (var r3 = 0; r3 < run.blocks.length; r3++) {
+                var rb3 = run.blocks[r3];
+                if (perBlock) {
+                    var h3 = document.createElement('p');
+                    h3.className = 'reader-label-head';
+                    h3.setAttribute('data-label', roleSig);
+                    h3.setAttribute('data-from', 'template');
+                    h3.textContent = t('reader.label.' + roleSig);
+                    frag.appendChild(h3);
+                } else if (r3 === 0) {
+                    /* 合并型角色（heading / title / author / abstract）只输出一次 */
+                    var h3b = document.createElement('p');
+                    h3b.className = 'reader-label-head';
+                    h3b.setAttribute('data-label', roleSig);
+                    h3b.setAttribute('data-from', 'template');
+                    h3b.textContent = t('reader.label.' + roleSig);
+                    frag.appendChild(h3b);
+                }
+                var el3 = makeContentEl(rb3, bodyIndex, refIndex, authorIndex, markTyped);
+                if (el3) frag.appendChild(el3);
+            }
+            return;
+        }
 
         /*
           ══ ⚠️⚠️ 文献 / 作者：**每块各自一个区域**（v0.1.71 / v0.1.72）══
@@ -5844,7 +5987,6 @@
             return makeAuthorLinesEl(b, spans, fullText, bodyIndex, authorIndex, markTyped);
         }
         var sp = (spans && spans.length === 1) ? spans[0] : null;
-
         /*
           ⚠️ 没有标注（或标注异常）→ 普通段落，整块输出。
              这条路径也要走，否则无标签块会消失。
@@ -6062,9 +6204,50 @@
     }
 
     /** 造一个普通段落（不带标注） */
+    /**
+     * 算出块应该带的模板角色 class（v0.2.6）。空串 = 不需要加。
+     *
+     * ══ ⚠️⚠️ 为什么必须抽成函数 ══
+     *
+     * 渲染一个块有**三条**路径，各自造 `<p>`：
+     *
+     *   ① `makeBlockEl`       —— 无标签的普通块（renderFlat 的 run.sig 为空）
+     *   ② `makePlainPara`     —— 有标签但标注异常/空区间时的兜底
+     *   ③ `makeContentEl`     —— 有标签的正常路径
+     *
+     * 一开始只在 ① 里加了 role class，结果模板给 `title`/`author`/
+     * `abstract`/`heading` 这些**需要标签段**的角色时，它们全走 ③，
+     * 一个 class 都没加上 —— 表现为"数据上 role 对了，界面完全没变"。
+     *
+     * ✅ 所以统一在这里算，三个地方都调它。新增渲染路径时也必须调。
+     *
+     * ⚠️ `body` / `caption` / `formula` 返回空串：它们的外观就是普通段落，
+     *    加个 class 只是 DOM 噪音。（`caption` / `formula` 目前也按普通段落
+     *    渲染 —— 要区分外观请改 CSS，别在这里加语义分支。）
+     *
+     * @param {Object} b 块
+     * @return {string} 形如 `reader-role-heading2`，或空串
+     */
+    function roleClassOf(b) {
+        if (!b || !b.role) return '';
+        if (b.role === 'body' || b.role === 'caption' ||
+            b.role === 'formula' || b.role === 'drop') {
+            return '';
+        }
+        if (b.role === 'heading') {
+            var lv = b.roleLevel | 0;
+            if (lv < 1) lv = 1;
+            if (lv > 3) lv = 3;
+            return 'reader-role-heading' + lv;
+        }
+        return 'reader-role-' + b.role;
+    }
+
     function makePlainPara(text, b) {
         var p = document.createElement('p');
         p.className = 'reader-para';
+        var rc = roleClassOf(b);
+        if (rc) p.classList.add(rc);
         p.textContent = text;
         if (b) {
             if (b.page) p.setAttribute('data-page', String(b.page));
@@ -6105,6 +6288,16 @@
 
         var el = document.createElement('p');
         el.className = 'reader-para';
+
+        /*
+          ══ 模板角色对应的视觉样式（v0.2.6）══
+
+          ⚠️ 统一走 `roleClassOf()` —— 渲染一个块有三条路径，
+             必须三处都加，否则"数据对了界面没变"。
+             详见 roleClassOf 的注释。
+        */
+        var rc = roleClassOf(b);
+        if (rc) el.classList.add(rc);
 
         /*
           ══ 应用编辑结果（v0.1.45）══
@@ -7327,6 +7520,206 @@
             });
     }
 
+    // --- 排版模板应用（v0.2.6）----------------------------------------------
+
+    /**
+     * 把模板的 `blocks` / `ops` 应用到当前块序列上。
+     *
+     * ══ ⚠️⚠️ 模板里只有序号和角色，没有任何原文 ══
+     *
+     * 这是法律要求（模板要能被公开分享），也是这个函数存在的前提：
+     * 它必须**只靠序号 + 数值**就能完成全部排版还原。
+     *
+     * ══ 为什么用「块序号」而不是"按文本匹配" ══
+     *
+     * 模板绑定了 PDF 的 sha256，所以同一份 PDF 提取出来的块序列
+     * 是**确定的**（同样的 PdfText 版本、同样的输入）。
+     * 序号就是稳定主键，不需要（也禁止）用文本内容去对齐。
+     *
+     * ⚠️ 但序号依赖"提取器版本不变"。所以模板里记了 `blockCount`：
+     *    实际块数对不上 → 说明块切法变了 → 给出警告但仍然尝试，
+     *    因为差的可能只是末尾几块（比如参考文献被拆了）。
+     *
+     * @param {Array} blocks  当前 `docModel.blocks`（会被复制，不原地改）
+     * @param {Object} tpl    模板对象（来自原生 `getTemplate`）
+     * @return {{blocks: Array, warn: string}}
+     */
+    function applyTemplate(blocks, tpl) {
+        if (!blocks || !blocks.length) return { blocks: blocks, warn: '' };
+        if (!tpl || !tpl.blocks) return { blocks: blocks, warn: '' };
+
+        var warn = '';
+
+        /*
+          ⚠️ 块数不符只警告，不中止。
+             中止会让"提取器小升级"直接把所有模板废掉 ——
+             那种退化比"套得略歪"更难接受。
+
+          ⚠️ 但必须把警告带出去：用户看到排版不对时，
+             需要知道是模板不匹配，而不是"模板坏了"。
+        */
+        var expected = tpl.blockCount | 0;
+        if (expected > 0 && expected !== blocks.length) {
+            warn = 'blockCount ' + blocks.length + ' ≠ ' + expected;
+            trace('reader:tpl', warn + ' (tpl=' + tpl.id + ')');
+        }
+
+        /* ① 复制一份（不改调用方的数组） */
+        var out = blocks.map(function (b, i) {
+            return {
+                line: b.line,
+                page: b.page,
+                text: b.text || '',
+                kind: b.kind || '',
+                level: b.level,
+                lines: b.lines,
+                role: '',
+                roleLevel: undefined,
+                _src: i      /* ⚠️ 记住原始序号，供 ops 使用 */
+            };
+        });
+
+        /* ② 按索引赋角色 */
+        for (var i = 0; i < tpl.blocks.length; i++) {
+            var spec = tpl.blocks[i];
+            /*
+              ⚠️ 块声明有两种形状（见 TemplateStore.parse）：
+                   [0, "title"]         数组
+                   {i: 0, role: "title"} 对象
+                 这里统一成 {index, role, level}。
+            */
+            var idx, role, lv;
+            if (Object.prototype.toString.call(spec) === '[object Array]') {
+                idx = spec[0] | 0;
+                role = spec[1] == null ? 'drop' : String(spec[1]);
+                lv = spec[2] | 0;
+            } else if (spec && typeof spec === 'object') {
+                idx = spec.i | 0;
+                role = spec.role ? String(spec.role) : 'drop';
+                lv = spec.level | 0;
+            } else {
+                continue;
+            }
+            if (idx < 0 || idx >= out.length) continue;
+            out[idx].role = role;
+            if (lv > 0) out[idx].roleLevel = lv;
+        }
+
+        /*
+          ③ drop 的角色直接从序列里剔除。
+             ⚠️ 在这里删而不是在渲染层跳过：
+                因为后面的 ops 里 `split` 用的是**原序号**，
+                若渲染层才跳过，序号与 ops 的对应关系就乱了。
+             ⚠️ 用标记而不是立即 splice —— splice 会改变后续下标，
+                而 ops 里的序号是基于原始序列的。
+        */
+        var dropped = {};
+        for (var d = 0; d < out.length; d++) {
+            if (out[d].role === 'drop') dropped[d] = true;
+        }
+
+        /* ④ 执行 ops（merge / split / drop / reorder） */
+        var ops = tpl.ops || [];
+        for (var o = 0; o < ops.length; o++) {
+            var op = ops[o];
+            if (!op) continue;
+            var name, arg;
+            if (Object.prototype.toString.call(op) === '[object Array]') {
+                name = String(op[0]);
+                arg = op.slice(1);
+            } else {
+                name = String(op.op || '');
+                arg = op;
+            }
+
+            if (name === 'merge') {
+                /*
+                  ⚠️ 合并：把几个块**首尾相接**成一个段。
+                     用空格连接而不是 `\n\n` —— 合并的语义是
+                     "这些本该是一段，被排版拆开了"，不是"两个段落"。
+                */
+                var list = (Object.prototype.toString.call(arg) === '[object Array]'
+                    ? (Object.prototype.toString.call(arg[0]) === '[object Array]' ? arg[0] : arg)
+                    : (arg.blocks || []));
+                var nums = [];
+                for (var m = 0; m < list.length; m++) {
+                    var nv = list[m] | 0;
+                    if (nv >= 0 && nv < out.length && !dropped[nv]) nums.push(nv);
+                }
+                if (nums.length >= 2) {
+                    var base = out[nums[0]];
+                    var parts = [];
+                    for (var p = 0; p < nums.length; p++) {
+                        parts.push(out[nums[p]].text);
+                        if (p > 0) dropped[nums[p]] = true;
+                    }
+                    base.text = parts.join(' ');
+                }
+            } else if (name === 'split') {
+                /*
+                  ⚠️ 拆分点 `at` 是**字符偏移**，不是块序号。
+                     模板存它是因为作者在编辑时定位到了一个确切位置，
+                     而"第几个字"不泄漏任何原文。
+                */
+                var bi = (Object.prototype.toString.call(arg) === '[object Array]')
+                    ? (arg[0] | 0) : (arg.block | 0);
+                var at = (Object.prototype.toString.call(arg) === '[object Array]')
+                    ? (arg[1] | 0) : (arg.at | 0);
+                if (bi >= 0 && bi < out.length && at > 0 &&
+                    at < String(out[bi].text).length) {
+                    var txt = String(out[bi].text);
+                    var tail = {
+                        line: out[bi].line + 0.5,   /* ⚠️ 小数行号，避免与已有序号冲突 */
+                        page: out[bi].page,
+                        text: txt.slice(at).replace(/^\s+/, ''),
+                        kind: '',
+                        lines: undefined,
+                        role: out[bi].role,
+                        roleLevel: out[bi].roleLevel
+                    };
+                    out[bi].text = txt.slice(0, at).replace(/\s+$/, '');
+                    out.splice(bi + 1, 0, tail);
+                    /*
+                      ⚠️ splice 之后所有下标都变了。
+                         这是唯一会让后续 ops 失效的操作 ——
+                         所以模板生成器**不应该**把 split 和
+                         依赖序号的其他 ops 混用。
+                         trace 出来以便排查。
+                    */
+                    trace('reader:tpl', 'split at block ' + bi +
+                          ' shifts later indices');
+                }
+            } else if (name === 'drop') {
+                var dlist = (Object.prototype.toString.call(arg) === '[object Array]')
+                    ? (Object.prototype.toString.call(arg[0]) === '[object Array]' ? arg[0] : arg)
+                    : (arg.blocks || []);
+                for (var dq = 0; dq < dlist.length; dq++) {
+                    var dv = dlist[dq] | 0;
+                    if (dv >= 0 && dv < out.length) dropped[dv] = true;
+                }
+            } else if (name === 'reorder') {
+                /* ⚠️ 暂不实现 —— 会打乱序号与 ops 的对应关系，
+                       需要先定义"重排后 split 的偏移算谁的"。 */
+                trace('reader:tpl', 'reorder not supported yet');
+            }
+        }
+
+        /* ⑤ 剔除被 drop 的块 */
+        var result = [];
+        for (var r = 0; r < out.length; r++) {
+            if (dropped[r]) continue;
+            var item = out[r];
+            delete item._src;
+            result.push(item);
+        }
+
+        trace('reader:tpl', 'applied ' + (tpl.id || '?') + ': ' +
+              blocks.length + ' -> ' + result.length + ' blocks' +
+              (warn ? ' [' + warn + ']' : ''));
+
+        return { blocks: result, warn: warn };
+    }
+
     /**
      * `setText` 的后半段：建文档模型、渲染、生成目录。
      *
@@ -7349,6 +7742,42 @@
         if (blocks && blocks.length) {
             lastBlocks = blocks;
             lastText = '';
+
+            /*
+              ══ 应用模板（v0.2.6）══
+
+              ⚠️ 必须在建 `docModel.blocks` **之前**做：
+                 模板会删块、合并块、拆块，之后的 `labels` / `edits`
+                 都以结果序列为坐标系。
+
+              ⚠️ 模板从 `currentDoc.templateId` 来，内容由原生在
+                 `pushLibraryToWeb` 时一起推过来（见 `templateOf`）。
+                 **不在这里同步调桥** —— `listTemplates()` 要读目录，
+                 在渲染路径上做 I/O 会拖慢首屏。
+
+              ⚠️ 模板应用失败不能阻断渲染：坏模板最多是"排版不对"，
+                 不该让用户连正文都看不到。
+            */
+            /*
+              ⚠️ 判据只用 `templateCache`，**不看** `currentDoc.templateId`。
+                 原因：`currentDoc` 是 `open(doc)` 时网页侧传进来的对象，
+                 它来自库列表推送，字段不一定同步；而 `templateCache`
+                 是原生刚刚通过 `setTemplate` 明确设进来的 —— 它才是
+                 "这次要套用哪个模板"的唯一权威。
+
+                 （曾经的条件是 `currentDoc.templateId && templateCache`，
+                  结果因为 `currentDoc` 没带这个字段，模板永远不生效。）
+            */
+            var applied = blocks;
+            if (templateCache) {
+                try {
+                    var tplOut = applyTemplate(blocks, templateCache);
+                    if (tplOut && tplOut.blocks) applied = tplOut.blocks;
+                } catch (e) {
+                    trace('reader:tpl', 'apply failed: ' + (e && e.message));
+                }
+            }
+            blocks = applied;
 
             /*
               ══ 建立文档模型（v0.1.57）══
@@ -7383,7 +7812,26 @@
                     */
                     kind: b.kind || '',
                     level: b.level,
-                    lines: b.lines
+                    lines: b.lines,
+                    /*
+                      ══ 排版模板给的角色（v0.2.6）══
+
+                      `role` 是**模板**指定的块角色（title / heading /
+                      abstract / body / caption / reference / formula / drop）。
+                      空串 = 模板没管这个块，走原来的启发式。
+
+                      ⚠️ 为什么单独一个字段而不复用 `kind`：
+                         `kind` 是 **PDF 提取层**的判断（它只认得出
+                         "这是标题""这是公式"），而 `role` 是**用户/模板**
+                         的显式指定。两者来源不同、优先级不同：
+                         role 必须能覆盖 kind，否则模板改了也没用。
+
+                      ⚠️ 不改写 `kind` 而是并存：模板可能只标了一部分块，
+                         剩下的仍要靠 `kind` 判断。而且用户取消模板时，
+                         `kind` 还是原始值，直接丢 role 就能回到原状。
+                    */
+                    role: b.role || '',
+                    roleLevel: b.roleLevel
                 };
             });
 
@@ -7460,7 +7908,12 @@
                                 */
                                 kind: it.kind || '',
                                 level: it.level,
-                                lines: it.lines
+                                lines: it.lines,
+                                /* ⚠️ 模板角色也必须从存档恢复（v0.2.6）——
+                                       否则重开文档时模板赋予的角色全丢，
+                                       表现为「套用模板后重开就失效了」 */
+                                role: it.role || '',
+                                roleLevel: it.roleLevel
                             });
                         }
                         if (ok && restored.length) {
@@ -9101,6 +9554,55 @@ function tocTitleFrom(text) {
         setMd: function (id, blocks) {
             return setText(id, null, null, null, blocks, true);
         },
+        /**
+         * 设置当前文献要套用的排版模板（v0.2.6）。
+         *
+         * ⚠️ 必须在 `setMd` **之前**调用 —— `setMd` 建文档模型时
+         *    要用它来给块赋 role。晚调等于没调（要重开文档才生效）。
+         *
+         * ⚠️ 传 `null` 表示"这篇没有模板"，会清掉上一篇的缓存。
+         *    不清的话，A 的模板会套到 B 上：序号全错，而且不报错 ——
+         *    用户只会看到"排版莫名其妙变了"，极难查。
+         *
+         * @param {Object|null} tpl 模板对象（原生 getTemplate 的结果）
+         */
+        setTemplate: function (tpl) {
+            templateCache = (tpl && tpl.blocks) ? tpl : null;
+            trace('reader:tpl', templateCache
+                ? 'set ' + (templateCache.id || '?')
+                : 'cleared');
+        },
+        /**
+         * 直接应用模板并重绘（v0.2.6，供详情页「套用」按钮与测试用）。
+         *
+         * ⚠️ 与 `setTemplate` 的区别：这个会**立刻重排当前文档**，
+         *    而 `setTemplate` 只是准备好缓存、等下次 `setMd` 生效。
+         */
+        applyTemplateNow: function (tpl) {
+            templateCache = (tpl && tpl.blocks) ? tpl : null;
+            if (!docModel.blocks || !docModel.blocks.length) return false;
+            /*
+              ⚠️ 以**原始提取块**为准重算，而不是在当前（可能已套过模板的）
+                 结果上再套一次 —— 后者会叠加模板，套两次就成灾。
+                 所以这里先还原成 `lastBlocks`，再套。
+            */
+            var base = lastBlocks || docModel.blocks;
+            var out = applyTemplate(base, templateCache);
+            docModel.blocks = out.blocks;
+            var ratio = 0;
+            if (bodyEl && bodyEl.scrollHeight > bodyEl.clientHeight) {
+                ratio = bodyEl.scrollTop /
+                    (bodyEl.scrollHeight - bodyEl.clientHeight);
+            }
+            renderBlocks(docModel.blocks);
+            if (bodyEl && bodyEl.scrollHeight > bodyEl.clientHeight) {
+                bodyEl.scrollTop = ratio *
+                    (bodyEl.scrollHeight - bodyEl.clientHeight);
+            }
+            saveDocBlocks();
+            pushMdToNative();
+            return true;
+        },
         onExtractFailed: onExtractFailed,
         /** 目录（供测试与将来的大纲导出用） */
         getToc: function () {
@@ -9118,6 +9620,28 @@ function tocTitleFrom(text) {
          */
         getBlocks: function () {
             return lastBlocks ? lastBlocks.slice() : null;
+        },
+        /**
+         * 当前 `docModel.blocks`（含 role），供排查模板是否生效（v0.2.6）。
+         *
+         * ⚠️ 与 `getBlocks()` 不同：后者返回的是**原始提取块**，
+         *    不含模板赋予的 role —— 排查模板问题时看它会被误导
+         *    （看起来"role 全空"，实际是看错了数组）。
+         */
+        getDocBlocks: function () {
+            return (docModel.blocks || []).map(function (b) {
+                return {
+                    line: b.line,
+                    role: b.role || '',
+                    roleLevel: b.roleLevel,
+                    kind: b.kind || '',
+                    len: String(b.text || '').length
+                };
+            });
+        },
+        /** 当前缓存里的模板 id 或 null（v0.2.6 排查用） */
+        getTemplateId: function () {
+            return templateCache ? (templateCache.id || '?') : null;
         },
         /**
          * 供排查/测试：直接跑一次语义重组，不碰 DOM、不依赖打开文档。

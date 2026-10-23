@@ -173,7 +173,20 @@
             year: doc.year || '',
             shortTitle: doc.shortTitle || '',
             venueType: doc.venueType || 'unknown',
-            fields: {}
+            fields: {},
+            /*
+              ⚠️ 模板相关的两个字段也要拷进 draft（v0.2.6）。
+
+                 `sha256` 用于**筛选**可用模板 —— 只有为这份 PDF
+                 做过的模板才能选（块序号是按这份 PDF 排的）。
+
+                 `templateId` 用于回显当前选中的模板。
+
+                 ⚠️ 漏掉这两个的表现：下拉框只有「不使用模板」一项，
+                    看起来像"模板功能没做"，实际是 draft 上没数据。
+            */
+            sha256: doc.sha256 || '',
+            templateId: doc.templateId || ''
         };
         if (doc.fields) {
             for (var k in doc.fields) {
@@ -395,6 +408,131 @@
 
         // ⚠️ 紧跟着补上只读的两项
         renderReadonly();
+
+        // ⚠️ 最后补上排版模板选择（v0.2.6）
+        renderTemplateRow();
+    }
+
+    /**
+     * 详情页的「排版模板」一行（v0.2.6）。
+     *
+     * ══ 为什么放在详情页而不是阅读页顶栏 ══
+     *
+     * 用户已经明确过：顶栏只放「切分」和「详情」两个按钮。
+     * 模板是**低频**操作（一篇文献设一次），塞进顶栏会让本就
+     * 紧张的空间再挤一个图标。放详情页既符合"配置类操作归详情"
+     * 的分工，也不占阅读界面。
+     *
+     * ══ 交互 ══
+     *
+     * 用原生 `<select>`，与同页的「学位类型」一致 ——
+     * 选项只有几项、不需要搜索，自造弹层是过度设计。
+     *
+     * 列表内容：
+     *   · 第一项「不使用模板」（value = ''）
+     *   · 其后是 sha256 **匹配本文献**的模板
+     *
+     * ⚠️ 只列 sha 匹配的模板，不是全部。理由：
+     *    模板绑定的是某一份 PDF 的块序号，套到别的 PDF 上必然错位。
+     *    让用户能选一个注定错位的模板，是设计缺陷而不是灵活性。
+     */
+    function renderTemplateRow() {
+        if (!fieldsEl || !draft) return;
+
+        var wrap = document.createElement('div');
+        wrap.className = 'detail-field';
+
+        var label = document.createElement('label');
+        label.className = 'detail-field-label';
+        label.textContent = t('detail.template');
+        wrap.appendChild(label);
+
+        var sel = document.createElement('select');
+        sel.className = 'detail-input';
+        sel.id = 'detail-template-select';
+
+        var usable = [];
+        try {
+            var bridge = global.ScholariusNative;
+            if (bridge && bridge.listTemplates) {
+                var all = JSON.parse(bridge.listTemplates() || '[]');
+                var sha = String(draft.sha256 || '').toLowerCase();
+                for (var i = 0; i < all.length; i++) {
+                    if (sha && String(all[i].sha256 || '').toLowerCase() === sha) {
+                        usable.push(all[i]);
+                    }
+                }
+            }
+        } catch (e) { /* 解析失败就当没有模板 */ }
+
+        var none = document.createElement('option');
+        none.value = '';
+        none.textContent = t('detail.templateNone');
+        sel.appendChild(none);
+
+        usable.forEach(function (tpl) {
+            var o = document.createElement('option');
+            o.value = tpl.id;
+            /* ⚠️ 名字后面带上作者，同名模板才能分辨 */
+            o.textContent = tpl.name + (tpl.author ? ' · ' + tpl.author : '');
+            sel.appendChild(o);
+        });
+
+        sel.value = draft.templateId || '';
+
+        /*
+          ⚠️ 立刻生效，不等「保存」按钮。
+
+              理由：模板改的是**排版**，用户选完就想看到效果。
+              如果要求先点保存再看结果，这个功能就没法试错 ——
+              而模板恰恰是需要反复调整的东西。
+
+          ⚠️ 但 draft.templateId 也要同步更新 ——
+              否则用户紧接着点「保存」会把刚选的模板覆盖回旧值。
+        */
+        sel.addEventListener('change', function () {
+            var id = sel.value;
+            draft.templateId = id;
+            try {
+                var bridge = global.ScholariusNative;
+                if (bridge && bridge.applyTemplate && draft.id) {
+                    bridge.applyTemplate(draft.id, id);
+                }
+            } catch (e) { /* 忽略 */ }
+            /*
+              ⚠️ 阅读页那边的模板缓存也要换，否则用户关掉详情、
+                 重新点开文献时套用的还是旧模板（或者没套）。
+            */
+            try {
+                var reader = global.ScholariusReader;
+                if (reader && reader.setTemplate) {
+                    var json = null;
+                    if (id) {
+                        var bridge2 = global.ScholariusNative;
+                        if (bridge2 && bridge2.getTemplate) {
+                            var raw = bridge2.getTemplate(id);
+                            if (raw) json = JSON.parse(raw);
+                        }
+                    }
+                    reader.setTemplate(json);
+                }
+            } catch (e) { /* 忽略 */ }
+        });
+
+        wrap.appendChild(sel);
+
+        /*
+          ⚠️ 一项模板都没有时给一句说明，而不是只显示「不使用模板」。
+             否则用户会以为功能坏了，实际是"还没有人为这份 PDF 做模板"。
+        */
+        if (usable.length === 0) {
+            var hint = document.createElement('div');
+            hint.className = 'detail-hint';
+            hint.textContent = t('detail.templateEmpty');
+            wrap.appendChild(hint);
+        }
+
+        fieldsEl.appendChild(wrap);
     }
 
     /**

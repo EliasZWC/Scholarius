@@ -98,6 +98,10 @@
             'reader.resegmentConfirmOk': 'Discard and re-split',
             'detail.sourceFile': 'Source File',
             'detail.saveFailed': 'Could Not Save Changes.',
+            // ⚠️ 排版模板（v0.2.6）—— 模板只含块序号与角色，不含原文
+            'detail.template': 'Layout Template',
+            'detail.templateNone': 'None (use default)',
+            'detail.templateEmpty': 'No template matches this PDF yet.',
 
             // 通用字段
             'vault.field.title': 'Title',
@@ -476,6 +480,10 @@
             'reader.resegmentConfirmOk': '丢弃并重新切分',
             'detail.sourceFile': '源文件',
             'detail.saveFailed': '无法保存修改。',
+            // ⚠️ 排版模板（v0.2.6）—— 模板只含块序号与角色，不含原文
+            'detail.template': '排版模板',
+            'detail.templateNone': '不使用模板',
+            'detail.templateEmpty': '还没有适配这份 PDF 的模板。',
 
             // 通用字段
             'vault.field.title': '标题',

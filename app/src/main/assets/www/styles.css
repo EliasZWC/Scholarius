@@ -1789,6 +1789,77 @@ body {
 }
 
 /*
+  ══ 排版模板角色对应的样式（v0.2.6）══
+
+  ⚠️ 这里只定义**视觉**，不涉及结构。模板决定"哪个块是什么角色"
+     （由 reader.js 的 applyTemplate 做），CSS 决定"那个角色长什么样"。
+
+  ⚠️ 全部基于 `.reader-para` 之上叠加，不重置它的排版属性 ——
+     否则模板一开，行高/字距就跟正文不一致，看起来很突兀。
+
+  ⚠️ 用 `--reader-role-*` 变量而不是硬编码颜色：
+     深浅主题切换时只需要改变量，不用写两套规则。
+*/
+.reader-role-title {
+    font-size: 1.35em;
+    font-weight: 700;
+    line-height: 1.35;
+    margin: 1.2em 0 0.8em;
+}
+
+.reader-role-author {
+    font-size: 0.95em;
+    opacity: 0.85;
+    margin: 0.2em 0;
+}
+
+.reader-role-abstract {
+    font-size: 0.95em;
+    /* ⚠️ 摘要常用略缩进 + 两侧留白区分正文，但不加引号/背景 ——
+           那会让长段落看起来像引用块，实际不是。 */
+    padding: 0 0.6em;
+    opacity: 0.92;
+}
+
+.reader-role-heading1,
+.reader-role-heading2,
+.reader-role-heading3 {
+    font-weight: 700;
+    line-height: 1.4;
+}
+
+.reader-role-heading1 {
+    font-size: 1.18em;
+    margin: 1.6em 0 0.6em;
+}
+
+.reader-role-heading2 {
+    font-size: 1.08em;
+    margin: 1.3em 0 0.5em;
+}
+
+.reader-role-heading3 {
+    font-size: 1em;
+    margin: 1.1em 0 0.4em;
+}
+
+.reader-role-caption {
+    font-size: 0.88em;
+    opacity: 0.8;
+    text-align: center;
+    margin: 0.4em 0 1em;
+}
+
+.reader-role-reference {
+    font-size: 0.9em;
+    /* ⚠️ 参考文献常用悬挂缩进：首行顶格、后续行缩进。
+           用 padding + text-indent 实现，不影响 flex 布局。 */
+    padding-left: 1.6em;
+    text-indent: -1.6em;
+    opacity: 0.9;
+}
+
+/*
   ══ 一级标题：前置文本 + 章节分隔线（v0.1.71）══
 
   用户要求：
@@ -4385,6 +4456,21 @@ body {
     font-size: 15px;
     font-weight: 700;
     color: var(--on-surface);
+}
+
+/*
+  ══ 详情页的说明性文字（v0.2.6）══
+
+  目前用在「排版模板」一行下面：没有任何模板适配这份 PDF 时的提示。
+
+  ⚠️ 用降透明度而不是浅色值：深浅主题下都成立，
+     不用为两种主题各写一个颜色。
+*/
+.detail-hint {
+    font-size: 12px;
+    line-height: 1.5;
+    opacity: 0.6;
+    margin-top: 2px;
 }
 
 .detail-input {

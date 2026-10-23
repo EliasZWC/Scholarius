@@ -1350,6 +1350,41 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 取某篇文献绑定模板的 JSON，供 `setTemplate` 推送。**后台线程调用**。
+     *
+     * @return 模板 JSON；没有绑定 / 模板已不存在 → null
+     *
+     * ⚠️ 模板**不存在**时返回 null 而不是报错：
+     *    用户可能删了模板文件，也可能从别的设备导入了 meta.json
+     *    但没带模板。这时该静默回退到通用规则，不该让文献打不开。
+     */
+    private fun pushTemplateFor(docId: String): String? {
+        return try {
+            val meta = LibraryStore.readMeta(this, docId) ?: return null
+            val tid = meta.templateId
+            if (tid.isBlank()) return null
+            val t = TemplateStore.get(this, tid) ?: run {
+                Log.w(TAG, "[template] 绑定的模板已不存在：$tid（doc=$docId）")
+                return null
+            }
+            /*
+              ⚠️ 校验模板确实是为**这份 PDF** 做的。
+                 不校验的话，用户手动改 meta.json 里的 templateId
+                 就能把 A 的模板套到 B 上 —— 序号全错，而且不报错。
+            */
+            if (!t.matches(meta.sha256)) {
+                Log.w(TAG, "[template] 模板与 PDF 不匹配：$tid " +
+                    "(tpl=${t.pdfSha256.take(8)} doc=${meta.sha256.take(8)})")
+                return null
+            }
+            TemplateStore.toJson(t).toString()
+        } catch (e: Throwable) {
+            Log.w(TAG, "读取绑定模板失败：$docId", e)
+            null
+        }
+    }
+
+    /**
      * 网页保存模板。
      *
      * ⚠️ 必须**重新解析校验一遍**，不能直接落盘：
@@ -1771,7 +1806,24 @@ class MainActivity : AppCompatActivity() {
             if (parsed != null && parsed.recognised && parsed.blocks.isNotEmpty()) {
                 val blocksJson = mdBlocksToJson(parsed.blocks)
                 debugLog("[reader] md hit ${parsed.blocks.size} blocks for $id")
+                val tplJson = pushTemplateFor(id)
                 runOnUiThread {
+                    /*
+                      ⚠️ 模板必须先于 blocks 推（同一个 Runnable 内顺序保证）。
+                         网页建 `docModel.blocks` 时要按 role 赋角色，
+                         模板晚到就等于没生效。
+                    */
+                    if (tplJson != null) {
+                        evaluateInWeb(
+                            "window.ScholariusReader && " +
+                                "window.ScholariusReader.setTemplate($tplJson);"
+                        )
+                    } else {
+                        evaluateInWeb(
+                            "window.ScholariusReader && " +
+                                "window.ScholariusReader.setTemplate(null);"
+                        )
+                    }
                     evaluateInWeb(
                         "window.ScholariusShell && window.ScholariusShell.readerMd(" +
                             "${org.json.JSONObject.quote(id)}, $blocksJson);"
@@ -1826,7 +1878,19 @@ class MainActivity : AppCompatActivity() {
 
                 if (generated != null && generated.blocks.isNotEmpty()) {
                     val mdBlocksJson = mdBlocksToJson(generated.blocks)
+                    val tplJson = pushTemplateFor(id)
                     runOnUiThread {
+                        if (tplJson != null) {
+                            evaluateInWeb(
+                                "window.ScholariusReader && " +
+                                    "window.ScholariusReader.setTemplate($tplJson);"
+                            )
+                        } else {
+                            evaluateInWeb(
+                                "window.ScholariusReader && " +
+                                    "window.ScholariusReader.setTemplate(null);"
+                            )
+                        }
                         evaluateInWeb(
                             "window.ScholariusShell && window.ScholariusShell.readerMd(" +
                                 "${org.json.JSONObject.quote(id)}, $mdBlocksJson);"
