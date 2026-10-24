@@ -735,6 +735,45 @@
                 }
 
                 main.appendChild(label);
+
+                /*
+                  ══ ⚠️ opt.desc：选项的**说明文字**（v0.2.43）══
+
+                  用户要求：
+
+                    「不要这种样式的，直接标注 Markdown 和 JSON 就行，
+                      不需要破折号，解释文本用淡色小号字体，
+                      同样注意首字母大写」
+
+                  ── 为什么需要这个字段 ──
+
+                  上一版把说明塞进了 `label`：
+
+                      'Markdown — text with formatting'
+
+                  两个问题：
+                    ① 破折号让标签本身变长，一列选项看起来参差不齐；
+                    ② 用户想扫"选哪个"，却先读到一长串解释。
+
+                  ✅ 拆成两行：
+                     · `label` 只有名字（`Markdown` / `JSON`），首字母大写
+                     · `desc`  是淡色小号说明，放在名字下方
+
+                  ⚠️ 挂在 `main` 里、label 之后 —— 与图标/文字同一列，
+                     不能用 btn 的并列子项（那是 space-between，
+                     会被摊到中间，见上面 .sheet-picker-main 的说明）。
+                  ⚠️ 只在有 desc 时才建节点，没有时不影响原有布局。
+                  ⚠️ 首字母大写的责任在**调用方提供的文案**上（i18n），
+                     这里只管渲染，不做大小写变换 ——
+                     中文没有大小写，自动变换反而危险。
+                */
+                if (opt.desc) {
+                    var descEl = document.createElement('span');
+                    descEl.className = 'sheet-picker-desc';
+                    descEl.textContent = opt.desc;
+                    main.appendChild(descEl);
+                }
+
                 btn.appendChild(main);
 
                 /*

@@ -119,9 +119,12 @@
             'reader.exportTemplateDone': 'Template saved',
             'reader.exportTemplateFailed': 'Could not export this template.',
             // ⚠️ v0.2.42：导出前选格式（md = 文本+格式 / json = 纯切分逻辑）
+            // ⚠️ v0.2.43：label 只放名字（首字母大写），说明拆到 Desc 字段（淡色小号）
             'reader.exportTemplatePickTitle': 'Save as',
-            'reader.exportTemplateAsMd': 'Markdown — text with formatting',
-            'reader.exportTemplateAsJson': 'JSON — layout only',
+            'reader.exportTemplateMdLabel': 'Markdown',
+            'reader.exportTemplateMdDesc': 'Text with formatting',
+            'reader.exportTemplateJsonLabel': 'JSON',
+            'reader.exportTemplateJsonDesc': 'Layout only',
             /*
               ⚠️ 导入前确认（v0.2.13）。
                  文案必须说清"会覆盖什么"，不能只写“确定吗？”——
@@ -557,9 +560,12 @@
             'reader.exportTemplateDone': '模板已导出',
             'reader.exportTemplateFailed': '无法导出该模板。',
             // ⚠️ v0.2.42：导出前选格式（md = 文本+格式 / json = 纯切分逻辑）
+            // ⚠️ v0.2.43：label 只放名字，说明拆到 Desc 字段（淡色小号）
             'reader.exportTemplatePickTitle': '保存为',
-            'reader.exportTemplateAsMd': 'Markdown（文本加格式）',
-            'reader.exportTemplateAsJson': 'JSON（纯切分逻辑）',
+            'reader.exportTemplateMdLabel': 'Markdown',
+            'reader.exportTemplateMdDesc': '文本加格式',
+            'reader.exportTemplateJsonLabel': 'JSON',
+            'reader.exportTemplateJsonDesc': '纯切分逻辑',
             /*
               ⚠️ 导入前确认（v0.2.13）。
                  文案必须说清会被覆盖的是什么，不能只写“确定吗？”——

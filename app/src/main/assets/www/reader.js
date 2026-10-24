@@ -1329,9 +1329,24 @@
 
             ui.pickSheet({
                 title: t('reader.exportTemplatePickTitle'),
+                /*
+                  ⚠️ label 只有名字，说明放 `desc`（v0.2.43）——
+                     用户要求：「直接标注 Markdown 和 JSON 就行，
+                     不需要破折号，解释文本用淡色小号字体」。
+                  ⚠️ 首字母大写由文案本身保证（`Markdown` / `JSON`），
+                     不在渲染时做大小写变换 —— 中文没有大小写。
+                */
                 options: [
-                    { value: 'md', label: t('reader.exportTemplateAsMd') },
-                    { value: 'json', label: t('reader.exportTemplateAsJson') }
+                    {
+                        value: 'md',
+                        label: t('reader.exportTemplateMdLabel'),
+                        desc: t('reader.exportTemplateMdDesc')
+                    },
+                    {
+                        value: 'json',
+                        label: t('reader.exportTemplateJsonLabel'),
+                        desc: t('reader.exportTemplateJsonDesc')
+                    }
                 ],
                 current: 'md',
                 onPick: function (v) {

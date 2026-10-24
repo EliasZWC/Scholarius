@@ -4,6 +4,46 @@
 
 ---
 
+## [0.2.43] - 2026-10-24
+
+### 导出格式选择：标签名与说明拆分
+
+用户要求：
+
+> 「不要这种样式的，直接标注 Markdown 和 JSON 就行，不需要破折号，
+> 解释文本用淡色小号字体，同样注意首字母大写」
+
+上一版把说明塞进了 label：
+
+```
+Markdown — text with formatting
+```
+
+两个问题：破折号让标签变长，一列选项参差不齐；
+用户想扫“选哪个”，却先读到一长串解释。
+
+### 改成两行
+
+| | 内容 | 样式 |
+|---|---|---|
+| `label` | `Markdown` / `JSON` | 正常字号，首字母大写 |
+| `desc` | `Text with formatting` / `Layout only` | 12.3px、`--on-surface-variant`、字重 400 |
+
+### `pickSheet` 新增 `desc` 字段
+
+与已有的 `icon` / `swatch` 同一模式（可选字段）。
+`pickSheet` 的 `getOptions` 原样透传，无需改动。
+
+CSS 实现细节：
+
+- 不用把 `.sheet-picker-main` 改成 `flex-direction: column` ——
+  那会连带改变**所有** picker 的布局（字体、发表物类别…）
+- `desc` 绝对定位到 label 下方，`:has()` 给有说明的行加底部内边距
+- `font-weight: 400` 显式覆盖：选中态会给整行加粗，
+  说明文字不该跟着变粗
+
+---
+
 ## [0.2.42] - 2026-10-24
 
 ### 导出模板：先选格式（md / json）

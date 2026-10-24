@@ -5708,6 +5708,71 @@ body {
 }
 
 /*
+  ══ ⚠️ 选项的说明文字（v0.2.43）══
+
+  用户要求：
+
+    「不要这种样式的，直接标注 Markdown 和 JSON 就行，不需要破折号，
+      解释文本用淡色小号字体」
+
+  ── 为什么用绝对定位而不是把 main 改成列方向 ──
+
+  `.sheet-picker-main` 现在是 `display:flex; align-items:center`，
+  里面是「图标 + label」。把它改成 `flex-direction: column` 会让
+  **所有** picker（字体、发表物类别…）的布局都变 —— 那些没有
+  desc 的行会突然左对齐、垂直居中失效。
+
+  ✅ 所以 desc 单独定位到 label 下方，不改变 main 的排列：
+
+      .sheet-picker-main { position: relative; }  ← 作为定位基准
+      .sheet-picker-desc { position: absolute; top: 100%; }
+
+  ⚠️ 但绝对定位不占高度 → 会盖住下一行。所以用 `.sheet-picker-item`
+  上的 `:has()` 判断：有 desc 的行加底部内边距。
+  ⚠️ `:has()` 在 Android WebView 113+ 支持（本项目 minSdk 对应的
+     WebView 版本远高于此）。若将来要兼容更老的，改成 JS 加类名即可 ——
+     但**现在不要提前优化**，`:has()` 让组件侧不用知道样式细节。
+
+  ⚠️ 淡色用 `--on-surface-variant`（与标签段说明文字同一色），
+     小号用 0.82em —— 比选项名小一档，但不像注释那样难读。
+  ⚠️ `line-height` 收到 1.2：它是辅助信息，占太多垂直空间会让
+     选项行显得松垮。
+*/
+.sheet-picker-main {
+    position: relative;
+}
+
+.sheet-picker-desc {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 1px;
+    font-size: 0.82em;
+    font-weight: 400;
+    line-height: 1.2;
+    color: var(--on-surface-variant);
+    /*
+      ⚠️ 不继承父级的 `font-weight: 700`（选中态会给整行加粗）——
+         说明文字不该跟着变粗。
+      ⚠️ 不换行省略：说明通常很短，省略反而看不懂。
+         超长时让它换行（不设 nowrap）。
+    */
+    white-space: normal;
+}
+
+/* 有说明的选项 → 底部留出空间，避免 desc 压到下一行 */
+.sheet-picker-item:has(.sheet-picker-desc) {
+    /*
+      ⚠️ 13px（原 padding 上/下）+ 15px（desc 一行的高度，含行距）——
+         与 `.sheet-picker-item` 的 `padding: 13px 12px` 对应。
+         改那个值时要同步改这里，否则 desc 会压住下一项。
+    */
+    padding-bottom: 28px;
+    align-items: flex-start;
+}
+
+/*
   ⚠️ `is-muted`：把这一项画成**浅色**，表示它不是一个真正的选择
      （目前只有发表物类别的「未设定 / Not Set」用它）。
 
