@@ -118,6 +118,10 @@
             'reader.exportTemplate': 'Export layout template',
             'reader.exportTemplateDone': 'Template saved',
             'reader.exportTemplateFailed': 'Could not export this template.',
+            // ⚠️ v0.2.42：导出前选格式（md = 文本+格式 / json = 纯切分逻辑）
+            'reader.exportTemplatePickTitle': 'Save as',
+            'reader.exportTemplateAsMd': 'Markdown — text with formatting',
+            'reader.exportTemplateAsJson': 'JSON — layout only',
             /*
               ⚠️ 导入前确认（v0.2.13）。
                  文案必须说清"会覆盖什么"，不能只写“确定吗？”——
@@ -552,6 +556,10 @@
             'reader.exportTemplate': '导出排版模板',
             'reader.exportTemplateDone': '模板已导出',
             'reader.exportTemplateFailed': '无法导出该模板。',
+            // ⚠️ v0.2.42：导出前选格式（md = 文本+格式 / json = 纯切分逻辑）
+            'reader.exportTemplatePickTitle': '保存为',
+            'reader.exportTemplateAsMd': 'Markdown（文本加格式）',
+            'reader.exportTemplateAsJson': 'JSON（纯切分逻辑）',
             /*
               ⚠️ 导入前确认（v0.2.13）。
                  文案必须说清会被覆盖的是什么，不能只写“确定吗？”——

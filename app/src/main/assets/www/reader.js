@@ -1271,6 +1271,29 @@
      *
      * ③ `source` —— 当前文献的 sha256 / 页数。
      *    有了它，导入时能校验"这份模板是不是给这篇用的"。
+     *
+     * ══ ⚠️ 导出前让用户选格式（v0.2.42）══
+     *
+     * 用户要求：
+     *
+     *   「保存模板的时候弹出个表单，选择保存 md（文本加格式）
+     *     还是 json（纯切分逻辑）」
+     *
+     * 两种文件的差别不是扩展名，而是**内容与用途完全不同**：
+     *
+     *   · **md**   —— 文本 + 格式（标题层级、列表、引用块…）。
+     *                 它带**实际文字**，可以单独拿去看、去编辑，
+     *                 但绑死在这一篇的内容上。
+     *   · **json** —— 纯切分逻辑（每块的角色 / 层级）。
+     *                 它**只有结构没有文字**，是"排版方案"，
+     *                 拿去套用在同一份 PDF 上才有意义。
+     *
+     * ⚠️ 必须让用户明确选 —— 猜错的话，拿到 md 的人会以为
+     *    能当模板导入，拿到 json 的人会以为里面有正文。
+     *
+     * ⚠️ 用 `pickSheet`（行式单选）而不是 `confirmSheet`：
+     *    这是**二选一**，不是"确定/取消"。confirmSheet 的两个按钮
+     *    语义是"做/不做"，放不下两个平行的选项。
      */
     function mountTplExportBtn() {
         if (!tplExportBtn) return;
@@ -1281,40 +1304,117 @@
         tplExportBtn.addEventListener('click', function () {
             if (tplExportBtn.disabled) return;
 
-            var bridge = global.ScholariusNative;
-            if (!bridge || typeof bridge.exportTemplateJson !== 'function') {
-                toastSafe(t('reader.exportTemplateFailed'));
-                return;
-            }
-
-            var json = templateJsonOfCurrent();
-            if (!json) {
-                toastSafe(t('reader.exportTemplateFailed'));
-                return;
-            }
-
             /*
-              ⚠️ 文件名 = `<标题>-<sha前8>.json`
-                 与详情页导出的命名规则保持一致，用户拿到两个文件时
-                 能看出它们来自同一篇。
-              ⚠️ 标题里可能有 `/`、`:` 等非法字符 —— 原生侧会再清洗一次，
-                 但这里先去掉，避免文件名变成一串下划线。
-            */
-            var title = (currentDoc && currentDoc.title)
-                ? String(currentDoc.title) : 'template';
-            var sha = (currentDoc && currentDoc.sha256)
-                ? String(currentDoc.sha256) : '';
-            var base = title.replace(/[\\/:*?"<>|\n\r]/g, '_').slice(0, 60);
-            var fname = base + (sha ? '-' + sha.slice(0, 8) : '') + '.json';
+              ══ ⚠️ 先弹格式选择，再检查桥（v0.2.42）══
 
+              上一稿是先 `if (!bridge.exportTemplateJson) 报错退出`，
+              再弹表单。后果：桥不可用时用户**连表单都看不到**，
+              只看到一句"无法导出"，不知道是缺功能还是选错了。
+
+              ✅ 顺序反过来：先让用户选，选完再报"无法导出"。
+                 语义上"你要做的事"和"能不能做到"是两件事，
+                 先表达前者。
+
+              ⚠️ 每个 `pickSheet` 的 `onPick` 都会被调用一次
+                 （包括用户点 Cancel 之外的任何选择），
+                 但 Cancel 不走 `onPick` —— 所以取消是安全的，
+                 不会误触发导出。
+            */
+            var ui = global.ScholariusUI;
+            if (!ui || typeof ui.pickSheet !== 'function') {
+                /* 没有 UI 模块（极端情况）→ 默认 json，不让功能卡死 */
+                doExportTemplate('json');
+                return;
+            }
+
+            ui.pickSheet({
+                title: t('reader.exportTemplatePickTitle'),
+                options: [
+                    { value: 'md', label: t('reader.exportTemplateAsMd') },
+                    { value: 'json', label: t('reader.exportTemplateAsJson') }
+                ],
+                current: 'md',
+                onPick: function (v) {
+                    doExportTemplate(v === 'md' ? 'md' : 'json');
+                }
+            });
+        });
+    }
+
+    /**
+     * 按用户选的格式导出模板（v0.2.42）。
+     *
+     * @param {string} fmt 'md' | 'json'
+     */
+    function doExportTemplate(fmt) {
+        var bridge = global.ScholariusNative;
+        if (!bridge || typeof bridge.exportTemplateJson !== 'function') {
+            toastSafe(t('reader.exportTemplateFailed'));
+            return;
+        }
+
+        /*
+          ⚠️ 文件名 = `<标题>-<sha前8>.<ext>`
+             与详情页导出的命名规则一致，用户拿到多个文件时
+             能看出它们来自同一篇。
+          ⚠️ 标题里可能有 `/`、`:` 等非法字符 —— 原生侧会再清洗一次，
+             但这里先去掉，避免文件名变成一串下划线。
+        */
+        var title = (currentDoc && currentDoc.title)
+            ? String(currentDoc.title) : 'template';
+        var sha = (currentDoc && currentDoc.sha256)
+            ? String(currentDoc.sha256) : '';
+        var base = title.replace(/[\\/:*?"<>|\n\r]/g, '_').slice(0, 60);
+        var stem = base + (sha ? '-' + sha.slice(0, 8) : '');
+
+        if (fmt === 'md') {
+            /*
+              ══ md：文本 + 格式 ══
+
+              用 `markdownOfDoc()` —— 它就是"复制 Markdown"用的那条
+              导出路径（内含标题前缀、列表、引用块、行内注释），
+              与用户点「复制 Markdown」拿到的内容**完全一致**。
+
+              ⚠️ 复用同一条路径而不是另写一份：两份实现必然漂移，
+                 用户会发现"复制的和导出的不一样"。
+              ⚠️ 传 `fileName` 与 `json` 同一个桥方法：原生侧只负责
+                 "把这段字符串存成这个文件名"，不关心内容是什么。
+                 这样不用为一个纯文本导出再加一个 bridge 方法。
+            */
+            var md = '';
             try {
-                bridge.exportTemplateJson(json, fname);
+                md = markdownOfDoc();
+            } catch (e) {
+                trace('reader:tpl', 'md export failed: ' + (e && e.message));
+                md = '';
+            }
+            if (!md) {
+                toastSafe(t('reader.exportTemplateFailed'));
+                return;
+            }
+            try {
+                bridge.exportTemplateJson(md, stem + '.md');
                 toastSafe(t('reader.exportTemplateDone'));
             } catch (e) {
-                trace('reader:tpl', 'export failed: ' + (e && e.message));
+                trace('reader:tpl', 'md export failed: ' + (e && e.message));
                 toastSafe(t('reader.exportTemplateFailed'));
             }
-        });
+            return;
+        }
+
+        /* json：纯切分逻辑 */
+        var json = templateJsonOfCurrent();
+        if (!json) {
+            toastSafe(t('reader.exportTemplateFailed'));
+            return;
+        }
+        try {
+            bridge.exportTemplateJson(json, stem + '.json');
+            toastSafe(t('reader.exportTemplateDone'));
+        } catch (e) {
+            trace('reader:tpl', 'export failed: ' + (e && e.message));
+            toastSafe(t('reader.exportTemplateFailed'));
+        }
     }
 
     /**
@@ -6307,6 +6407,66 @@
             trace('reader:label', 'MULTI in: lines=[' + lines.join(',') +
                   '] blocks=' + lines.length + ' totalChars=' + dbgTotal +
                   ' selChars=' + dbgSelChars + ' selRectH=' + dbgRectH);
+
+            /*
+              ══ 🛡️ 最后一道保护：覆盖已有标注前必须确认（v0.2.42）══
+
+              用户决定「就当是无法解决的 bug 吧」，不再追这个问题的根因。
+
+              但它一旦触发，代价是**整篇已有标注被毁**。所以在放弃
+              追根因的前提下，至少要做到「不会静默毁掉用户的工作」。
+
+              ✅ 判据：这次要覆盖的块里，有多少块**本来就有别的标注**？
+                 超过 5 块 → 弹确认框，明确告诉用户"这会覆盖 N 处已有标注"。
+
+              ⚠️ 为什么阈值是 5：
+                 正常的"把连续几段标成文献"通常覆盖 0~3 块已有标注
+                 （比如把 3 段正文改成文献）。超过 5 块说明范围很可能
+                 已经不是用户想要的那一段了。
+              ⚠️ 只有在**已有标注**会被覆盖时才问 ——
+                 空白文档里标注不受打扰，不该给用户加摩擦。
+
+              ⚠️ 确认框是**同步 UI**，而 `applyLabel` 是同步流程。
+                 所以这里用"先弹框、回调里继续"的方式：
+                 把真正的写入逻辑包进 `proceed()`。
+            */
+            var wouldOverwrite = 0;
+            for (var ow = 0; ow < lines.length; ow++) {
+                var exist = labels[lines[ow]];
+                if (!exist || !exist.length) continue;
+                /* 已经全是本次目标标签 → 不算"覆盖别的标注" */
+                var allSame = true;
+                for (var oe = 0; oe < exist.length; oe++) {
+                    if (!exist[oe] || exist[oe].label !== labelDraft) {
+                        allSame = false;
+                        break;
+                    }
+                }
+                if (!allSame) wouldOverwrite++;
+            }
+
+            if (wouldOverwrite > 5) {
+                var uiC = global.ScholariusUI;
+                if (uiC && typeof uiC.confirmSheet === 'function') {
+                    trace('reader:label', 'CONFIRM: about to overwrite ' +
+                          wouldOverwrite + ' labeled blocks');
+                    uiC.confirmSheet({
+                        title: t('reader.labelWideTitle'),
+                        message: t('reader.labelWideMsg', {
+                            n: String(wouldOverwrite),
+                            total: String(lines.length)
+                        }),
+                        confirmLabel: t('reader.labelWideOk'),
+                        cancelLabel: t('action.cancel'),
+                        danger: true,
+                        onConfirm: function () {
+                            /* ⚠️ 用重算后的 lines（可能已被上面截断） */
+                            applyLabelToLines(lines);
+                        }
+                    });
+                    return;
+                }
+            }
 
             /*
               ══ ⚠️⚠️⚠️ 硬上限：块数不得超过「选中字数 / 10 + 5」（v0.2.41）══

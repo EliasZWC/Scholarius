@@ -1629,7 +1629,7 @@ class MainActivity : AppCompatActivity() {
      *    文件写的逻辑完全相同（见 onActivityResult 的分支），
      *    再复制一份只会多一处要同步维护的地方。
      *
-     * @param json     完整模板 JSON
+     * @param json     完整模板 JSON，**或**要导出的 md 全文
      * @param filename 建议文件名（这里仍做一次安全清洗 —— 不能信任网页）
      */
     private fun exportTemplateJson(json: String, filename: String) {
@@ -1646,13 +1646,38 @@ class MainActivity : AppCompatActivity() {
             .replace(Regex("[\\\\/:*?\"<>|\\n\\r]"), "_")
             .take(60)
             .ifBlank { "template" }
-        val name = if (safe.endsWith(".json", ignoreCase = true)) safe else "$safe.json"
+
+        /*
+          ══ ⚠️ 支持两种格式（v0.2.42）══
+
+          用户要求导出模板时**先选格式**：
+
+            · md   —— 文本 + 格式
+            · json —— 纯切分逻辑
+
+          网页侧已经决定好用哪种，并把正确的扩展名放进 `filename`。
+          这里**不要**再强制补 `.json` —— 那会把 md 存成 `.json`，
+          用户双击打不开、也无法被 md 阅读器识别。
+
+          ⚠️ MIME 也要跟着变：
+             · `.md`   → `text/markdown`
+             · `.json` → `application/json`
+             有些 ROM 的保存对话框会按 MIME 过滤文件名后缀，
+             填错会显示成奇怪的默认扩展名。
+        */
+        val isMd = safe.endsWith(".md", ignoreCase = true)
+        val name = when {
+            safe.endsWith(".md", ignoreCase = true) ||
+            safe.endsWith(".json", ignoreCase = true) -> safe
+            else -> "$safe.json"
+        }
+        val mime = if (isMd) "text/markdown" else "application/json"
 
         try {
             exportBuffer = json
             val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
-                type = "application/json"
+                type = mime
                 putExtra(Intent.EXTRA_TITLE, name)
             }
             startActivityForResult(intent, REQ_EXPORT_TEMPLATE)
