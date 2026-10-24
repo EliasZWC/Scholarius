@@ -3722,6 +3722,49 @@
             selRect = null;
         }
 
+        /*
+          ══ ⚠️⚠️⚠️ rect 全为 0 时**不能放行**（v0.2.41 —— 上一版失效的真因）══
+
+          实测（Chromium）：
+
+              选区跨越视口外的内容时，
+              range.getBoundingClientRect() 返回 {top:0,bottom:0,h:0,w:0}
+
+          也就是说**几何信息根本拿不到**。
+
+          而上一版写的是：
+
+              if (selRect && (selRect.width > 0 || selRect.height > 0)) {
+                  ... 几何校验 ...
+              }
+              // h===0 → 整个 if 跳过 → **直接放行**
+
+          于是最需要拦截的场景（起点在视口外、选区跨越整篇）
+          恰好把校验完全绕过了 —— 这就是"加了防线却毫无改善"的原因。
+
+          ✅ 现在：rect 不可用时，改用**文字量**判断。
+             见下面 `selCharsFromDom`。
+        */
+        var rectUsable = !!(selRect &&
+            (selRect.width > 0 || selRect.height > 0));
+
+        /*
+          ══ 直接量取选区实际文字（不信任调用方传来的 text）══
+
+          ⚠️ `labelSpan.text` 在跨块路径上可能是空的
+             （`labelSpanOfSelection` 在某些分支只带 lines）。
+             空 text → 字符预算被整段跳过 → 又一道防线失效。
+          ✅ 这里直接从 DOM 选区取值，是**最原始的真相**。
+        */
+        var selCharsFromDom = 0;
+        try {
+            var rawSel = String(sel && sel.rangeCount
+                ? sel.getRangeAt(0).toString() : '');
+            selCharsFromDom = rawSel.replace(/\s+/g, '').length;
+        } catch (e) {
+            selCharsFromDom = 0;
+        }
+
         for (var i = 0; i < nodes.length; i++) {
             var el = nodes[i];
             var hit = false;
@@ -3735,11 +3778,10 @@
             if (!hit) continue;
 
             /*
-              ⚠️ 几何交叠校验。`selRect` 为空时（极老的 WebView）
-                 退回只看 `intersectsNode` —— 但那会有本函数开头
-                 描述的风险，所以下面还有连续性校验兜底。
+              几何校验：**只在 rect 可信时**做。
+              rect 不可信时不在这里拦，交给下面的字符预算。
             */
-            if (selRect && (selRect.width > 0 || selRect.height > 0)) {
+            if (rectUsable) {
                 var er = null;
                 try {
                     er = el.getBoundingClientRect();
@@ -3831,6 +3873,56 @@
             trace('reader:sel', 'selection narrowed ' + clean.length +
                   ' -> ' + best.length + ' lines (jump detected)');
         }
+
+        /*
+          ══ ⚠️⚠️⚠️ 字符预算：在**这里**就截断（v0.2.41）══
+
+          上一版把预算放在 `applyLabel`，靠 `labelSpan.text` 量字数。
+          但两条实测事实让它失效：
+
+            ① `labelSpan.text` 在跨块路径上可能是空的 → 整段跳过；
+            ② 跨块路径的 `labelSpan` 是**面板打开时**算好的，
+               而用户滚动、拖动的过程中选区已经变了 ——
+               那个快照早就过期。
+
+          ✅ 所以在**最终取值的那一刻**、用**DOM 选区的真实文字**
+             做预算，只保留末尾若干块。
+
+          ⚠️ 保留末尾：用户从上往下拖，终点才是他真正想标的地方，
+             误选的总是上方（与用户描述完全一致）。
+
+          ⚠️ 预算 ×3 + 80 的理由见 `applyLabel` 里的说明：
+             · 用户可能只点一下段内某处，整段就该归他；
+             · 短块（小标题）需要余量。
+        */
+        if (selCharsFromDom > 0 && best.length > 1) {
+            var need = selCharsFromDom * 3 + 80;
+            var have = 0;
+            for (var q1 = 0; q1 < best.length; q1++) {
+                have += String(blockTextOf(best[q1]) == null ? ''
+                    : blockTextOf(best[q1])).replace(/\s+/g, '').length;
+            }
+            if (have > need) {
+                trace('reader:sel', 'CHAR BUDGET: ' + have + ' chars in ' +
+                      best.length + ' blocks vs selected ' + selCharsFromDom +
+                      ' (budget ' + need + ') — keeping tail only');
+                var tail = [];
+                var acc2 = 0;
+                for (var q2 = best.length - 1; q2 >= 0; q2--) {
+                    var n2 = String(blockTextOf(best[q2]) == null ? ''
+                        : blockTextOf(best[q2])).replace(/\s+/g, '').length;
+                    if (acc2 + n2 > need && tail.length) break;
+                    acc2 += n2;
+                    tail.push(best[q2]);
+                }
+                tail.reverse();
+                if (!tail.length) tail = [best[best.length - 1]];
+                trace('reader:sel', 'kept ' + tail.length + ' blocks (' +
+                      acc2 + ' chars): ' + tail.join(','));
+                return tail;
+            }
+        }
+
         return best;
     }
 
@@ -5931,6 +6023,51 @@
     function applyLabel() {
         if (!labelSpan) return;
 
+        /*
+          ══ ⚠️⚠️⚠️ 应用前**重算跨块范围**（v0.2.41）══
+
+          用户连续两版反馈同一个 bug：
+
+            「仍然是超出视窗上方的全部段落全被标记了」
+
+          ── 一条我之前没想到的时间线 ──
+
+          `labelSpan` 是**打开标注面板那一刻**算好并缓存的。
+          而用户的真实操作是：
+
+              1. 长按 / 选中上方几段
+              2. **滚动页面**（选区仍保持着）
+              3. 拖动扩展选区到下方
+              4. 点「文献」→ 面板打开 → `labelSpan` 在此刻计算
+
+          问题是：只要面板打开期间选区或滚动**再有任何变化**，
+          缓存就过期了。而 `blockLinesInSelection()` 依赖
+          `range.intersectsNode` —— 对过期的 Range 只会给出过期的答案。
+
+          ✅ 所以在这里**重新算一次**，以当前 DOM 选区为准。
+             `labelLinesNow()` 会走 0.2.40/0.2.41 加的几何 + 连续性 +
+             字符预算/块数上限这三道过滤。
+
+          ⚠️ 只在跨块路径重算 —— 单块路径的 `{line,start,end}` 是
+             精确区间，重算反而会因端点在分段边界而漂移。
+          ⚠️ 重算失败（返回空）→ 沿用缓存，不让标注整体失效。
+        */
+        if (!labelSpan.single) {
+            try {
+                var fresh = blockLinesInSelection();
+                if (fresh && fresh.length) {
+                    var oldLen = (labelSpan.lines || []).length;
+                    if (fresh.length !== oldLen) {
+                        trace('reader:label', 'RECOMPUTED lines: ' + oldLen +
+                              ' -> ' + fresh.length);
+                    }
+                    labelSpan.lines = fresh;
+                }
+            } catch (e) {
+                trace('reader:label', 'recompute lines failed: ' + (e && e.message));
+            }
+        }
+
         if (labelSpan.single) {
             var line = labelSpan.line;
             var cur = labels[line] || [];
@@ -6134,6 +6271,68 @@
                  用整块区间是合理的。
             */
             var lines = labelSpan.lines || [];
+
+            /*
+              ══ 🔍 诊断：把跨块标注的真实输入打到日志（v0.2.41）══
+
+              用户连续两版报同一个 bug，而我加的三道防线都没拦住。
+              说明我对"输入长什么样"的假设是错的。
+
+              这里直接把 `labelSpan` 的原始内容吐出来，包括：
+                · 有多少块、哪些行号
+                · 每块多少字、合计多少字
+                · 用户实际选中了多少字（DOM 选区）
+                · 选区矩形是否可用（h/w）
+
+              下次出现时，日志能直接告诉我哪一环出了问题，
+              不用再猜。
+            */
+            var dbgSelChars = 0;
+            var dbgRectH = 0;
+            try {
+                var dbgSel = global.getSelection();
+                if (dbgSel && dbgSel.rangeCount) {
+                    var dbgR = dbgSel.getRangeAt(0);
+                    dbgSelChars = String(dbgR.toString()).replace(/\s+/g, '').length;
+                    var dbgRect = dbgR.getBoundingClientRect();
+                    dbgRectH = Math.round(dbgRect.height);
+                }
+            } catch (e) { /* 诊断失败不影响标注 */ }
+
+            var dbgTotal = 0;
+            for (var dq = 0; dq < lines.length; dq++) {
+                dbgTotal += String(blockTextOf(lines[dq]) == null ? ''
+                    : blockTextOf(lines[dq])).replace(/\s+/g, '').length;
+            }
+            trace('reader:label', 'MULTI in: lines=[' + lines.join(',') +
+                  '] blocks=' + lines.length + ' totalChars=' + dbgTotal +
+                  ' selChars=' + dbgSelChars + ' selRectH=' + dbgRectH);
+
+            /*
+              ══ ⚠️⚠️⚠️ 硬上限：块数不得超过「选中字数 / 10 + 5」（v0.2.41）══
+
+              前面的字符预算用的是 `blockTextOf` 的字数，对"用户真的
+              选了 800 字"这种正常情况不该拦。
+
+              但有一个**绝对不可能**的情形：
+
+                  标了 40 个块，而用户只选了 30 个字。
+
+              每块平均不到 1 个字 —— 这在任何排版下都不成立。
+
+              ✅ 这里用最保守的判据：块数 > 选中字数/10 + 5 → 明显错。
+                 10 是因为最短的块（一个小标题、一个页码）也有几个字，
+                 除以 10 再留 5 块余量，足以放行所有正常选区。
+
+              ⚠️ 触发时**只保留末尾 3 块** —— 用户从上往下拖，
+                 终点附近的才是他要的；误选的总是上方那一大片。
+            */
+            if (dbgSelChars > 0 && lines.length > dbgSelChars / 10 + 5) {
+                trace('reader:label', 'BLOCK COUNT absurd: ' + lines.length +
+                      ' blocks for ' + dbgSelChars + ' selected chars — ' +
+                      'keeping last 3 only');
+                lines = lines.slice(-3);
+            }
 
             /*
               ══ ⚠️⚠️⚠️ 跨块标注的**最后一道防线**（v0.2.40）══
