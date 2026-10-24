@@ -2378,6 +2378,52 @@
     function extendSelectionTo(cx, cy) {
         if (!selAnchor) return;
 
+        /*
+          ══ ⚠️⚠️⚠️ 锚点必须还在当前 DOM 里（v0.2.40）══
+
+          用户反馈（严重）：
+
+            「当我选中了多段正文段作为文献时，由于上方被选中的正文段
+              离开了页面（我向下滑动了页面，以选中下方的正文段），
+              其他地方没被选中的所有正文段也都被标记成了文献，
+              包含前面所有章节的正文段」
+            「不是所有正文段，而是其他所有标签的区域」
+
+          ── 为什么锚点会失效 ──
+
+          `selAnchor` 存的是**节点引用**。下列情形会让它脱离文档：
+
+            · 拖动过程中触发了重渲染（滚动到底自动加载、
+              某些 WebView 在长按菜单弹出时重排 DOM）；
+            · 用户滑动页面时系统重建了选区。
+
+          一旦 `selAnchor.node` 已不在 `document` 里，
+          `anchorRange.setStart(...)` 会抛 `WrongDocumentError`
+          —— 旧代码 `catch` 后直接 `return`，看起来安全。
+
+          但**更危险的是没抛错的情形**：节点还在，只是它已经
+          **滚出视口很远**。此时 `caretRangeFromPoint` 拿到的当前点
+          在下方，两者构成的 Range 本身是合法的 ——
+          问题在于这个 Range **跨越了中间所有内容**。
+
+          而 `range.intersectsNode()` 只看逻辑区间、不看几何，
+          于是中间每一块都"在选区里" → 全被写成文献。
+
+          ── ✅ 修法 ──
+
+          显式校验锚点仍然**隶属同一个 `contentEl`**：
+
+              contentEl.contains(selAnchor.node)
+
+          不成立 → 说明节点已脱离文档，**放弃这一帧的扩选**
+          （返回，保留上一帧的选区）。绝不拿一个孤儿节点去
+          构造跨越全文的 Range。
+        */
+        if (!contentEl || !contentEl.contains(selAnchor.node)) {
+            trace('reader:sel', 'anchor detached from content, skip extend');
+            return;
+        }
+
         var r = caretRangeAt(cx, cy);
         if (!r) return;
 
@@ -3617,6 +3663,65 @@
         var range = sel.getRangeAt(0);
         var nodes = contentEl.querySelectorAll('[data-line]');
 
+        /*
+          ══ ⚠️⚠️⚠️ 必须先算选区的**实际矩形**，做真实交叠判断 ══
+             （v0.2.40 —— 严重 bug）
+
+          用户反馈：
+
+            「当我选中了多段正文段作为文献时，由于上方被选中的正文段
+              离开了页面（我向下滑动了页面，以选中下方的正文段），
+              其他地方没被选中的所有正文段也都被标记成了文献，
+              包含前面所有章节的正文段」
+
+          后来补充：「不是所有正文段，而是其他所有标签的区域」
+
+          ── 真因 ──
+
+          `range.intersectsNode(el)` 的语义是「节点与**选区**有交集」。
+          当选区起点在**文档很前面**时（锚点元素已滚出视口、
+          `caretRangeFromPoint` 回退到根节点），`range.startContainer`
+          会是 `contentEl` 甚至 `body` ——
+
+              起点 = 文档头，终点 = 手指当前位置
+
+          于是这个 Range **跨越了整篇文章**，`intersectsNode`
+          对中间每一个 `[data-line]` 都返回 `true`。
+
+          实测（6 个块，选区从第 4 块开始）：
+              · 正常选区 → 只有第 4 块命中 ✓
+              · 起点在第 0 块 → **第 0~4 块全部命中** ✗
+
+          这就是"其他所有标签的区域都被改成文献"的来源：
+          `applyLabel` 的跨块分支直接遍历 `lines` 给每一块写整块标注，
+          不管那一块原来是什么标签。
+
+          ── ✅ 修法（两道）──
+
+          ① **交叠必须真实**：`intersectsNode` 只看逻辑区间，
+             不看几何。这里额外要求选区的**矩形**与块的矩形有交叠
+             （容差 1px，避免边界浮点误差）。
+             ⚠️ 选区滚出视口后 `getBoundingClientRect` 可能返回
+                视口外的负坐标 —— 那仍然算"有交叠"，因为它是同一段
+                连续选区的一部分。这里判的是**两者的相对位置**，
+                不是"在不在视口内"。
+
+          ② **连续性校验**：真正被选中的块在 `docModel.blocks` 序列里
+             必须是**连续的一段**。如果算出来的行号之间有超过
+             N 个"未命中的块"，说明中间有明显的断层 ——
+             那是不可信的，直接放弃跨块（退回单块）。
+
+             判据取 N = 2：允许中间夹 1~2 个空块/装饰节点，
+             但不允许跳过整段内容。
+        */
+        var selRect = null;
+        try {
+            /* `getBoundingClientRect` 对多行选区返回整体的外包矩形 */
+            selRect = range.getBoundingClientRect();
+        } catch (e) {
+            selRect = null;
+        }
+
         for (var i = 0; i < nodes.length; i++) {
             var el = nodes[i];
             var hit = false;
@@ -3627,13 +3732,32 @@
                 hit = false;
             }
 
-            /*
-              ⚠️ `intersectsNode` 对**紧贴边界**的节点会返回 true：
-                 选到第 3 段末尾时，第 4 段的开头也"相交"（零宽重叠）。
-                 所以再要求选区的可视矩形与该块有**实际交叠**，
-                 否则会多抓一个段落 —— 用户编辑时会发现多出一段。
-            */
             if (!hit) continue;
+
+            /*
+              ⚠️ 几何交叠校验。`selRect` 为空时（极老的 WebView）
+                 退回只看 `intersectsNode` —— 但那会有本函数开头
+                 描述的风险，所以下面还有连续性校验兜底。
+            */
+            if (selRect && (selRect.width > 0 || selRect.height > 0)) {
+                var er = null;
+                try {
+                    er = el.getBoundingClientRect();
+                } catch (e) {
+                    er = null;
+                }
+                if (er && (er.width > 0 || er.height > 0)) {
+                    /*
+                      ⚠️ 容差 1px：边界相邻时浮点误差会让"刚好接触"
+                         变成"不相交"，那会漏掉真正选中的首/尾块。
+                    */
+                    var overlapX = Math.min(selRect.right, er.right) -
+                                   Math.max(selRect.left, er.left);
+                    var overlapY = Math.min(selRect.bottom, er.bottom) -
+                                   Math.max(selRect.top, er.top);
+                    if (overlapX < -1 || overlapY < -1) continue;
+                }
+            }
 
             out.push(parseInt(el.getAttribute('data-line'), 10));
         }
@@ -3644,7 +3768,70 @@
             if (isFinite(out[j]) && clean.indexOf(out[j]) < 0) clean.push(out[j]);
         }
         clean.sort(function (a, b) { return a - b; });
-        return clean;
+
+        /*
+          ══ ② 连续性校验（v0.2.40）══
+
+          ⚠️ 只在**按文档顺序**能对上的情况下信任 `clean`。
+             判据：`clean` 里的行号，在 `docModel.blocks` 的顺序中
+             必须相邻（允许间隔 ≤ 2，容纳空块/被丢弃的装饰块）。
+          ⚠️ 一旦发现大跳跃 → 说明选区起点被算错了（见函数开头），
+             此时**宁可只取首尾之间真正连续的那一段**，也不要
+             把中间没选中的内容一起标掉。
+
+          ✅ 返回最长的连续段。绝大多数正常选区本来就连续，
+             所以这个处理对正常情况**没有影响**。
+        */
+        if (clean.length <= 1) return clean;
+
+        /* 行号 → 在 docModel.blocks 中的序号 */
+        var order = {};
+        var blocks = docModel.blocks || [];
+        for (var bi = 0; bi < blocks.length; bi++) {
+            if (blocks[bi] && blocks[bi].line != null) {
+                order[String(blocks[bi].line)] = bi;
+            }
+        }
+
+        var seq = [];
+        for (var ci = 0; ci < clean.length; ci++) {
+            var pos = order[String(clean[ci])];
+            /* 找不到位置的块（不在 docModel 里）→ 不参与连续性判断 */
+            seq.push({ line: clean[ci], pos: (pos == null) ? null : pos });
+        }
+
+        var best = [];
+        var cur = [];
+        var prevPos = null;
+        for (var si = 0; si < seq.length; si++) {
+            var it = seq[si];
+            if (it.pos == null) {
+                /* 位置未知 → 归到当前段（保守） */
+                cur.push(it.line);
+                continue;
+            }
+            if (prevPos == null || it.pos - prevPos <= 2) {
+                cur.push(it.line);
+            } else {
+                /*
+                  跳跃太大 → 断开。记录之前那段，重新开始。
+                  ⚠️ 只要有任何一次跳跃，就要在 trace 里留下记录 ——
+                     这是"选区起点算错"的现场证据。
+                */
+                trace('reader:sel', 'line jump ' + prevPos + ' -> ' + it.pos +
+                      ' (gap > 2), splitting selection');
+                if (cur.length > best.length) best = cur;
+                cur = [it.line];
+            }
+            prevPos = it.pos;
+        }
+        if (cur.length > best.length) best = cur;
+
+        if (best.length !== clean.length) {
+            trace('reader:sel', 'selection narrowed ' + clean.length +
+                  ' -> ' + best.length + ' lines (jump detected)');
+        }
+        return best;
     }
 
     /**
@@ -5947,6 +6134,150 @@
                  用整块区间是合理的。
             */
             var lines = labelSpan.lines || [];
+
+            /*
+              ══ ⚠️⚠️⚠️ 跨块标注的**最后一道防线**（v0.2.40）══
+
+              用户反馈：
+
+                「不是所有正文段，而是其他所有标签的区域」
+
+              ── 现象 ──
+
+              向下滑动页面、选中下方段落之后，**前面所有章节**的
+              内容（标题、作者、摘要、正文…）全都被改成了文献。
+
+              ── 为什么 ──
+
+              `blockLinesInSelection()` 用 `range.intersectsNode(el)` 判断
+              "这一块在不在选区里"。而当选区起点被算到**文档最开头**时
+              （锚点元素已滚出视口后 `caretRangeFromPoint` 回退到根节点），
+              那个 Range 跨越整篇文章 → **每一块都命中**。
+
+              而这里的分支是"无脑遍历 `lines`，给每一块写整块标注"：
+
+                  labels[ln] = [{start: 0, end: 整块长度, label: 'reference'}]
+
+              于是标题、作者、摘要的原有标签**全被覆盖成文献**。
+
+              ── ✅ 本处修复 ──
+
+              `blockLinesInSelection` 已经加了"几何交叠 + 连续性"过滤，
+              但那是**输入端**。这里再加一道**应用端**防线：
+              按 `docModel.blocks` 的顺序校验 `lines` 是否连续，
+              只对**最长连续段**生效。
+
+              为什么两道都要：
+                · 输入端过滤依赖 `getBoundingClientRect()` 的几何信息，
+                  而选中过程中页面可能刚好在滚动，几何值有抖动；
+                · 应用端只看**块序列**这个纯逻辑事实，不受滚动影响。
+              两道都过才真正写入 —— 误标的代价太大（会毁掉用户
+              已有的整篇标注）。
+
+              ⚠️ 正常选区本来就连续，这道判断对正常情况**零影响**。
+            */
+            var blocksSeq = docModel.blocks || [];
+            var posOf = {};
+            for (var bp = 0; bp < blocksSeq.length; bp++) {
+                if (blocksSeq[bp] && blocksSeq[bp].line != null) {
+                    posOf[String(blocksSeq[bp].line)] = bp;
+                }
+            }
+
+            var runBest = [], runCur = [], runPrev = null;
+            for (var li2 = 0; li2 < lines.length; li2++) {
+                var p2 = posOf[String(lines[li2])];
+                if (p2 == null) {
+                    runCur.push(lines[li2]);
+                    continue;
+                }
+                if (runPrev == null || p2 - runPrev <= 2) {
+                    runCur.push(lines[li2]);
+                } else {
+                    trace('reader:label', 'line jump ' + runPrev + ' -> ' + p2 +
+                          ' (gap > 2), refusing to label across the gap');
+                    if (runCur.length > runBest.length) runBest = runCur;
+                    runCur = [lines[li2]];
+                }
+                runPrev = p2;
+            }
+            if (runCur.length > runBest.length) runBest = runCur;
+
+            if (runBest.length && runBest.length < lines.length) {
+                trace('reader:label', 'narrowed ' + lines.length + ' -> ' +
+                      runBest.length + ' lines (selection was not contiguous)');
+                lines = runBest;
+            }
+
+            /*
+              ══ ⚠️⚠️⚠️ 字符数合理性校验（v0.2.40 —— 最关键的一道）══
+
+              用户反馈的严重 bug：
+
+                「其他所有标签的区域都被标记成了文献」
+
+              ── 为什么前面两道还不够 ──
+
+              · 输入端几何校验依赖 `getBoundingClientRect()`，
+                选中过程中页面在滚动，几何值有抖动；
+              · 连续性校验拦不住"从文档头连续选到此处"——
+                它看起来完全合法。
+
+              但有一个**永远成立的物理事实**：
+
+                  被标注的块所包含的文字总量，
+                 不可能超过用户**实际选中的文字量**太多。
+
+              如果 `lines` 覆盖 50 个块、这些块合计 8000 字，
+              而用户只选了 200 字 —— 那一定是选区起点算错了。
+
+              ✅ 判据：累计字符数 ≤ 选中字符数 × 3 + 80
+
+                  · ×3 容纳"选中一段的一小截，但要标整段"的正常情形
+                    （用户只需点一下段内某处，整段就归他）；
+                  · +80 是给很短的块留的余量（几个字的小标题）。
+
+              ⚠️ 超过上限 → **只保留末尾若干块**，直到字符数落进预算。
+                 为什么保留**末尾**：用户是从上往下拖的，终点（手指
+                 最后的位置）才是他真正想标的地方，误选的总是上方。
+                 这正是用户描述的场景："向上的段落被误标了"。
+
+              ⚠️ 如果连最后一块都超预算（几乎不可能），退回只标最后一块。
+            */
+            var selChars = String(labelSpan.text == null ? '' : labelSpan.text)
+                .replace(/\s+/g, '').length;
+            if (selChars > 0 && lines.length > 1) {
+                var budget = selChars * 3 + 80;
+                var totalChars = 0;
+                for (var bj = 0; bj < lines.length; bj++) {
+                    totalChars += String(blockTextOf(lines[bj]) == null ? ''
+                        : blockTextOf(lines[bj])).replace(/\s+/g, '').length;
+                }
+                if (totalChars > budget) {
+                    trace('reader:label', 'CHAR BUDGET exceeded: ' + totalChars +
+                          ' chars in ' + lines.length + ' blocks vs selected ' +
+                          selChars + ' (budget ' + budget + ') — truncating from the top');
+                    /*
+                      ⚠️ 从**末尾**往前累加，保留能装进预算的那几块。
+                         `lines` 已按块顺序排列（前面的在上面）。
+                    */
+                    var keptTail = [];
+                    var acc = 0;
+                    for (var bk = lines.length - 1; bk >= 0; bk--) {
+                        var oneLen = String(blockTextOf(lines[bk]) == null ? ''
+                            : blockTextOf(lines[bk])).replace(/\s+/g, '').length;
+                        if (acc + oneLen > budget && keptTail.length) break;
+                        acc += oneLen;
+                        keptTail.push(lines[bk]);
+                    }
+                    keptTail.reverse();
+                    if (!keptTail.length) keptTail = [lines[lines.length - 1]];
+                    trace('reader:label', 'truncated to ' + keptTail.length +
+                          ' blocks (' + acc + ' chars): ' + keptTail.join(','));
+                    lines = keptTail;
+                }
+            }
+
             for (var j = 0; j < lines.length; j++) {
                 var ln = lines[j];
                 if (labelDraft && labelDraft !== 'body') {
